@@ -157,6 +157,13 @@ db.exec(`
     FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
   );
 
+  -- Application settings (catalog sources, API keys)
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
   -- Create indexes for performance
   CREATE INDEX IF NOT EXISTS idx_servers_status ON servers(status);
   CREATE INDEX IF NOT EXISTS idx_server_mods_server_id ON server_mods(server_id);

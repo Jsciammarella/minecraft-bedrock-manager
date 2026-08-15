@@ -52,9 +52,11 @@ function Layout() {
         <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const isActive = item.exact 
+            const isActive = item.exact
               ? location.pathname === item.path
-              : location.pathname.startsWith(item.path);
+              : item.path === '/mods'
+                ? location.pathname === '/mods' || (location.pathname.startsWith('/mods/') && !location.pathname.startsWith('/mods/catalog'))
+                : location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
             
             return (
               <button

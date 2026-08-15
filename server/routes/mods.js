@@ -4,7 +4,8 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const modManager = require('../services/modManager');
-const curseforge = require('../services/curseforgeClient');
+const catalog = require('../services/catalogService');
+const gitCatalog = require('../services/gitCatalogClient');
 
 // Multer config for file uploads
 const uploadsDir = path.join(__dirname, '../../data/uploads');
@@ -24,6 +25,25 @@ const upload = multer({
     if (allowed.includes(ext)) cb(null, true);
     else cb(new Error(`Unsupported file type ${ext || '(none)'}. Use .mcpack, .mcaddon, .mcworld, .zip, or .mctemplate.`));
   }
+});
+
+const thumbsDir = path.join(__dirname, '../../data/mods/thumbs');
+fs.mkdirSync(thumbsDir, { recursive: true });
+const imageUpload = multer({
+  storage: multer.diskStorage({
+    destination: thumbsDir,
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase() || '.png';
+      cb(null, `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.png', '.jpg', '.jpeg', '.webp', '.gif'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext)) cb(null, true);
+    else cb(new Error('Use a PNG, JPEG, WebP, or GIF image.'));
+  },
 });
 
 // Get all mods in library
@@ -66,6 +86,40 @@ router.post('/upload', (req, res) => {
       res.status(400).json({ error: err.message });
     }
   });
+});
+
+router.put('/:id', (req, res) => {
+  imageUpload.single('thumbnail')(req, res, async (uploadError) => {
+    if (uploadError) {
+      const tooLarge = uploadError.code === 'LIMIT_FILE_SIZE';
+      return res.status(tooLarge ? 413 : 400).json({
+        error: tooLarge ? 'The selected image exceeds the 5 MB limit.' : uploadError.message,
+      });
+    }
+
+    try {
+      const result = await modManager.updateMod(req.params.id, {
+        description: req.body?.description,
+        clearThumbnail: req.body?.clearThumbnail === '1' || req.body?.clearThumbnail === 'true',
+      }, req.file || null);
+      res.json(result);
+    } catch (err) {
+      if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      res.status(400).json({ error: err.message });
+    }
+  });
+});
+
+router.get('/:id/thumbnail', async (req, res) => {
+  try {
+    const filePath = modManager.getThumbnailFilePath(req.params.id);
+    if (!filePath) return res.status(404).json({ error: 'Thumbnail not found' });
+    res.sendFile(path.resolve(filePath), {
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // Delete a mod from library
@@ -118,16 +172,74 @@ router.delete('/:modId/uninstall/:serverId', async (req, res) => {
   }
 });
 
-// ========== CURSEFORGE CATALOG ==========
+// ========== MOD CATALOG ==========
 
-// Search CurseForge
+router.get('/catalog/settings', async (req, res) => {
+  try {
+    res.json(catalog.getSettings());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/catalog/settings', async (req, res) => {
+  try {
+    const saved = catalog.saveSettings(req.body || {});
+    const git = saved.git || {};
+    if (git.enabled && git.url) {
+      try {
+        const sync = await gitCatalog.sync();
+        saved.git = { ...saved.git, lastSync: sync.lastSync, modCount: sync.modCount };
+      } catch (err) {
+        saved.gitSyncError = err.message;
+      }
+    }
+    res.json(saved);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/catalog/git/test', async (req, res) => {
+  try {
+    const result = await catalog.testGitConnection(req.body || {});
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/catalog/git/sync', async (req, res) => {
+  try {
+    const result = await gitCatalog.sync();
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/catalog/git/thumbnail/:slug', async (req, res) => {
+  try {
+    const filePath = gitCatalog.getThumbnailPath(req.params.slug);
+    if (!filePath || !fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Thumbnail not found' });
+    }
+    res.sendFile(path.resolve(filePath), {
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 router.get('/catalog/search', async (req, res) => {
   try {
-    const result = await curseforge.searchMods(req.query.q || '', {
+    const result = await catalog.searchMods(req.query.q || '', {
       category: req.query.category,
-      pageSize: parseInt(req.query.pageSize) || 20,
+      pageSize: parseInt(req.query.pageSize) || 40,
       page: parseInt(req.query.page) || 1,
       sortBy: req.query.sortBy || 'relevancy',
+      source: req.query.source || 'all',
     });
     res.json(result);
   } catch (err) {
@@ -135,35 +247,27 @@ router.get('/catalog/search', async (req, res) => {
   }
 });
 
-// Get CurseForge categories
 router.get('/catalog/categories', async (req, res) => {
   try {
-    const categories = await curseforge.getCategories();
+    const categories = await catalog.getCategories();
     res.json(categories);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Download mod from CurseForge
 router.post('/catalog/download/:slug', async (req, res) => {
   try {
-    const result = await curseforge.downloadMod(
-      req.params.slug,
-      req.body.projectClass,
-      req.body.serverId,
-      { modId: req.body.curseforgeId, fileId: req.body.fileId }
-    );
+    const result = await catalog.downloadMod(req.params.slug, req.body || {});
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
-// Get mod details from CurseForge
 router.get('/catalog/:slug', async (req, res) => {
   try {
-    const details = await curseforge.getModDetails(req.params.slug, req.query.projectClass);
+    const details = await catalog.getDetails(req.params.slug, req.query);
     if (!details) return res.status(404).json({ error: 'Mod not found' });
     res.json(details);
   } catch (err) {

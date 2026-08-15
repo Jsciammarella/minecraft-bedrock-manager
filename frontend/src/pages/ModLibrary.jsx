@@ -4,13 +4,14 @@ import { modApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import {
   ArrowLeft, Package, Upload, Search, Trash2, Plus, X,
-  AlertCircle, Check, Loader2, Server, Download, ChevronDown
+  AlertCircle, Check, Loader2, Server, Download, Settings, ImagePlus
 } from 'lucide-react';
 
 function ModLibrary() {
   const navigate = useNavigate();
   const { servers, refresh } = useApi();
   const fileInputRef = useRef(null);
+  const settingsImageRef = useRef(null);
 
   const [mods, setMods] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -30,6 +31,13 @@ function ModLibrary() {
   // Install state
   const [installModal, setInstallModal] = useState(null);
   const [installing, setInstalling] = useState(false);
+
+  const [settingsModal, setSettingsModal] = useState(null);
+  const [settingsDesc, setSettingsDesc] = useState('');
+  const [settingsImage, setSettingsImage] = useState(null);
+  const [settingsPreview, setSettingsPreview] = useState('');
+  const [clearThumbnail, setClearThumbnail] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
 
   useEffect(() => {
     loadMods();
@@ -121,6 +129,44 @@ function ModLibrary() {
     }
   };
 
+  const openSettings = (mod) => {
+    setSettingsModal(mod);
+    setSettingsDesc(mod.description || '');
+    setSettingsImage(null);
+    setClearThumbnail(false);
+    setSettingsPreview(libraryThumbnailSrc(mod) || '');
+    setError('');
+  };
+
+  const handleSettingsImage = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSettingsImage(file);
+    setClearThumbnail(false);
+    setSettingsPreview(URL.createObjectURL(file));
+  };
+
+  const handleSaveSettings = async () => {
+    if (!settingsModal) return;
+    setSavingSettings(true);
+    setError('');
+    try {
+      await modApi.update(settingsModal.id, {
+        description: settingsDesc,
+        thumbnailFile: settingsImage,
+        clearThumbnail: clearThumbnail && !settingsImage,
+      });
+      setSuccess('Mod details saved');
+      setSettingsModal(null);
+      loadMods();
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to save mod details');
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
   const filteredMods = mods.filter(mod => {
     const matchesSearch = !search || mod.name.toLowerCase().includes(search.toLowerCase());
     const matchesType = filterType === 'all' || mod.type === filterType;
@@ -141,9 +187,9 @@ function ModLibrary() {
   };
 
   const getSourceBadge = (source) => {
-    return source === 'curseforge'
-      ? <span className="badge badge-info">CurseForge</span>
-      : <span className="badge badge-warning">Uploaded</span>;
+    if (source === 'curseforge') return <span className="badge badge-info">CurseForge</span>;
+    if (source === 'git') return <span className="badge badge-success">Git</span>;
+    return <span className="badge badge-warning">Uploaded</span>;
   };
 
   if (loading) {
@@ -225,7 +271,7 @@ function ModLibrary() {
         <div className="card text-center py-16">
           <Package className="w-16 h-16 text-mc-textMuted mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">No mods in library</h3>
-          <p className="text-mc-textMuted mb-6">Upload mods or download from the CurseForge catalog</p>
+          <p className="text-mc-textMuted mb-6">Upload mods or download them from the catalog</p>
           <div className="flex items-center justify-center gap-3">
             <button onClick={() => setShowUploadModal(true)} className="btn btn-primary">
               <Upload className="w-4 h-4" /> Upload Mod
@@ -241,8 +287,17 @@ function ModLibrary() {
             <div key={mod.id} className="card animate-slide-up">
               <div className="flex items-start gap-4">
                 {/* Icon */}
-                <div className="w-12 h-12 bg-mc-darker rounded-lg flex items-center justify-center flex-shrink-0">
-                  <Package className="w-6 h-6 text-mc-textMuted" />
+                <div className="w-12 h-12 bg-mc-darker rounded-lg flex items-center justify-center flex-shrink-0 overflow-hidden">
+                  {libraryThumbnailSrc(mod) ? (
+                    <img
+                      src={libraryThumbnailSrc(mod)}
+                      alt=""
+                      className="w-full h-full object-cover"
+                      onError={(e) => { e.target.style.display = 'none'; }}
+                    />
+                  ) : (
+                    <Package className="w-6 h-6 text-mc-textMuted" />
+                  )}
                 </div>
 
                 {/* Info */}
@@ -270,6 +325,13 @@ function ModLibrary() {
                     title="Install to server"
                   >
                     <Plus className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => openSettings(mod)}
+                    className="btn btn-secondary text-sm"
+                    title="Mod settings"
+                  >
+                    <Settings className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => handleDelete(mod.id)}
@@ -433,8 +495,115 @@ function ModLibrary() {
           </div>
         </div>
       )}
+
+      {settingsModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="card max-w-md w-full animate-slide-up">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">Mod Settings</h3>
+              <button onClick={() => setSettingsModal(null)} className="p-1 hover:bg-mc-surfaceLight rounded">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-sm text-mc-textMuted mb-4">
+              Update details for <strong className="text-white">{settingsModal.name}</strong>
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-mc-text mb-2">Image</label>
+                <div
+                  className="border-2 border-dashed border-mc-surfaceLight rounded-lg p-4 text-center
+                    hover:border-mc-accent/50 transition-colors cursor-pointer"
+                  onClick={() => settingsImageRef.current?.click()}
+                >
+                  {settingsPreview && !clearThumbnail ? (
+                    <img
+                      src={settingsPreview}
+                      alt=""
+                      className="w-full h-36 object-cover rounded-lg mb-2"
+                    />
+                  ) : (
+                    <ImagePlus className="w-8 h-8 text-mc-textMuted mx-auto mb-2" />
+                  )}
+                  <p className="text-sm text-mc-textMuted">
+                    {settingsImage ? settingsImage.name : 'Click to choose a PNG, JPEG, WebP, or GIF'}
+                  </p>
+                  <input
+                    ref={settingsImageRef}
+                    type="file"
+                    accept=".png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif"
+                    onChange={handleSettingsImage}
+                    className="hidden"
+                  />
+                </div>
+                {(settingsPreview || settingsModal.thumbnail) && !clearThumbnail && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSettingsImage(null);
+                      setSettingsPreview('');
+                      setClearThumbnail(true);
+                    }}
+                    className="mt-2 text-xs text-mc-danger hover:underline"
+                  >
+                    Remove image
+                  </button>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-mc-text mb-2">Description</label>
+                <textarea
+                  value={settingsDesc}
+                  onChange={(e) => setSettingsDesc(e.target.value)}
+                  className="input resize-none"
+                  rows="4"
+                  placeholder="Describe this mod..."
+                />
+              </div>
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  onClick={handleSaveSettings}
+                  disabled={savingSettings}
+                  className="btn btn-primary flex-1"
+                >
+                  {savingSettings ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" />
+                      Save
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={() => setSettingsModal(null)}
+                  className="btn btn-secondary"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function libraryThumbnailSrc(mod) {
+  if (!mod?.thumbnail) return '';
+  const value = String(mod.thumbnail);
+  if (value.startsWith('http://') || value.startsWith('https://') || value.startsWith('/api/')) {
+    return value;
+  }
+  return `/api/mods/${mod.id}/thumbnail?v=${encodeURIComponent(mod.downloaded_at || mod.id)}`;
 }
 
 export default ModLibrary;

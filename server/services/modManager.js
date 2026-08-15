@@ -8,10 +8,12 @@ const serverManager = require('./serverManager');
 const execAsync = promisify(exec);
 
 const MODS_DIR = path.join(__dirname, '../../data/mods');
+const THUMBS_DIR = path.join(MODS_DIR, 'thumbs');
 
 class ModManager {
   constructor() {
     fs.mkdirSync(MODS_DIR, { recursive: true });
+    fs.mkdirSync(THUMBS_DIR, { recursive: true });
   }
 
   // ========== MOD LIBRARY ==========
@@ -154,6 +156,85 @@ class ModManager {
     return db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
   }
 
+  async updateMod(modId, metadata = {}, thumbnailFile = null) {
+    const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
+    if (!mod) throw new Error('Mod not found');
+
+    let thumbnail = mod.thumbnail || '';
+    if (metadata.clearThumbnail) {
+      this.removeLocalThumbnail(thumbnail);
+      thumbnail = '';
+    }
+    if (thumbnailFile) {
+      const ext = path.extname(thumbnailFile.originalname || thumbnailFile.filename || '').toLowerCase() || '.png';
+      const destName = this.getAvailableThumbName(modId, ext);
+      const destPath = path.join(THUMBS_DIR, destName);
+      if (thumbnailFile.path) {
+        try {
+          fs.renameSync(thumbnailFile.path, destPath);
+        } catch (err) {
+          if (err.code !== 'EXDEV') throw err;
+          fs.copyFileSync(thumbnailFile.path, destPath);
+          fs.unlinkSync(thumbnailFile.path);
+        }
+      } else if (thumbnailFile.buffer) {
+        fs.writeFileSync(destPath, thumbnailFile.buffer);
+      } else {
+        throw new Error('Thumbnail image data was not available');
+      }
+      this.removeLocalThumbnail(mod.thumbnail);
+      thumbnail = destPath;
+    }
+
+    const description = metadata.description != null ? String(metadata.description) : (mod.description || '');
+    db.prepare(`
+      UPDATE mods SET description = ?, thumbnail = ? WHERE id = ?
+    `).run(description, thumbnail, modId);
+
+    logger.info(`Updated library mod ${mod.name}`);
+    return db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
+  }
+
+  getThumbnailFilePath(modId) {
+    const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
+    if (!mod || !this.isLocalThumbnail(mod.thumbnail)) return null;
+    if (!fs.existsSync(mod.thumbnail)) return null;
+    return mod.thumbnail;
+  }
+
+  isLocalThumbnail(value) {
+    if (!value) return false;
+    const text = String(value);
+    if (/^https?:\/\//i.test(text) || text.startsWith('/api/')) return false;
+    try {
+      const resolved = path.resolve(text);
+      const rel = path.relative(path.resolve(THUMBS_DIR), resolved);
+      return Boolean(rel) && !rel.startsWith('..') && !path.isAbsolute(rel);
+    } catch {
+      return false;
+    }
+  }
+
+  removeLocalThumbnail(value) {
+    if (!this.isLocalThumbnail(value)) return;
+    try {
+      if (fs.existsSync(value)) fs.unlinkSync(value);
+    } catch {
+      // ignore cleanup failures
+    }
+  }
+
+  getAvailableThumbName(modId, ext) {
+    const safeExt = ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(ext) ? ext : '.png';
+    let candidate = `${modId}${safeExt}`;
+    let suffix = 2;
+    while (fs.existsSync(path.join(THUMBS_DIR, candidate))) {
+      candidate = `${modId}-${suffix}${safeExt}`;
+      suffix += 1;
+    }
+    return candidate;
+  }
+
   async deleteMod(modId) {
     const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
     if (!mod) throw new Error('Mod not found');
@@ -168,6 +249,7 @@ class ModManager {
     if (fs.existsSync(mod.file_path)) {
       fs.unlinkSync(mod.file_path);
     }
+    this.removeLocalThumbnail(mod.thumbnail);
 
     // Remove from database
     db.prepare('DELETE FROM mods WHERE id = ?').run(modId);

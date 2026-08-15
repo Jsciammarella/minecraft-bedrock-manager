@@ -43,21 +43,34 @@ export const modApi = {
     });
   },
   delete: (id) => api.delete(`/mods/${id}`),
+  update: (id, { description, thumbnailFile, clearThumbnail }) => {
+    const formData = new FormData();
+    if (description != null) formData.append('description', description);
+    if (clearThumbnail) formData.append('clearThumbnail', '1');
+    if (thumbnailFile) formData.append('thumbnail', thumbnailFile);
+    return api.put(`/mods/${id}`, formData);
+  },
   getAvailable: (serverId) => api.get(`/mods/available/${serverId}`),
   getInstalled: (serverId) => api.get(`/mods/installed/${serverId}`),
   install: (modId, serverId) => api.post(`/mods/${modId}/install/${serverId}`),
   uninstall: (modId, serverId) => api.delete(`/mods/${modId}/uninstall/${serverId}`),
   
-  // CurseForge catalog
-  catalogSearch: (params) => api.get('/mods/catalog/search', { params }),
+  catalogSearch: (params) => api.get('/mods/catalog/search', { params, timeout: 90000 }),
   catalogCategories: () => api.get('/mods/catalog/categories'),
-  catalogDownload: (mod, serverId) => api.post(`/mods/catalog/download/${mod.slug}`, {
+  catalogDownload: (mod, serverId) => api.post(`/mods/catalog/download/${encodeURIComponent(mod.slug)}`, {
+    source: mod.source || 'curseforge',
     projectClass: mod.projectClass,
     curseforgeId: mod.curseforgeId,
     fileId: mod.fileId,
     serverId,
   }),
-  catalogDetails: (slug, projectClass) => api.get(`/mods/catalog/${slug}`, { params: { projectClass } }),
+  catalogDetails: (slug, projectClass, source) => api.get(`/mods/catalog/${encodeURIComponent(slug)}`, {
+    params: { projectClass, source },
+  }),
+  catalogSettings: () => api.get('/mods/catalog/settings'),
+  saveCatalogSettings: (data) => api.put('/mods/catalog/settings', data, { timeout: 120000 }),
+  testGitCatalog: (data) => api.post('/mods/catalog/git/test', data, { timeout: 45000 }),
+  syncGitCatalog: () => api.post('/mods/catalog/git/sync', {}, { timeout: 120000 }),
 };
 
 // ========== PLAYERS ==========

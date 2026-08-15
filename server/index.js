@@ -7,6 +7,7 @@ const path = require('path');
 const logger = require('./services/logger');
 const serverManager = require('./services/serverManager');
 const autoUpdateScheduler = require('./services/autoUpdateScheduler');
+const gitCatalogScheduler = require('./services/gitCatalogScheduler');
 
 // Routes
 const serverRoutes = require('./routes/servers');
@@ -164,12 +165,14 @@ server.listen(PORT, '0.0.0.0', () => {
 
   // Start auto-update scheduler
   autoUpdateScheduler.start();
+  gitCatalogScheduler.start();
 });
 
 // Graceful shutdown
 const gracefulShutdown = (signal) => {
   logger.info(`${signal} received, shutting down...`);
   autoUpdateScheduler.stop();
+  gitCatalogScheduler.stop();
   serverManager.shutdown();
   server.close(() => {
     logger.info('Server closed');

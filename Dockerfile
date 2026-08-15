@@ -34,7 +34,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     tar \
-    && rm -rf /var/lib/apt/lists/*
+    git \
+    git-lfs \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && git lfs install --system
 
 WORKDIR /app
 
@@ -49,7 +53,7 @@ COPY server/ ./server/
 COPY --from=frontend-build /app/public ./public
 
 # Create data directories
-RUN mkdir -p /app/data/servers /app/data/mods /app/data/logs /app/data/uploads
+RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog
 
 # Create non-root user
 RUN groupadd -r mcmanager && useradd -r -g mcmanager -d /app -s /bin/bash mcmanager \

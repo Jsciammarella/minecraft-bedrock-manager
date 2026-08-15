@@ -5,15 +5,19 @@ const path = require('path');
 const db = require('../db/connection');
 const logger = require('./logger');
 const modManager = require('./modManager');
+const settingsStore = require('./settingsStore');
 
 const CURSEFORGE_API = 'https://api.curseforge.com';
 const MINECRAFT_BEDROCK_GAME_ID = 1132; // Minecraft Bedrock Edition
 
 class CurseForgeClient {
   constructor() {
-    this.apiKey = process.env.CURSEFORGE_API_KEY || '';
     this.cache = new Map();
     this.cacheTTL = 5 * 60 * 1000; // 5 minutes
+  }
+
+  get apiKey() {
+    return settingsStore.getCurseForgeApiKey();
   }
 
   async searchMods(query = '', options = {}) {

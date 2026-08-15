@@ -9,6 +9,7 @@ A self-hosted web console for creating and operating multiple Minecraft Bedrock 
 - A server-specific live console with per-server command history
 - Per-server allowlists, player permissions, and ban lists
 - Bedrock add-on upload, installation, removal, and restart-required notices
+- Mod catalog with CurseForge and an optional Git repository source
 - Editable `server.properties`
 - Dashboard status refresh every five minutes and server-detail refresh every minute
 - Persistent SQLite configuration and server data
@@ -43,7 +44,7 @@ For a native installation, use Node.js 20 or newer plus Python 3, `make`, and a 
    cp .env.example .env
    ```
 
-   Change `TZ` and `PORT` if needed. `CURSEFORGE_API_KEY` is optional and is only used by the deferred CurseForge catalog integration.
+   Change `TZ` and `PORT` if needed. `CURSEFORGE_API_KEY` is optional. Catalog sources can also be configured in the Mod Catalog settings page.
 
 3. Configure the Ubuntu host firewall for the web interface and all ports offered by the server-creation dropdown:
 
@@ -131,9 +132,18 @@ The available-port dropdown combines the manager database with a live host UDP b
 | `LOG_LEVEL` | `info` | Application logging level |
 | `TZ` | `UTC` | Container timezone |
 | `AUTO_UPDATE_CHECK_INTERVAL` | `86400` | Update-check interval in seconds |
-| `CURSEFORGE_API_KEY` | empty | Optional CurseForge API credential |
+| `CURSEFORGE_API_KEY` | empty | Optional CurseForge API credential; can also be set in Catalog Settings |
+| `GIT_CATALOG_ENABLED` | empty | Optional Git catalog enable flag when no UI value exists |
+| `GIT_CATALOG_URL` | empty | Optional Git catalog clone URL |
+| `GIT_CATALOG_BRANCH` | `main` | Git catalog branch |
+| `GIT_CATALOG_USERNAME` | empty | Optional HTTPS username for the Git catalog |
+| `GIT_CATALOG_TOKEN` | empty | Optional Git access token for private catalogs |
+| `GIT_CATALOG_SUBDIR` | empty | Optional subdirectory that contains catalog files |
+| `GIT_CATALOG_SYNC_HOURS` | `2` | How often the Git catalog is pulled in the background |
 
 Never commit `.env`; it is intentionally ignored.
+
+The Mod Catalog settings page (gear icon on **Mod Catalog**) is the preferred place to add a CurseForge API key and a Git catalog repository. Values saved there override these environment variables. See [docs/git-mod-catalog.md](docs/git-mod-catalog.md) for the Git repository layout.
 
 ## Everyday operation
 
@@ -171,7 +181,7 @@ Stop active servers before taking a consistent backup. Restore the entire data d
 ## Known limitations
 
 - The manager has no built-in authentication.
-- The CurseForge catalog requires an API key for reliable use and is not a current project focus.
+- The CurseForge catalog is more reliable with an API key; a Git catalog can be used instead or in addition.
 - Automatic Bedrock binary provisioning may fall back to a test stub; verify the official binary before production use.
 - Player bans are enforced by the manager when it observes a player connection; Bedrock Dedicated Server does not provide a standalone native ban-list file equivalent to Java Edition.
 
