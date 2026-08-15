@@ -97,7 +97,7 @@ For a native installation:
    - Open **Mod Catalog → Settings** if you want CurseForge or a Git catalog
    - Confirm each server tile shows the address players should use (`version • IP:port`)
 
-Application data is stored in the `mc-data` Docker volume and survives container replacement. Back up this volume before upgrades.
+Application data is stored in the `mc-data` Docker volume and survives container replacement. Use `./scripts/upgrade.sh` for later updates so that volume, `.env`, mods, catalog settings, and player data stay in place.
 
 The production Compose file uses Linux host networking. Each Bedrock process therefore binds its selected UDP port directly on the host as soon as the server starts; adding a server does not require editing Compose or recreating the manager container. Host networking is intentional and is supported by the documented Linux deployment target. Firewall rules, not Docker port mappings, control external access.
 
@@ -168,6 +168,8 @@ For a real server, download the current Linux Bedrock Dedicated Server from the 
 
    Review `scripts/mc-manager.service` before copying it if your install path, Node binary, or user differs. The unit loads `/opt/mc-manager/.env`, so that file must exist.
 
+Later updates from `/opt/mc-manager`: `sudo ./scripts/upgrade.sh --mode native`.
+
 On a native install there is no separate publishing step: every managed Bedrock process binds its configured UDP port directly on the Ubuntu host. The firewall rules above cover every port that the manager offers. Server creation also checks that the selected UDP port is not already bound by another process.
 
 The available-port dropdown combines the manager database with a live host UDP bind check. Ports assigned to another managed server or occupied by another host process are not offered, and availability is checked again during creation to prevent races.
@@ -201,10 +203,54 @@ The Mod Catalog settings page (gear icon on **Mod Catalog**) is the preferred pl
 docker compose logs -f mc-manager   # follow manager logs
 docker compose restart mc-manager   # restart the manager
 docker compose down                 # stop it without deleting data
-docker compose up -d --build        # rebuild after an application update
 ```
 
+Do not pass `-v` to `docker compose down`. That flag deletes the named volumes and would remove servers, worlds, mods, catalog settings, and player data.
+
 Installing or removing add-ons and changing server properties can require a Bedrock server restart. The UI marks the affected server and offers either an immediate restart or a warned restart that sends player messages at five, two, and one minute.
+
+## In-place upgrade
+
+Use this when you already have a working install and want the latest manager code **without** wiping configuration, mods, catalog settings, or player data.
+
+Application state lives outside the image:
+
+| Install | Kept during upgrade |
+| --- | --- |
+| Docker | Named volumes `mc-data` and `mc-logs`, plus `.env` on the host |
+| Native | `data/` (SQLite, worlds, mods, Git catalog clone, player files) and `.env` |
+
+From the git checkout that you used to install:
+
+```bash
+./scripts/upgrade.sh
+```
+
+The script:
+
+1. Asks the manager API to stop running Bedrock servers so worlds can save
+2. Copies current data to `upgrade-backups/<timestamp>/` (skip with `--skip-backup`)
+3. Refuses to run if tracked files have local edits (`.env` and `data/` are ignored and are left alone)
+4. Fast-forwards the current branch with `git pull --ff-only`
+5. Adds any **new** keys from `.env.example` into `.env` without changing existing values
+6. Rebuilds and restarts the manager
+   - Docker: `docker compose up -d --build` (does **not** run `down -v`)
+   - Native: `npm ci`, frontend build, then `systemctl restart mc-manager` when the unit is installed
+
+Running Bedrock servers do not come back automatically. Start them from the dashboard after the health check succeeds.
+
+Useful flags:
+
+```bash
+./scripts/upgrade.sh --yes                 # no confirmation prompt
+./scripts/upgrade.sh --skip-backup         # you already have another backup
+./scripts/upgrade.sh --mode docker         # skip auto-detect
+./scripts/upgrade.sh --mode native
+```
+
+If a release adds new UDP port ranges, rerun `sudo ./scripts/configure-ubuntu-firewall.sh` after the upgrade.
+
+Older one-line Docker rebuilds (`docker compose up -d --build` after `git pull`) also keep volumes, as long as you never use `docker compose down -v` or `docker volume rm`. Prefer `scripts/upgrade.sh` so the backup, `.env` merge, and graceful server stop happen together.
 
 ## Development and verification
 
@@ -228,7 +274,7 @@ Runtime state is intentionally excluded from Git. It includes:
 - `data/uploads/` — temporary uploads
 - `data/logs/` — application logs
 
-Stop active servers before taking a consistent backup. Restore the entire data directory or Docker volume together.
+Stop active servers before taking a consistent backup. Restore the entire data directory or Docker volume together. `scripts/upgrade.sh` writes an extra copy under `upgrade-backups/` unless you pass `--skip-backup`.
 
 ## Known limitations
 

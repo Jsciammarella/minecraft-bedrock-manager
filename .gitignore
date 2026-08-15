@@ -24,8 +24,7 @@ data/
 *.pem
 *.key
 
-# Temporary files
-tmp/
+upgrade-backups/
 temp/
 *.tmp
 *.swp
