@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { serverApi, portApi } from '../services/api';
+import { useApi } from '../context/ApiContext';
 import { ArrowLeft, Server, Loader2, Check, AlertCircle } from 'lucide-react';
 
 function CreateServer() {
   const navigate = useNavigate();
+  const { refresh } = useApi();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -47,12 +49,13 @@ function CreateServer() {
     setSuccess('');
 
     try {
-      const { data } = await serverApi.create({
+      await serverApi.create({
         ...formData,
         port: parseInt(formData.port),
         maxPlayers: parseInt(formData.maxPlayers),
       });
-      navigate('/', { state: { message: `Building "${data.name}". It will appear on the dashboard while the Bedrock files download.` } });
+      await refresh();
+      navigate('/');
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to create server');
     } finally {

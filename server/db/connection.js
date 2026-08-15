@@ -9,7 +9,7 @@ const DB_PATH = process.env.MC_MANAGER_DB_PATH
 // Ensure data directory exists
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
-const db = new Database(DB_PATH, { verbose: console.log });
+const db = new Database(DB_PATH);
 
 // Enable WAL mode for better concurrency
 db.pragma('journal_mode = WAL');

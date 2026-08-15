@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { 
   Server, Plus, Play, Square, RotateCcw, Terminal, Users, 
   Clock, Trash2, Settings, Activity, RefreshCw, AlertTriangle, Radio, Loader2
@@ -14,7 +14,6 @@ function isBedrockConnect(server) {
 
 function Dashboard() {
   const navigate = useNavigate();
-  const location = useLocation();
   const { servers, loading, refresh } = useApi();
   const { connected } = useSocket();
   const [actions, setActions] = useState({});
@@ -228,6 +227,7 @@ function Dashboard() {
   const bcPending = Boolean(bcPreview?.pending);
   const bcDisabled = bcExists || bcPending || bcBusy;
   const bcRunning = servers.some(server => isBedrockConnect(server) && (server.status === 'running' || server.status === 'starting'));
+  const buildingServers = servers.filter((server) => server.status === 'creating');
   const sortedServers = [...servers].sort((a, b) => {
     if (isBedrockConnect(a) !== isBedrockConnect(b)) return isBedrockConnect(a) ? -1 : 1;
     return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
@@ -308,9 +308,9 @@ function Dashboard() {
           {lanMessage}
         </div>
       )}
-      {location.state?.message && (
-        <div className="mb-6 p-4 bg-green-500/10 border border-green-500/30 rounded-lg text-sm text-green-400">
-          {location.state.message}
+      {buildingServers.length > 0 && (
+        <div className="mb-6 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-sm text-yellow-300">
+          Building {buildingServers.map((server) => server.name).join(', ')}. Start and LAN unlock when this finishes.
         </div>
       )}
 

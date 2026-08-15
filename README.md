@@ -130,7 +130,9 @@ You can also change a regular Bedrock server's port on its Properties page. The 
 
 ### Console LAN listing
 
-Consoles look for LAN games by pinging UDP `19132`. A dedicated server that already uses that port is visible on the LAN by itself. Servers on any other port can be advertised with a per-server **LAN** toggle on the dashboard tile and the server page.
+Consoles look for LAN games by pinging UDP `19132`. A dedicated server that already uses that port is visible on the LAN by itself (`enable-lan-visibility=true`). Current Bedrock Dedicated Server also tries to bind `19132`/`19133` for LAN when that setting is left at its default, which fights with extra servers and with Phantom. The manager therefore turns LAN visibility off except for a native `19132` instance, uses a distinct IPv6 port, and advertises other servers with Phantom. New servers enable the LAN toggle by default so Xbox can see them under Friends → LAN Games.
+
+Docker Compose uses Linux host networking, so Bedrock and Phantom bind UDP on the Ubuntu host itself. There is no docker-proxy port mapping to miss. The Xbox must be on the same LAN as the host.
 
 The manager ships [Phantom](https://github.com/jhead/phantom) (MIT license) binaries under `vendor/phantom/` (currently `v0.5.3`) and copies the matching one into `data/phantom/` on first use. It does not need GitHub to start. The daily auto-update check looks for a newer Phantom release and downloads it only if GitHub is reachable. Each enabled server gets its own Phantom process: consoles still discover games on UDP `19132` (Phantom uses `SO_REUSEPORT` so several listings can share that port), and game traffic is proxied on UDP `19200-19299` to this host's auto-detected LAN IPv4 on the game port (loopback only if no LAN address is found). `CONNECT_HOST` is not used for that target; it only controls the address shown on dashboard tiles. While a server is proxied, the dashboard shows **Phantom Proxy** instead of `IP:port`.
 

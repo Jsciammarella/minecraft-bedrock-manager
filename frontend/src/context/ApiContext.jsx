@@ -24,17 +24,22 @@ export function ApiProvider({ children }) {
 
   useEffect(() => {
     fetchServers();
-    // Dashboard/global data refreshes every five minutes. Server details poll separately.
     const interval = setInterval(fetchServers, 5 * 60 * 1000);
 
-    // Listen for real-time status changes from Socket.IO
-    const handleStatusChange = () => {
-      // Debounce: only refresh once per 2-second window
-      if (refreshTimerRef.current) return;
+    const handleStatusChange = (event) => {
+      const detail = event.detail || {};
+      if (detail.serverId != null && detail.status) {
+        setServers((prev) => prev.map((server) => (
+          String(server.id) === String(detail.serverId)
+            ? { ...server, status: detail.status }
+            : server
+        )));
+      }
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = setTimeout(() => {
         refreshTimerRef.current = null;
         fetchServers();
-      }, 2000);
+      }, 500);
     };
 
     window.addEventListener('server-status-change', handleStatusChange);
@@ -47,6 +52,13 @@ export function ApiProvider({ children }) {
       }
     };
   }, [fetchServers]);
+
+  const hasCreating = servers.some((server) => server.status === 'creating');
+  useEffect(() => {
+    if (!hasCreating) return undefined;
+    const interval = setInterval(fetchServers, 2000);
+    return () => clearInterval(interval);
+  }, [fetchServers, hasCreating]);
 
   const refresh = useCallback(() => {
     setLoading(true);

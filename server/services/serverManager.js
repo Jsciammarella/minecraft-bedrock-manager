@@ -610,11 +610,7 @@ class ServerManager {
     }
 
     if (!this.isBedrockConnect(server)) {
-      const propsPath = path.join(server.data_path, 'server.properties');
-      const props = this.readServerProperties(propsPath);
-      props['server-port'] = String(port);
-      props['server-portv6'] = String(port);
-      this.writeServerProperties(propsPath, props);
+      this.writeRuntimeServerProperties({ ...server, port });
     }
 
     db.prepare(`
@@ -668,8 +664,8 @@ class ServerManager {
 
     const insert = db.prepare(`
       INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
-        server_description, server_motd, status, data_path)
-      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'creating', ?)
+        server_description, server_motd, status, data_path, lan_broadcast)
+      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'creating', ?, 1)
     `);
     const result = insert.run(
       name, version || 'latest', port, maxPlayers || 10,
@@ -710,24 +706,18 @@ class ServerManager {
       fs.mkdirSync(path.join(serverPath, 'worlds'), { recursive: true });
       fs.mkdirSync(path.join(serverPath, 'resource_packs'), { recursive: true });
 
-      const props = {
-        'level-name': name,
-        'server-port': String(port),
-        'server-portv6': String(port),
-        'max-players': String(maxPlayers || 10),
-        'allow-list': 'false',
-        difficulty: difficulty || 'peaceful',
-        gamemode: gamemode || 'survival',
-        'default-player-permission': 'member',
-        'server-authoritative': 'true',
-        'enable-cheats': 'true',
-        'server-description': description || 'Minecraft Bedrock Server',
-        'texturepack-name': '',
-        'texturepacks-required': 'false',
-        'content-log-file-enable': 'false',
-        'compression-threshold-kb': '1',
-      };
-      this.writeServerProperties(path.join(serverPath, 'server.properties'), props);
+      this.writeServerProperties(
+        path.join(serverPath, 'server.properties'),
+        this.bedrockRuntimeProperties({
+          name,
+          port,
+          max_players: maxPlayers,
+          difficulty,
+          gamemode,
+          server_description: description,
+          data_path: serverPath,
+        })
+      );
       fs.writeFileSync(path.join(serverPath, 'allowlist.json'), '[]\n');
       fs.writeFileSync(path.join(serverPath, 'permissions.json'), '[]\n');
 
@@ -940,20 +930,20 @@ done
     }
 
     try {
-      // Make executable
+      this.writeRuntimeServerProperties(current);
       fs.chmodSync(serverBin, '755');
 
-      // Start the server process with PTY for terminal access
       const { spawn: spawnPty } = require('node-pty');
-      const pty = spawnPty('bash', [
-        '-c', 
-        `cd "${serverPath}" && LD_LIBRARY_PATH=. PORT=${server.port} ./bedrock_server`
-      ], {
+      const pty = spawnPty(serverBin, [], {
         name: 'xterm-color',
         cols: 120,
         rows: 30,
         cwd: serverPath,
-        env: { ...process.env, PORT: String(server.port) }
+        env: {
+          ...process.env,
+          LD_LIBRARY_PATH: `${serverPath}:.`,
+          PORT: String(current.port),
+        },
       });
 
       this.ptySessions.set(sessionKey, pty);
@@ -987,6 +977,13 @@ done
 
       await this.completePendingBedrockConnectIfNeeded(serverId);
       await this.completePendingLanBroadcastIfNeeded(serverId);
+      if (Number(this.getServer(serverId)?.lan_broadcast) === 1) {
+        try {
+          await this.syncLanBroadcast(serverId);
+        } catch (err) {
+          logger.warn(`LAN broadcast did not start with ${current.name}: ${err.message}`);
+        }
+      }
       return { success: true, message: 'Server starting...' };
     } catch (err) {
       logger.error(`Failed to start server ${server.name}: ${err.message}`);
@@ -1189,12 +1186,11 @@ done
       difficulty: 'difficulty',
       gamemode: 'gamemode',
       whitelist_mode: 'allow-list',
-      server_description: 'server-description',
-      server_motd: 'server-description',
-      texture_pack_required: 'texturepacks-required',
-      enable_cheats: 'enable-cheats',
-      server_authoritative: 'server-authoritative',
-      default_1st_person: 'default-player-permission',
+      server_description: 'server-name',
+      server_motd: 'server-name',
+      texture_pack_required: 'texturepack-required',
+      enable_cheats: 'allow-cheats',
+      default_1st_person: 'default-player-permission-level',
       view_distance: 'view-distance',
       tick_distance: 'tick-distance',
       player_idle_timeout: 'player-idle-timeout',
@@ -1205,7 +1201,7 @@ done
       server_authoritative_inventory: 'server-authoritative-vanilla-inventory',
       enable_player_data_initialization: 'enable-player-data-initialization',
       level_seed: 'level-seed',
-      default_player_permission: 'default-player-permission',
+      default_player_permission: 'default-player-permission-level',
       auto_ice: 'auto-ice',
       natural_regeneration: 'natural-regeneration',
       remote_discovery: 'remote-discovery',
@@ -1292,6 +1288,51 @@ done
       }
     }
     return props;
+  }
+
+  ipv6PortFor(port) {
+    const v4 = Number(port);
+    if (v4 === BEDROCK_CONNECT_PORT) return 19133;
+    if (v4 === 19133) return 19134;
+    return v4 + 1;
+  }
+
+  bedrockRuntimeProperties(server, existing = {}) {
+    const v4 = Number(server.port);
+    const nativeLan = v4 === BEDROCK_CONNECT_PORT;
+    const props = { ...existing };
+    delete props['enable-cheats'];
+    delete props['default-player-permission'];
+    delete props['server-authoritative'];
+    delete props['server-description'];
+    delete props['texturepack-name'];
+    delete props['texturepacks-required'];
+    delete props['content-log-file-enable'];
+    delete props['compression-threshold-kb'];
+    return {
+      ...props,
+      'server-name': server.name,
+      'level-name': existing['level-name'] || server.name,
+      'server-port': String(v4),
+      'server-portv6': String(this.ipv6PortFor(v4)),
+      'enable-lan-visibility': nativeLan ? 'true' : 'false',
+      'max-players': String(server.max_players || existing['max-players'] || 10),
+      'allow-list': existing['allow-list'] || 'false',
+      difficulty: server.difficulty || existing.difficulty || 'peaceful',
+      gamemode: server.gamemode || existing.gamemode || 'survival',
+      'allow-cheats': existing['allow-cheats'] || 'true',
+      'default-player-permission-level': existing['default-player-permission-level'] || 'member',
+      'online-mode': existing['online-mode'] || 'true',
+      'texturepack-required': existing['texturepack-required'] || 'false',
+      'content-log-file-enabled': existing['content-log-file-enabled'] || 'false',
+      'compression-threshold': existing['compression-threshold'] || '1',
+    };
+  }
+
+  writeRuntimeServerProperties(server) {
+    const propsPath = path.join(server.data_path, 'server.properties');
+    const current = this.readServerProperties(propsPath);
+    this.writeServerProperties(propsPath, this.bedrockRuntimeProperties(server, current));
   }
 
   writeServerProperties(filePath, props) {
@@ -1799,23 +1840,14 @@ done
   // ========== DATA ACCESS ==========
 
   getServer(serverId) {
-    const key = this.sessionKey(serverId);
-    if (this.servers.has(key)) return this.servers.get(key);
-    
-    const row = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
-    if (row) {
-      this.servers.set(key, row);
-    }
-    return row;
+    return db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
   }
 
   getAllServers() {
-    const rows = db.prepare(`
+    return db.prepare(`
       SELECT * FROM servers
       ORDER BY CASE WHEN kind = 'bedrock_connect' THEN 0 ELSE 1 END, name COLLATE NOCASE
     `).all();
-    rows.forEach(r => this.servers.set(this.sessionKey(r.id), r));
-    return rows;
   }
 
   async getServerStats(serverId) {
