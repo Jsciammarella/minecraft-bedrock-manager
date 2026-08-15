@@ -11,10 +11,10 @@ const connectHost = require('../services/connectHost');
 router.get('/', async (req, res) => {
   try {
     const servers = serverManager.getAllServers();
-    const result = await Promise.all(servers.map(async (s) => connectHost.attach({
-      ...s,
-      stats: await serverManager.getServerStats(s.id)
-    }, req)));
+    const result = await Promise.all(servers.map(async (s) => {
+      const stats = await serverManager.getServerStats(s.id);
+      return connectHost.attach({ ...s, stats, lan: stats.lan }, req);
+    }));
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -91,7 +91,7 @@ router.get('/:id', async (req, res) => {
     const onlinePlayers = await serverManager.getOnlinePlayers(req.params.id);
     const installedMods = await modManager.getInstalledMods(req.params.id);
     
-    res.json(connectHost.attach({ ...server, stats, onlinePlayers, installedMods }, req));
+    res.json(connectHost.attach({ ...server, stats, lan: stats.lan, onlinePlayers, installedMods }, req));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -232,6 +232,34 @@ router.delete('/:id/auto-update', async (req, res) => {
     await autoUpdateScheduler.disableAutoUpdate(req.params.id);
     res.json({ success: true });
   } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/:id/lan-broadcast', async (req, res) => {
+  try {
+    const preview = await serverManager.previewLanBroadcast(req.params.id);
+    res.json(preview);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.put('/:id/lan-broadcast', async (req, res) => {
+  try {
+    const { enabled, acceptConflict, restartMode } = req.body || {};
+    const result = await serverManager.setLanBroadcast(req.params.id, Boolean(enabled), {
+      acceptConflict: Boolean(acceptConflict),
+      restartMode: restartMode === 'warned' ? 'warned' : 'immediate',
+    });
+    res.status(result.pending ? 202 : 200).json(result);
+  } catch (err) {
+    if (err.code === 'PORT_CONFLICT') {
+      return res.status(409).json({ error: err.message, conflict: err.conflict, code: err.code });
+    }
+    if (err.code === 'BC_CONFLICT' || err.code === 'LAN_BLOCKED') {
+      return res.status(409).json({ error: err.message, code: err.code });
+    }
     res.status(400).json({ error: err.message });
   }
 });

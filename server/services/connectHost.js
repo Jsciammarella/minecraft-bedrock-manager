@@ -94,12 +94,19 @@ function resolve(req) {
   return fromRequest || '127.0.0.1';
 }
 
+function isPhantomProxied(server) {
+  const lan = server?.lan || server?.stats?.lan;
+  return Boolean(lan && lan.enabled && lan.active && !lan.native);
+}
+
 function attach(server, req) {
   const connectHost = resolve(req);
   return {
     ...server,
     connectHost,
-    connectAddress: formatAddress(connectHost, server.port),
+    connectAddress: isPhantomProxied(server)
+      ? 'Phantom Proxy'
+      : formatAddress(connectHost, server.port),
   };
 }
 
@@ -110,6 +117,7 @@ module.exports = {
   formatAddress,
   hostnameFromRequest,
   isLoopbackHost,
+  isPhantomProxied,
   resolve,
   stripHostPort,
 };

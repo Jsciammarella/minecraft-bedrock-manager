@@ -64,6 +64,18 @@ class AutoUpdateScheduler {
         logger.warn(`Bedrock Connect JAR sync failed: ${err.message}`);
       }
 
+      try {
+        const lanBroadcast = require('./lanBroadcast');
+        const phantom = await lanBroadcast.checkForUpdates({ download: true });
+        if (phantom.updated) {
+          logger.info(`Phantom updated to ${phantom.currentTag}`);
+        } else if (phantom.latestTag) {
+          logger.info(`Phantom is current (${phantom.currentTag})`);
+        }
+      } catch (err) {
+        logger.warn(`Phantom update check failed: ${err.message}`);
+      }
+
       // Get all servers with auto-update enabled
       const servers = db.prepare(`
         SELECT s.*, au.enabled, au.check_interval_hours, au.last_check
@@ -97,6 +109,12 @@ class AutoUpdateScheduler {
             }
             if (server.version === latestConnect.tag) {
               logger.info(`Bedrock Connect already on ${server.version}`);
+              skipped++;
+              this.updateLastCheck(server.id);
+              continue;
+            }
+            if (server.status === 'running' || server.status === 'starting') {
+              logger.info('Bedrock Connect is running, skipping auto-update');
               skipped++;
               this.updateLastCheck(server.id);
               continue;
@@ -178,10 +196,6 @@ class AutoUpdateScheduler {
    */
   enableAutoUpdate(serverId, intervalHours = 24) {
     try {
-      const server = db.prepare('SELECT kind FROM servers WHERE id = ?').get(serverId);
-      if (server?.kind === 'bedrock_connect') {
-        throw new Error('Bedrock Connect auto-update settings cannot be changed');
-      }
       db.prepare(`
         INSERT INTO auto_updates (server_id, enabled, check_interval_hours)
         VALUES (?, 1, ?)

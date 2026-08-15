@@ -45,6 +45,7 @@ class ServerManager {
   }
 
   markServerStopped(serverId, { broadcast = true } = {}) {
+    const server = this.getServer(serverId);
     this.cancelWarnedRestart(serverId, { broadcast: false });
     db.prepare(`
       UPDATE servers
@@ -54,6 +55,11 @@ class ServerManager {
     `).run(serverId);
     this.invalidateServerCache(serverId);
     if (broadcast) this.broadcastServerStatus(serverId);
+    if (this.isBedrockConnect(server)) {
+      this.restoreLanBroadcasts().catch((err) => {
+        logger.warn(`LAN broadcast restore after Bedrock Connect stop failed: ${err.message}`);
+      });
+    }
   }
 
   markRestartRequired(serverId, reason) {
@@ -101,6 +107,24 @@ class ServerManager {
           this.invalidateServerCache(serverId);
         }
       }
+      const pendingLan = this.getPendingLanBroadcast();
+      if (pendingLan && Number(pendingLan.occupantId) === Number(serverId)) {
+        this.setPendingLanBroadcast(null);
+        if (pendingLan.nextPort) {
+          db.prepare(`
+            UPDATE servers
+            SET pending_port = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND pending_port = ?
+          `).run(serverId, pendingLan.nextPort);
+          this.invalidateServerCache(serverId);
+        }
+        const requesterIds = (pendingLan.enableIds || [])
+          .filter(id => Number(id) !== Number(pendingLan.occupantId));
+        for (const id of requesterIds) {
+          db.prepare('UPDATE servers SET lan_broadcast = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+          this.invalidateServerCache(id);
+        }
+      }
     }
     if (broadcast) this.broadcastServerStatus(serverId);
     return { success: true };
@@ -112,6 +136,11 @@ class ServerManager {
 
   getBedrockConnectServer() {
     return db.prepare("SELECT * FROM servers WHERE kind = 'bedrock_connect' LIMIT 1").get();
+  }
+
+  isBedrockConnectActive() {
+    const bc = this.getBedrockConnectServer();
+    return Boolean(bc && (bc.status === 'running' || bc.status === 'starting'));
   }
 
   getPendingBedrockConnect() {
@@ -126,6 +155,236 @@ class ServerManager {
   setPendingBedrockConnect(value) {
     if (!value) settingsStore.remove(settingsStore.KEYS.BEDROCK_CONNECT_PENDING);
     else settingsStore.set(settingsStore.KEYS.BEDROCK_CONNECT_PENDING, JSON.stringify(value));
+  }
+
+  getPendingLanBroadcast() {
+    try {
+      const raw = settingsStore.get(settingsStore.KEYS.LAN_BROADCAST_PENDING);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  setPendingLanBroadcast(value) {
+    if (!value) settingsStore.remove(settingsStore.KEYS.LAN_BROADCAST_PENDING);
+    else settingsStore.set(settingsStore.KEYS.LAN_BROADCAST_PENDING, JSON.stringify(value));
+  }
+
+  attachLanStatus(server) {
+    if (!server) return server;
+    const lanBroadcast = require('./lanBroadcast');
+    const lan = lanBroadcast.statusFor(server);
+    if (this.isBedrockConnect(server)) {
+      return {
+        ...server,
+        lan: { ...lan, enabled: false, active: false, native: false, error: null },
+      };
+    }
+    if (this.isBedrockConnectActive() && lan.enabled && !lan.native && !lan.active) {
+      return {
+        ...server,
+        lan: {
+          ...lan,
+          error: lan.error || 'Bedrock Connect is running on UDP 19132. Stop or remove Bedrock Connect to start LAN proxy.',
+        },
+      };
+    }
+    return { ...server, lan };
+  }
+
+  stopLanBroadcastsForBedrockConnect() {
+    require('./lanBroadcast').stopAll();
+  }
+
+  async previewLanBroadcast(serverId) {
+    const lanBroadcast = require('./lanBroadcast');
+    const server = this.getServer(serverId);
+    if (!server) throw new Error('Server not found');
+    if (this.isBedrockConnect(server)) {
+      return {
+        allowed: false,
+        reason: 'bedrock_connect',
+        message: 'Bedrock Connect is a featured-server list, not a LAN game. Nintendo Switch still needs it.',
+        lan: lanBroadcast.statusFor(server),
+      };
+    }
+    if (Number(server.port) === lanBroadcast.DISCOVERY_PORT) {
+      return {
+        allowed: true,
+        native: true,
+        conflict: null,
+        message: 'This server already uses UDP 19132, so consoles on the same LAN can see it without a proxy.',
+        lan: lanBroadcast.statusFor({ ...server, lan_broadcast: 1 }),
+      };
+    }
+    if (this.isBedrockConnectActive()) {
+      return {
+        allowed: false,
+        reason: 'bedrock_connect_occupies',
+        message: 'Bedrock Connect is running on UDP 19132. Stop or remove Bedrock Connect to start LAN proxy.',
+        lan: lanBroadcast.statusFor(server),
+      };
+    }
+    if (lanBroadcast.isActive(serverId) || [...this.getAllServers()].some(item => lanBroadcast.isActive(item.id))) {
+      return { allowed: true, native: false, conflict: null, lan: lanBroadcast.statusFor(server) };
+    }
+    const occupant = db.prepare('SELECT * FROM servers WHERE port = ? AND id != ?').get(lanBroadcast.DISCOVERY_PORT, serverId);
+    if (occupant && !this.isBedrockConnect(occupant)) {
+      const nextPort = await this.nextAvailablePort({
+        exclude: [lanBroadcast.DISCOVERY_PORT, occupant.port, server.port],
+      });
+      return {
+        allowed: true,
+        native: false,
+        conflict: {
+          serverId: occupant.id,
+          serverName: occupant.name,
+          status: occupant.status,
+          currentPort: occupant.port,
+          nextPort,
+        },
+        message: `${occupant.name} is using UDP 19132. Consoles look for LAN games on that port, so it must be moved before LAN listing can start.`,
+        lan: lanBroadcast.statusFor(server),
+      };
+    }
+    const free = await this.isUdpPortAvailable(lanBroadcast.DISCOVERY_PORT);
+    if (!free) {
+      return {
+        allowed: false,
+        reason: 'port_blocked',
+        message: 'UDP 19132 is in use by another process. Free it before enabling LAN listing.',
+        lan: lanBroadcast.statusFor(server),
+      };
+    }
+    return { allowed: true, native: false, conflict: null, lan: lanBroadcast.statusFor(server) };
+  }
+
+  async setLanBroadcast(serverId, enabled, { acceptConflict = false, restartMode = 'immediate' } = {}) {
+    const lanBroadcast = require('./lanBroadcast');
+    const server = this.getServer(serverId);
+    if (!server) throw new Error('Server not found');
+    if (this.isBedrockConnect(server)) {
+      throw new Error('Bedrock Connect cannot be advertised as a LAN game');
+    }
+
+    if (!enabled) {
+      lanBroadcast.stop(serverId);
+      db.prepare('UPDATE servers SET lan_broadcast = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(serverId);
+      this.invalidateServerCache(serverId);
+      this.broadcastServerStatus(serverId);
+      return { success: true, enabled: false, lan: lanBroadcast.statusFor(this.getServer(serverId)) };
+    }
+
+    const preview = await this.previewLanBroadcast(serverId);
+    if (!preview.allowed) {
+      const err = new Error(preview.message);
+      err.code = preview.reason === 'bedrock_connect_occupies' ? 'BC_CONFLICT' : 'LAN_BLOCKED';
+      throw err;
+    }
+
+    if (preview.conflict && !acceptConflict) {
+      const err = new Error(preview.message);
+      err.code = 'PORT_CONFLICT';
+      err.conflict = preview.conflict;
+      throw err;
+    }
+
+    if (preview.conflict) {
+      const occupant = this.getServer(preview.conflict.serverId);
+      if (occupant.status === 'running' && restartMode === 'warned') {
+        await this.queuePortChange(occupant.id, preview.conflict.nextPort, { restartRequired: true });
+        this.scheduleWarnedRestart(occupant.id);
+        this.setPendingLanBroadcast({
+          occupantId: occupant.id,
+          nextPort: preview.conflict.nextPort,
+          enableIds: [Number(serverId), Number(occupant.id)],
+          createdAt: new Date().toISOString(),
+        });
+        db.prepare('UPDATE servers SET lan_broadcast = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(serverId);
+        this.invalidateServerCache(serverId);
+        return {
+          pending: true,
+          conflict: preview.conflict,
+          message: `${occupant.name} will move to port ${preview.conflict.nextPort} after the five-minute restart. LAN listing starts then.`,
+        };
+      }
+      await this.relocateServerForBedrockConnect(occupant.id, preview.conflict.nextPort);
+      db.prepare('UPDATE servers SET lan_broadcast = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(occupant.id);
+      this.invalidateServerCache(occupant.id);
+    }
+
+    db.prepare('UPDATE servers SET lan_broadcast = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(serverId);
+    this.invalidateServerCache(serverId);
+
+    if (preview.native) {
+      this.broadcastServerStatus(serverId);
+      return { success: true, enabled: true, native: true, lan: lanBroadcast.statusFor(this.getServer(serverId)) };
+    }
+
+    await this.syncLanBroadcast(serverId);
+    if (preview.conflict) await this.syncLanBroadcast(preview.conflict.serverId);
+    this.broadcastServerStatus(serverId);
+    return { success: true, enabled: true, lan: lanBroadcast.statusFor(this.getServer(serverId)) };
+  }
+
+  async syncLanBroadcast(serverId) {
+    const lanBroadcast = require('./lanBroadcast');
+    const server = this.getServer(serverId);
+    if (!server || this.isBedrockConnect(server) || Number(server.lan_broadcast) !== 1) {
+      lanBroadcast.stop(serverId);
+      return null;
+    }
+    if (this.isBedrockConnectActive()) {
+      lanBroadcast.stop(serverId);
+      return lanBroadcast.statusFor(server);
+    }
+    if (Number(server.port) === lanBroadcast.DISCOVERY_PORT) return lanBroadcast.statusFor(server);
+    if (lanBroadcast.isActive(serverId)) return lanBroadcast.statusFor(server);
+    lanBroadcast.stop(serverId);
+    const session = await lanBroadcast.startAndWait(server);
+    db.prepare('UPDATE servers SET lan_proxy_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(session.proxyPort, serverId);
+    this.invalidateServerCache(serverId);
+    return lanBroadcast.statusFor(this.getServer(serverId));
+  }
+
+  async restoreLanBroadcasts() {
+    const lanBroadcast = require('./lanBroadcast');
+    if (this.isBedrockConnectActive()) {
+      logger.info('Skipping LAN broadcast restore because Bedrock Connect is running');
+      return;
+    }
+    const rows = db.prepare("SELECT id FROM servers WHERE lan_broadcast = 1 AND kind != 'bedrock_connect'").all();
+    for (const row of rows) {
+      try {
+        await this.syncLanBroadcast(row.id);
+      } catch (err) {
+        logger.warn(`Could not restore LAN broadcast for server ${row.id}: ${err.message}`);
+      }
+    }
+  }
+
+  async completePendingLanBroadcastIfNeeded(serverId) {
+    const pending = this.getPendingLanBroadcast();
+    if (!pending || Number(pending.occupantId) !== Number(serverId)) return null;
+    this.setPendingLanBroadcast(null);
+    const occupant = this.getServer(serverId);
+    if (occupant && occupant.pending_port) {
+      await this.commitPortChange(serverId, occupant.pending_port);
+    } else if (occupant && Number(occupant.port) === BEDROCK_CONNECT_PORT) {
+      const nextPort = pending.nextPort || await this.nextAvailablePort({ exclude: [BEDROCK_CONNECT_PORT] });
+      await this.commitPortChange(serverId, nextPort);
+    }
+    const enableIds = pending.enableIds || [serverId];
+    for (const id of enableIds) {
+      db.prepare('UPDATE servers SET lan_broadcast = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+      this.invalidateServerCache(id);
+      try { await this.syncLanBroadcast(id); } catch (err) {
+        logger.warn(`LAN broadcast failed for server ${id}: ${err.message}`);
+      }
+    }
+    return { success: true };
   }
 
   async nextAvailablePort({ exclude = [] } = {}) {
@@ -144,13 +403,16 @@ class ServerManager {
     }
     const occupant = db.prepare('SELECT * FROM servers WHERE port = ?').get(BEDROCK_CONNECT_PORT);
     if (!occupant) {
-      const free = await this.isUdpPortAvailable(BEDROCK_CONNECT_PORT);
+      const lanBroadcast = require('./lanBroadcast');
+      const lanActive = lanBroadcast.hasAnyActive();
+      const free = lanActive || await this.isUdpPortAvailable(BEDROCK_CONNECT_PORT);
       return {
         exists: false,
         pending,
         conflict: null,
         port: BEDROCK_CONNECT_PORT,
         portBlocked: !free,
+        lanWillStop: lanActive,
       };
     }
     const nextPort = await this.nextAvailablePort({ exclude: [BEDROCK_CONNECT_PORT, occupant.port] });
@@ -356,6 +618,13 @@ class ServerManager {
     this.registerPort(serverId, port, 'udp');
     this.invalidateServerCache(serverId);
     logger.info(`Server ${server.name} is now on port ${port}`);
+    try {
+      if (Number(this.getServer(serverId)?.lan_broadcast) === 1) {
+        await this.syncLanBroadcast(serverId);
+      }
+    } catch (err) {
+      logger.warn(`LAN broadcast did not restart after port change for ${server.name}: ${err.message}`);
+    }
     return { success: true, port };
   }
 
@@ -512,6 +781,7 @@ done
   }
 
   async startBedrockConnect(server) {
+    this.stopLanBroadcastsForBedrockConnect();
     const bedrockConnect = require('./bedrockConnect');
     await bedrockConnect.assertJavaAvailable();
     const installed = bedrockConnect.installedJar(server.data_path)
@@ -636,6 +906,7 @@ done
       }, 3000);
 
       await this.completePendingBedrockConnectIfNeeded(serverId);
+      await this.completePendingLanBroadcastIfNeeded(serverId);
       return { success: true, message: 'Server starting...' };
     } catch (err) {
       logger.error(`Failed to start server ${server.name}: ${err.message}`);
@@ -688,6 +959,9 @@ done
 
     logger.info(`Server ${server.name} stopped`);
     this.broadcastServerStatus(serverId);
+    if (this.isBedrockConnect(server)) {
+      await this.restoreLanBroadcasts();
+    }
     return { success: true, message: 'Server stopped' };
   }
 
@@ -750,6 +1024,8 @@ done
   async deleteServer(serverId) {
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+    const wasBedrockConnect = this.isBedrockConnect(server);
+    require('./lanBroadcast').stop(serverId);
 
     // Stop if running
     if (server.status !== 'stopped') {
@@ -769,12 +1045,22 @@ done
     if (pending && (Number(pending.occupantId) === Number(serverId) || this.isBedrockConnect(server))) {
       this.setPendingBedrockConnect(null);
     }
+    const pendingLan = this.getPendingLanBroadcast();
+    if (pendingLan && (
+      Number(pendingLan.occupantId) === Number(serverId)
+      || (pendingLan.enableIds || []).some(id => Number(id) === Number(serverId))
+    )) {
+      this.setPendingLanBroadcast(null);
+    }
 
     // Remove from database
     db.prepare('DELETE FROM servers WHERE id = ?').run(serverId);
     
     this.invalidateServerCache(serverId);
     logger.info(`Deleted server: ${server.name}`);
+    if (wasBedrockConnect) {
+      await this.restoreLanBroadcasts();
+    }
     return { success: true, message: 'Server deleted' };
   }
 
@@ -941,12 +1227,17 @@ done
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
 
-    if (this.isBedrockConnect(server)) {
-      const bedrockConnect = require('./bedrockConnect');
-      if (!targetVersion || targetVersion === 'latest') {
-        await bedrockConnect.ensureJarAvailable();
-      }
-      const installed = bedrockConnect.installJarInto(server.data_path, targetVersion || 'latest');
+      if (this.isBedrockConnect(server)) {
+        const bedrockConnect = require('./bedrockConnect');
+        if (!targetVersion || targetVersion === 'latest') {
+          try {
+            await bedrockConnect.syncLatest({ download: true });
+          } catch (err) {
+            logger.warn(`Bedrock Connect latest check failed, using stored JAR: ${err.message}`);
+          }
+          await bedrockConnect.ensureJarAvailable();
+        }
+        const installed = bedrockConnect.installJarInto(server.data_path, targetVersion || 'latest');
       const fromVersion = server.version;
       db.prepare('UPDATE servers SET version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run(installed.tag, serverId);
@@ -1351,6 +1642,39 @@ done
         server_name: 'Bedrock Connect',
       });
     }
+    const lanBroadcast = require('./lanBroadcast');
+    for (const port of lanBroadcast.usedProxyPorts()) {
+      if (usedPortSet.has(port)) continue;
+      usedPortSet.add(port);
+      usedPorts.push({ port, protocol: 'udp', in_use: 1, server_name: 'LAN proxy' });
+    }
+    const proxyRows = db.prepare(`
+      SELECT lan_proxy_port AS port, name AS server_name
+      FROM servers
+      WHERE lan_proxy_port IS NOT NULL
+    `).all();
+    for (const row of proxyRows) {
+      if (usedPortSet.has(row.port)) continue;
+      usedPortSet.add(row.port);
+      usedPorts.push({
+        port: row.port,
+        protocol: 'udp',
+        in_use: 1,
+        server_name: `${row.server_name} (LAN proxy)`,
+      });
+    }
+    if (lanBroadcast.hasAnyActive() && !usedPortSet.has(lanBroadcast.DISCOVERY_PORT) && !this.getBedrockConnectServer()) {
+      usedPortSet.add(lanBroadcast.DISCOVERY_PORT);
+      usedPorts.push({
+        port: lanBroadcast.DISCOVERY_PORT,
+        protocol: 'udp',
+        in_use: 1,
+        server_name: 'Console LAN discovery',
+      });
+    }
+    for (let port = lanBroadcast.PROXY_PORT_START; port <= lanBroadcast.PROXY_PORT_END; port += 1) {
+      usedPortSet.add(port);
+    }
 
     // Generate available ports (common Minecraft ranges)
     const candidatePorts = [];
@@ -1424,12 +1748,12 @@ done
       ? this.calculateUptime(server.started_at) 
       : '0m';
 
-    return {
+    return this.attachLanStatus({
       ...server,
       onlinePlayers: onlinePlayers?.count || 0,
       installedMods: installedMods?.count || 0,
       uptime
-    };
+    });
   }
 
   calculateUptime(startTime) {
@@ -1509,6 +1833,7 @@ done
     }
     this.ptySessions.clear();
     this.servers.clear();
+    try { require('./lanBroadcast').stopAll(); } catch { /* ignore */ }
   }
 }
 

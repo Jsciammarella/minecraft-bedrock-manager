@@ -6,6 +6,7 @@ A self-hosted web console for creating and operating multiple Minecraft Bedrock 
 
 - Server creation with an available-port selector
 - Bedrock Connect for consoles (Xbox, PlayStation, Nintendo Switch) on UDP `19132`
+- Per-server console LAN listing (Xbox, PlayStation, Windows, iOS, Android) via [Phantom](https://github.com/jhead/phantom)
 - Start, stop, immediate restart, and five-minute warned restart controls
 - A server-specific live console with per-server command history
 - Per-server allowlists, player permissions, and ban lists
@@ -26,7 +27,7 @@ The recommended installation uses Docker:
 - Docker Engine 24 or newer with Docker Compose v2
 - At least 2 GB RAM, plus memory required by each Bedrock server
 - TCP access to the management port (default `3000`)
-- Host firewall access to the Bedrock UDP ranges used by the port selector (`19132-19199`, `25565-25665`, and `30000-30100`)
+- Host firewall access to the Bedrock UDP ranges used by the port selector (`19132-19199`, `25565-25665`, and `30000-30100`) and the LAN proxy range (`19200-19299`)
 
 The production image already includes Git, Git LFS, and a Java runtime for Bedrock Connect.
 
@@ -70,7 +71,7 @@ For a native installation:
    | `CURSEFORGE_API_KEY` | Optional. You can also paste this later in **Mod Catalog → Settings** |
    | `GIT_CATALOG_*` | Optional. Preferred configuration is **Mod Catalog → Settings** |
 
-3. Configure the Ubuntu host firewall for the web interface and all ports offered by the server-creation dropdown:
+3. Configure the Ubuntu host firewall for the web interface, the ports offered by the server-creation dropdown, and the console LAN proxy range (`19200-19299`):
 
    ```bash
    sudo ./scripts/configure-ubuntu-firewall.sh
@@ -121,9 +122,22 @@ Bedrock Connect always uses UDP `19132`. If another managed server already occup
 
 DNS rewrites on your network (for example pointing the console's featured-server lookups at this host) remain your responsibility. The manager only runs the JAR (`java -jar BedrockConnect-1.0-SNAPSHOT.jar nodb=true port=19132 bindip=0.0.0.0`).
 
-JAR updates are separate from Bedrock Dedicated Server binaries. The manager checks GitHub releases daily and keeps up to 10 downloaded versions under `data/bedrock-connect/releases/`. From the server page you can check for updates, install a stored version, or enable auto-update to the newest downloaded JAR.
+JAR updates are separate from Bedrock Dedicated Server binaries. The current Bedrock Connect release is shipped under `vendor/bedrock-connect/` and copied into `data/bedrock-connect/releases/` on first use, so installs do not need GitHub. The manager checks GitHub releases daily and downloads a newer JAR when one exists. The Update Server dialog lists **Latest** plus up to 10 stored versions. Older JARs are de-listed from that menu but are not deleted from disk. Auto-update can be enabled on the Properties page, the same as a normal server.
 
 You can also change a regular Bedrock server's port on its Properties page. The dropdown is the same available-port list used when creating a server. That change applies on the next restart, using the existing restart-required banner, unless Bedrock Connect creation moved the port immediately.
+
+### Console LAN listing
+
+Consoles look for LAN games by pinging UDP `19132`. A dedicated server that already uses that port is visible on the LAN by itself. Servers on any other port can be advertised with a per-server **LAN** toggle on the dashboard tile and the server page.
+
+The manager ships [Phantom](https://github.com/jhead/phantom) (MIT license) binaries under `vendor/phantom/` (currently `v0.5.3`) and copies the matching one into `data/phantom/` on first use. It does not need GitHub to start. The daily auto-update check looks for a newer Phantom release and downloads it only if GitHub is reachable. Each enabled server gets its own Phantom process: consoles still discover games on UDP `19132` (Phantom uses `SO_REUSEPORT` so several listings can share that port), and game traffic is proxied on UDP `19200-19299` to `127.0.0.1:<server-port>` on the same host. While a server is proxied, the dashboard shows **Phantom Proxy** instead of `IP:port`.
+
+This is the easier path for Xbox, PlayStation, Windows, iOS, and Android on the same LAN. It does **not** replace Bedrock Connect:
+
+- Nintendo Switch is not supported by Phantom. Switch players still need Bedrock Connect and DNS rewrites.
+- Bedrock Connect also binds UDP `19132`. While Bedrock Connect is running, LAN proxies are paused. Stop or remove Bedrock Connect to start LAN proxy again. A stopped Bedrock Connect instance does not block LAN listing.
+
+If another managed game server occupies UDP `19132`, the manager asks you to move it (immediate restart or the five-minute warned restart) and then enables LAN listing for both that server and the one you toggled, so the moved server does not disappear from consoles.
 
 ## Native Ubuntu installation
 
@@ -159,7 +173,7 @@ You can also change a regular Bedrock server's port on its Properties page. The 
    sudo ./scripts/configure-ubuntu-firewall.sh
    ```
 
-   If UFW is inactive, review and allow SSH access before enabling it. If the host uses another firewall, create equivalent rules for TCP `3000` and UDP `19132:19199`, `25565:25665`, and `30000:30100`.
+   If UFW is inactive, review and allow SSH access before enabling it. If the host uses another firewall, create equivalent rules for TCP `3000` and UDP `19132:19199`, `19200:19299`, `25565:25665`, and `30000:30100`.
 
 4. Start it interactively for an initial check:
 
@@ -287,6 +301,8 @@ Runtime state is intentionally excluded from Git. It includes:
 - `data/git-catalog/` — cloned Git catalog repository
 - `data/uploads/` — temporary uploads
 - `data/logs/` — application logs
+- `data/bedrock-connect/` — runtime Bedrock Connect JAR archive and version index
+- `data/phantom/` — runtime copy of the bundled Phantom binary, plus any later downloaded updates
 
 Stop active servers before taking a consistent backup. Restore the entire data directory or Docker volume together. `scripts/upgrade.sh` writes an extra copy under `upgrade-backups/` unless you pass `--skip-backup`.
 
@@ -296,6 +312,7 @@ Stop active servers before taking a consistent backup. Restore the entire data d
 - The CurseForge catalog is more reliable with an API key; a Git catalog can be used instead or in addition.
 - Automatic Bedrock binary provisioning may fall back to a test stub; verify the official binary before production use.
 - Player bans are enforced by the manager when it observes a player connection; Bedrock Dedicated Server does not provide a standalone native ban-list file equivalent to Java Edition.
+- Console LAN listing uses Phantom and does not support Nintendo Switch. It cannot share UDP `19132` with a running Bedrock Connect instance; stop or remove Bedrock Connect to start LAN proxy.
 
 ## Contributing and security
 

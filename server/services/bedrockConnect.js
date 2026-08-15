@@ -15,6 +15,9 @@ const KIND = 'bedrock_connect';
 const DISPLAY_NAME = 'Bedrock Connect';
 const RELEASES_DIR = path.join(__dirname, '../../data/bedrock-connect/releases');
 const INDEX_PATH = path.join(__dirname, '../../data/bedrock-connect/index.json');
+const VENDOR_DIR = path.join(__dirname, '../../vendor/bedrock-connect');
+const BUNDLED_VERSION_PATH = path.join(VENDOR_DIR, 'VERSION');
+const VENDOR_JAR_PATH = path.join(VENDOR_DIR, ASSET_NAME);
 const GITHUB_HEADERS = {
   Accept: 'application/vnd.github+json',
   'User-Agent': 'minecraft-bedrock-manager',
@@ -43,7 +46,34 @@ function jarPathFor(tag) {
   return path.join(RELEASES_DIR, `${safe}.jar`);
 }
 
+function bundledVersion() {
+  try {
+    return fs.readFileSync(BUNDLED_VERSION_PATH, 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+function seedFromVendor() {
+  const tag = bundledVersion();
+  if (!tag || !fs.existsSync(VENDOR_JAR_PATH) || fs.statSync(VENDOR_JAR_PATH).size < 1000) {
+    return null;
+  }
+  ensureDirs();
+  const dest = jarPathFor(tag);
+  if (!fs.existsSync(dest) || fs.statSync(dest).size < 1000) {
+    fs.copyFileSync(VENDOR_JAR_PATH, dest);
+    logger.info(`Installed bundled Bedrock Connect ${tag}`);
+  }
+  const index = readIndex();
+  if (!(index.versions || []).some(item => item.tag === tag) && !(index.versions || []).length) {
+    rememberVersion(tag, dest, null);
+  }
+  return { tag, path: dest };
+}
+
 function listVersions() {
+  seedFromVendor();
   const index = readIndex();
   return (index.versions || []).slice(0, MAX_STORED_VERSIONS);
 }
@@ -115,17 +145,13 @@ function rememberVersion(tag, filePath, publishedAt) {
     publishedAt: publishedAt || new Date().toISOString(),
     downloadedAt: new Date().toISOString(),
   });
-  pruneVersions(versions);
+  pruneListedVersions(versions);
   writeIndex({ versions });
 }
 
-function pruneVersions(versions) {
-  const keep = versions.slice(0, MAX_STORED_VERSIONS);
-  for (const extra of versions.slice(MAX_STORED_VERSIONS)) {
-    try { fs.unlinkSync(extra.path); } catch { /* ignore */ }
-  }
-  versions.length = 0;
-  versions.push(...keep);
+function pruneListedVersions(versions) {
+  // Keep JAR files on disk; only the newest 10 stay in the selectable list.
+  if (versions.length > MAX_STORED_VERSIONS) versions.length = MAX_STORED_VERSIONS;
 }
 
 async function syncLatest({ download = true } = {}) {
@@ -139,19 +165,33 @@ async function syncLatest({ download = true } = {}) {
 }
 
 async function ensureJarAvailable() {
+  seedFromVendor();
   const stored = latestStoredVersion();
   if (stored && fs.existsSync(stored.path)) return stored;
-  const downloaded = await downloadRelease(await fetchLatestRelease());
-  return { tag: downloaded.tag, path: downloaded.path };
+  throw new Error('Bedrock Connect JAR is not bundled. Add it under vendor/bedrock-connect/.');
+}
+
+function findStoredVersion(tag) {
+  seedFromVendor();
+  const versions = listVersions();
+  if (tag && tag !== 'latest') {
+    const listed = versions.find(item => item.tag === tag);
+    if (listed && fs.existsSync(listed.path)) return listed;
+    const dest = jarPathFor(tag);
+    if (fs.existsSync(dest) && fs.statSync(dest).size > 1000) {
+      return { tag, path: dest };
+    }
+    return null;
+  }
+  return versions[0] || null;
 }
 
 function installJarInto(serverDir, tag) {
-  const versions = listVersions();
-  const match = tag && tag !== 'latest'
-    ? versions.find(item => item.tag === tag)
-    : versions[0];
+  const match = findStoredVersion(tag);
   if (!match || !fs.existsSync(match.path)) {
-    throw new Error(tag ? `Bedrock Connect ${tag} is not in the local repository` : 'No Bedrock Connect JAR has been downloaded yet');
+    throw new Error(tag && tag !== 'latest'
+      ? `Bedrock Connect ${tag} is not in the local repository`
+      : 'No Bedrock Connect JAR is available yet');
   }
   fs.mkdirSync(serverDir, { recursive: true });
   const dest = path.join(serverDir, ASSET_NAME);
@@ -185,6 +225,7 @@ module.exports = {
   KIND,
   MAX_STORED_VERSIONS,
   assertJavaAvailable,
+  bundledVersion,
   ensureJarAvailable,
   fetchLatestRelease,
   fetchReleases,

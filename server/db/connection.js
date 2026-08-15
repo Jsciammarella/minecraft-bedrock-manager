@@ -45,6 +45,8 @@ db.exec(`
     restart_scheduled_at DATETIME,
     kind TEXT NOT NULL DEFAULT 'bedrock',
     pending_port INTEGER,
+    lan_broadcast INTEGER NOT NULL DEFAULT 0,
+    lan_proxy_port INTEGER,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -189,6 +191,8 @@ ensureServerColumn('pending_restart_at', 'DATETIME');
 ensureServerColumn('restart_scheduled_at', 'DATETIME');
 ensureServerColumn('kind', "TEXT NOT NULL DEFAULT 'bedrock'");
 ensureServerColumn('pending_port', 'INTEGER');
+ensureServerColumn('lan_broadcast', 'INTEGER NOT NULL DEFAULT 0');
+ensureServerColumn('lan_proxy_port', 'INTEGER');
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_one_bedrock_connect
   ON servers(kind) WHERE kind = 'bedrock_connect'

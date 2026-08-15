@@ -182,6 +182,18 @@ async function run() {
   }
   const localConnectHost = connectHost.resolve({ headers: { host: 'localhost:3000' } });
   assert(localConnectHost, 'connect host should resolve for localhost requests');
+  assert.equal(
+    connectHost.isPhantomProxied({ lan: { enabled: true, active: true, native: false } }),
+    true
+  );
+  assert.equal(
+    connectHost.isPhantomProxied({ lan: { enabled: true, active: false, native: false } }),
+    false
+  );
+  assert.equal(
+    connectHost.attach({ port: 19140, lan: { enabled: true, active: true, native: false } }, { headers: { host: '10.0.0.8:3000' } }).connectAddress,
+    'Phantom Proxy'
+  );
 
   const packPath = path.join(testRoot, 'library-mod.mcaddon');
   fs.writeFileSync(packPath, 'pack');
@@ -192,9 +204,17 @@ async function run() {
   const updatedMod = await modManager.updateMod(libraryMod.lastInsertRowid, { description: 'Added after upload' });
   assert.equal(updatedMod.description, 'Added after upload');
 
+  const bedrockConnect = require('../server/services/bedrockConnect');
+  assert.equal(bedrockConnect.bundledVersion(), '1.68.0');
+  assert(
+    fs.existsSync(path.join(__dirname, '../vendor/bedrock-connect/BedrockConnect-1.0-SNAPSHOT.jar')),
+    'bundled Bedrock Connect JAR is missing'
+  );
   const serverColumns = db.prepare('PRAGMA table_info(servers)').all().map(column => column.name);
   assert(serverColumns.includes('kind'), 'servers.kind column was not created');
   assert(serverColumns.includes('pending_port'), 'servers.pending_port column was not created');
+  assert(serverColumns.includes('lan_broadcast'), 'servers.lan_broadcast column was not created');
+  assert(serverColumns.includes('lan_proxy_port'), 'servers.lan_proxy_port column was not created');
 
   const portServerPath = path.join(testRoot, 'port-server');
   fs.mkdirSync(portServerPath, { recursive: true });
@@ -224,6 +244,16 @@ async function run() {
   assert.equal(preview.conflict.serverId, occupant.lastInsertRowid);
   assert.notEqual(preview.conflict.nextPort, 19132);
 
+  const nativeLan = await serverManager.previewLanBroadcast(occupant.lastInsertRowid);
+  assert.equal(nativeLan.allowed, true);
+  assert.equal(nativeLan.native, true);
+  const nativeEnabled = await serverManager.setLanBroadcast(occupant.lastInsertRowid, true);
+  assert.equal(nativeEnabled.native, true);
+  const lanConflictPreview = await serverManager.previewLanBroadcast(portServer.lastInsertRowid);
+  assert.equal(lanConflictPreview.allowed, true);
+  assert(lanConflictPreview.conflict, 'LAN preview should report a 19132 conflict');
+  assert.equal(lanConflictPreview.conflict.serverId, occupant.lastInsertRowid);
+
   db.prepare('DELETE FROM servers WHERE id = ?').run(occupant.lastInsertRowid);
   const bcPath = path.join(testRoot, 'bedrock-connect');
   fs.mkdirSync(bcPath, { recursive: true });
@@ -243,6 +273,16 @@ async function run() {
   await assert.rejects(
     () => serverManager.createServer({ name: `blocked-${suffix}`, port: 19132, version: 'latest' }),
     /19132 is reserved/
+  );
+  const lanWhileBcStopped = await serverManager.previewLanBroadcast(alpha.lastInsertRowid);
+  assert.equal(lanWhileBcStopped.allowed, true, 'LAN listing should work while Bedrock Connect is stopped');
+  db.prepare("UPDATE servers SET status = 'running' WHERE id = ?").run(bc.lastInsertRowid);
+  serverManager.invalidateServerCache(bc.lastInsertRowid);
+  const blockedLan = await serverManager.previewLanBroadcast(alpha.lastInsertRowid);
+  assert.equal(blockedLan.allowed, false);
+  await assert.rejects(
+    () => serverManager.setLanBroadcast(bc.lastInsertRowid, true),
+    /cannot be advertised/
   );
 
   console.log(JSON.stringify({

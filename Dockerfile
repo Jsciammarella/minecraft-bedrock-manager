@@ -49,12 +49,13 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy backend source
 COPY server/ ./server/
+COPY vendor/ ./vendor/
 
 # Copy built frontend from Stage 1
 COPY --from=frontend-build /app/public ./public
 
 # Create data directories
-RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog /app/data/bedrock-connect
+RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog /app/data/bedrock-connect /app/data/phantom
 
 # Create non-root user
 RUN groupadd -r mcmanager && useradd -r -g mcmanager -d /app -s /bin/bash mcmanager \

@@ -30,11 +30,12 @@ COPY frontend/package.json ./frontend/
 RUN npm install && cd frontend && npm install
 
 # Create data directories
-RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog /app/data/bedrock-connect
+RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog /app/data/bedrock-connect /app/data/phantom
 
 # Copy source (mounted in development)
 COPY server/ ./server/
 COPY frontend/ ./frontend/
+COPY vendor/ ./vendor/
 
 EXPOSE 3000 5173
 

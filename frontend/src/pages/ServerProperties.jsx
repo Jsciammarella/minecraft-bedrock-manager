@@ -102,7 +102,6 @@ function ServerProperties() {
   };
 
   const handleAutoUpdateToggle = async () => {
-    if (server?.kind === 'bedrock_connect') return;
     setAutoUpdating(true);
     setError('');
     setSuccess('');
@@ -146,7 +145,16 @@ function ServerProperties() {
     setSuccess('');
 
     try {
-      if (server?.kind === 'bedrock_connect') return;
+      if (server?.kind === 'bedrock_connect') {
+        if (autoUpdateEnabled) {
+          await serverApi.enableAutoUpdate(id, autoUpdateInterval);
+        }
+        navigate(`/servers/${id}`, {
+          replace: true,
+          state: { message: 'Auto-update settings saved successfully.' },
+        });
+        return;
+      }
       await serverApi.update(id, {
         ...formData,
         port: formData.port === '' ? undefined : parseInt(formData.port, 10),
@@ -198,7 +206,7 @@ function ServerProperties() {
 
       {isBC && (
         <div className="mb-6 p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
-          Bedrock Connect only supports start, stop, and restart. These settings do not apply and cannot be changed.
+          Bedrock Connect port and gameplay settings cannot be changed. Auto-update works the same as a normal server.
         </div>
       )}
 
@@ -312,7 +320,9 @@ function ServerProperties() {
           <div className="space-y-4">
             <div className="p-4 bg-mc-darker rounded-lg">
               <p className="text-sm text-mc-textMuted mb-3">
-                Automatically check for and install server updates. Updates will only be applied when the server is stopped, and addons/worlds will be preserved.
+                {isBC
+                  ? 'Automatically check for and install Bedrock Connect JAR updates. Updates apply when Bedrock Connect is stopped.'
+                  : 'Automatically check for and install server updates. Updates will only be applied when the server is stopped, and addons/worlds will be preserved.'}
               </p>
               <div className="flex items-center justify-between">
                 <div>
@@ -322,8 +332,8 @@ function ServerProperties() {
                 <button
                   type="button"
                   onClick={handleAutoUpdateToggle}
-                  disabled={autoUpdating || isBC}
-                  className={`toggle ${autoUpdateEnabled ? 'toggle-active' : 'toggle-inactive'} ${isBC ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  disabled={autoUpdating}
+                  className={`toggle ${autoUpdateEnabled ? 'toggle-active' : 'toggle-inactive'}`}
                 >
                   <span className={`toggle-thumb ${autoUpdateEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
                 </button>
@@ -336,7 +346,6 @@ function ServerProperties() {
                   value={autoUpdateInterval}
                   onChange={(e) => setAutoUpdateInterval(parseInt(e.target.value))}
                   className="input"
-                  disabled={isBC}
                 >
                   <option value={1}>Every hour</option>
                   <option value={4}>Every 4 hours</option>
@@ -353,7 +362,7 @@ function ServerProperties() {
 
         {/* Submit */}
         <div className="flex items-center gap-3 pt-4 border-t border-mc-surfaceLight">
-          <button type="submit" disabled={saving || isBC} className="btn btn-primary flex-1">
+          <button type="submit" disabled={saving} className="btn btn-primary flex-1">
             {saving ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />

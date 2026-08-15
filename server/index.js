@@ -166,6 +166,10 @@ server.listen(PORT, '0.0.0.0', () => {
   // Start auto-update scheduler
   autoUpdateScheduler.start();
   gitCatalogScheduler.start();
+
+  serverManager.restoreLanBroadcasts().catch((err) => {
+    logger.warn(`LAN broadcast restore failed: ${err.message}`);
+  });
 });
 
 // Graceful shutdown

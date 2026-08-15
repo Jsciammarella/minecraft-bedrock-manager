@@ -7,14 +7,14 @@ import {
   ArrowLeft, Play, Square, RotateCcw, Terminal, Send, Users,
   Settings, ArrowUpRight, Clock, Package, ChevronDown, ChevronUp,
   Copy, Trash2, Download, AlertCircle, AlertTriangle, Check, Loader2,
-  Shield, ShieldOff, Ban, UserPlus
+  Shield, ShieldOff, Ban, UserPlus, Radio
 } from 'lucide-react';
 
 function ServerDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { refresh } = useApi();
+  const { refresh, servers } = useApi();
   const { connected, joinServer, serverOutputs, addServerOutput } = useSocket();
   
   const [server, setServer] = useState(null);
@@ -29,6 +29,7 @@ function ServerDetail() {
   const [actions, setActions] = useState({});
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [updateVersion, setUpdateVersion] = useState('latest');
+  const [updateVersions, setUpdateVersions] = useState([]);
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(false);
   const [playerAccess, setPlayerAccess] = useState([]);
   const [selectedAllowPlayer, setSelectedAllowPlayer] = useState('');
@@ -39,6 +40,11 @@ function ServerDetail() {
   const [modMessage, setModMessage] = useState(null);
   const [restartScheduling, setRestartScheduling] = useState(false);
   const [updateError, setUpdateError] = useState('');
+  const [lanBusy, setLanBusy] = useState(false);
+  const [lanError, setLanError] = useState('');
+  const [lanMessage, setLanMessage] = useState('');
+  const [lanConflict, setLanConflict] = useState(null);
+  const [lanRestartMode, setLanRestartMode] = useState('immediate');
   const terminalRef = useRef(null);
   const terminalOutput = serverOutputs[String(id)] || [];
 
@@ -107,6 +113,66 @@ function ServerDetail() {
       setAccessMessage({ type: 'error', text: err.response?.data?.error || err.message });
     } finally {
       setAccessBusy(false);
+    }
+  };
+
+  const applyLanBroadcast = async (payload) => {
+    setLanBusy(true);
+    setLanError('');
+    try {
+      const res = await serverApi.setLanBroadcast(id, payload);
+      setLanConflict(null);
+      if (res.data?.pending) {
+        setLanMessage(res.data.message);
+      } else if (res.data?.native) {
+        setLanMessage('This server already uses UDP 19132, so consoles on the same LAN can see it without a proxy.');
+      } else if (payload.enabled) {
+        setLanMessage('LAN listing is on. Xbox, PlayStation, Windows, iOS, and Android can find this server under Friends → LAN Games. Nintendo Switch still needs Bedrock Connect.');
+      } else {
+        setLanMessage('');
+      }
+      await loadServer();
+      await refresh();
+    } catch (err) {
+      if (err.response?.status === 409 && err.response.data?.conflict) {
+        setLanConflict(err.response.data.conflict);
+        setLanError(err.response.data.error || '');
+        return;
+      }
+      setLanError(err.response?.data?.error || err.message || 'Failed to update LAN listing');
+    } finally {
+      setLanBusy(false);
+    }
+  };
+
+  const beginLanToggle = async () => {
+    const lan = server?.stats?.lan || server?.lan || {};
+    if (server?.kind === 'bedrock_connect' || lan.native) return;
+    if (servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting'))) return;
+    setLanError('');
+    setLanMessage('');
+    if (lan.enabled) {
+      await applyLanBroadcast({ enabled: false });
+      return;
+    }
+    setLanBusy(true);
+    try {
+      const res = await serverApi.previewLanBroadcast(id);
+      const preview = res.data;
+      if (!preview.allowed) {
+        setLanError(preview.message);
+        return;
+      }
+      if (preview.conflict) {
+        setLanRestartMode('immediate');
+        setLanConflict(preview.conflict);
+        return;
+      }
+      await applyLanBroadcast({ enabled: true });
+    } catch (err) {
+      setLanError(err.response?.data?.error || err.message || 'Failed to update LAN listing');
+    } finally {
+      setLanBusy(false);
     }
   };
 
@@ -207,11 +273,20 @@ function ServerDetail() {
     }
   };
 
-  const openUpdateModal = () => {
-    if (server?.kind === 'bedrock_connect') return;
+  const openUpdateModal = async () => {
     setUpdateError('');
     setUpdateVersion('latest');
     setShowUpdateModal(true);
+    if (server?.kind === 'bedrock_connect') {
+      try {
+        const res = await serverApi.bedrockConnectVersions();
+        setUpdateVersions((res.data?.stored || []).map(item => item.tag).filter(Boolean));
+      } catch {
+        setUpdateVersions([]);
+      }
+      return;
+    }
+    setUpdateVersions(['1.20.80', '1.20.70', '1.20.60']);
   };
 
   const handleWarnedRestart = async () => {
@@ -279,13 +354,18 @@ function ServerDetail() {
   }
 
   const isBC = server.kind === 'bedrock_connect';
+  const lan = server.stats?.lan || server.lan || {};
+  const lanOn = Boolean(lan.native || lan.enabled);
+  const bcRunning = servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting'));
+  const lanLocked = isBC || lan.native || bcRunning;
+  const connectLabel = server.connectAddress || `Port ${server.port}`;
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
       {/* Header */}
       {isBC && (
         <div className="mb-4 p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
-          Bedrock Connect only supports start, stop, and restart. Console commands, port, settings, players, and mods do not apply.
+          Bedrock Connect supports start, stop, restart, JAR updates, and auto-update. Console commands, port, players, and mods do not apply.
         </div>
       )}
       {location.state?.message && (
@@ -296,6 +376,16 @@ function ServerDetail() {
       {error && (
         <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-2 text-sm text-red-400">
           <AlertCircle className="w-4 h-4" /> {error}
+        </div>
+      )}
+      {lanError && (
+        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-2 text-sm text-red-400">
+          <AlertCircle className="w-4 h-4" /> {lanError}
+        </div>
+      )}
+      {lanMessage && (
+        <div className="mb-4 p-3 bg-green-500/10 border border-green-500/30 rounded-lg flex items-center gap-2 text-sm text-green-400">
+          <Check className="w-4 h-4" /> {lanMessage}
         </div>
       )}
       {server.pending_restart === 1 && (
@@ -333,18 +423,27 @@ function ServerDetail() {
                   Console list
                 </span>
               )}
+              {lan.active && !lan.native && !isBC && (
+                <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 border border-sky-500/30">
+                  LAN
+                </span>
+              )}
+              {lan.native && !isBC && (
+                <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 border border-sky-500/30">
+                  LAN native
+                </span>
+              )}
             </div>
             <p className="text-mc-textMuted mt-1">
-              v{server.version} • {server.connectAddress || `Port ${server.port}`} • {server.gamemode} • {server.difficulty}
+              v{server.version} • {connectLabel} • {server.gamemode} • {server.difficulty}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={openUpdateModal}
-            disabled={isBC}
             className="btn btn-secondary text-sm"
-            title={isBC ? 'Bedrock Connect updates are managed automatically' : 'Update server'}
+            title="Update server"
           >
             <Download className="w-4 h-4" />
             Update
@@ -358,6 +457,57 @@ function ServerDetail() {
           </button>
         </div>
       </div>
+
+      {!isBC && (
+        <div className="card mb-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="font-semibold text-white flex items-center gap-2">
+                <Radio className="w-4 h-4 text-sky-400" />
+                Console LAN listing
+              </h2>
+              <p className="text-sm text-mc-textMuted mt-1">
+                Show this server under Friends → LAN Games on Xbox, PlayStation, Windows, iOS, and Android.
+                Nintendo Switch is not supported by this method; use Bedrock Connect for Switch.
+              </p>
+              {lan.native && (
+                <p className="text-xs text-sky-300 mt-2">
+                  This server already uses UDP 19132, so consoles on the same LAN can see it without a proxy.
+                </p>
+              )}
+              {lan.active && lan.proxyPort && !lan.native && (
+                <p className="text-xs text-mc-textMuted mt-2">
+                  Proxy on UDP {lan.proxyPort}. Consoles discover it on UDP {lan.discoveryPort || 19132}.
+                </p>
+              )}
+              {lan.error && (
+                <p className="text-xs text-red-400 mt-2">{lan.error}</p>
+              )}
+            </div>
+            <button
+              onClick={beginLanToggle}
+              disabled={lanLocked || lanBusy}
+              className={`btn text-sm flex-shrink-0 ${
+                lanLocked
+                  ? 'bg-mc-surfaceLight text-mc-textMuted'
+                  : lanOn
+                    ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 hover:bg-sky-500/30'
+                    : 'btn-secondary'
+              }`}
+              title={lanLocked
+                ? (isBC
+                  ? 'Bedrock Connect is not a LAN game'
+                  : lan.native
+                    ? 'Already visible on LAN via UDP 19132'
+                    : 'Stop or remove Bedrock Connect to start LAN proxy.')
+                : (lanOn ? 'Turn off LAN listing' : 'Advertise this server as a LAN game')}
+            >
+              <Radio className="w-4 h-4" />
+              {lanBusy ? 'Working...' : lanOn ? 'LAN on' : 'LAN off'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Quick Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -755,8 +905,9 @@ function ServerDetail() {
             <h2 className="font-semibold text-white mb-3">Server Info</h2>
             <div className="space-y-2 text-sm">
               <InfoRow label="Version" value={server.version} />
-              <InfoRow label="Address" value={server.connectAddress || `${server.connectHost || '127.0.0.1'}:${server.port}`} />
+              <InfoRow label="Address" value={connectLabel} />
               <InfoRow label="Port" value={server.pending_port ? `${server.port} → ${server.pending_port}` : server.port} />
+              <InfoRow label="LAN listing" value={isBC ? 'n/a' : (lan.native ? 'Native (19132)' : (lan.active && lan.enabled) ? 'On' : (lan.enabled && bcRunning) ? 'Paused' : 'Off')} />
               <InfoRow label="Max Players" value={server.max_players} />
               <InfoRow label="Game Mode" value={server.gamemode} />
               <InfoRow label="Difficulty" value={server.difficulty} />
@@ -773,7 +924,9 @@ function ServerDetail() {
           <div className="card max-w-md w-full animate-slide-up">
             <h3 className="text-lg font-semibold text-white mb-4">Update Server</h3>
             <p className="text-sm text-mc-textMuted mb-4">
-              This will update the server binary while preserving your addons, worlds, and configuration.
+              {isBC
+                ? 'This will update the Bedrock Connect JAR. Choose Latest or a stored version. Older JARs stay on disk if they drop off this list.'
+                : 'This will update the server binary while preserving your addons, worlds, and configuration.'}
             </p>
             {updateError && (
               <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
@@ -788,9 +941,9 @@ function ServerDetail() {
                 className="input"
               >
                 <option value="latest">Latest</option>
-                <option value="1.20.80">1.20.80</option>
-                <option value="1.20.70">1.20.70</option>
-                <option value="1.20.60">1.20.60</option>
+                {updateVersions.map((version) => (
+                  <option key={version} value={version}>{version}</option>
+                ))}
               </select>
             </div>
             <div className="flex items-center gap-3">
@@ -803,6 +956,77 @@ function ServerDetail() {
               </button>
               <button
                 onClick={() => setShowUpdateModal(false)}
+                className="btn btn-secondary"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {lanConflict && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="card max-w-lg w-full animate-slide-up">
+            <h3 className="text-lg font-semibold text-white mb-3">Move server off port 19132?</h3>
+            <p className="text-sm text-mc-textMuted mb-4">
+              Consoles look for LAN games on UDP <span className="font-mono text-white">19132</span>.
+              <span className="text-white"> {lanConflict.serverName}</span> currently uses that port and will be moved to{' '}
+              <span className="font-mono text-white">{lanConflict.nextPort}</span>.
+              That server will also be listed on LAN so it does not disappear from consoles.
+            </p>
+            {lanConflict.status === 'running' ? (
+              <div className="mb-4 space-y-2">
+                <p className="text-sm font-medium text-white">When should that server restart?</p>
+                <label className="flex items-start gap-3 p-3 bg-mc-darker rounded-lg cursor-pointer">
+                  <input
+                    type="radio"
+                    name="detail-lan-restart-mode"
+                    value="immediate"
+                    checked={lanRestartMode === 'immediate'}
+                    onChange={() => setLanRestartMode('immediate')}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span className="text-sm text-white">Restart immediately</span>
+                    <span className="block text-xs text-mc-textMuted">Players will be disconnected now, then LAN listing starts.</span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-3 p-3 bg-mc-darker rounded-lg cursor-pointer">
+                  <input
+                    type="radio"
+                    name="detail-lan-restart-mode"
+                    value="warned"
+                    checked={lanRestartMode === 'warned'}
+                    onChange={() => setLanRestartMode('warned')}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span className="text-sm text-white">Warn players and restart in 5 minutes</span>
+                    <span className="block text-xs text-mc-textMuted">LAN listing starts after that restart finishes.</span>
+                  </span>
+                </label>
+              </div>
+            ) : (
+              <p className="text-sm text-mc-textMuted mb-4">
+                That server is stopped, so the port can be changed immediately without a restart.
+              </p>
+            )}
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => applyLanBroadcast({
+                  enabled: true,
+                  acceptConflict: true,
+                  restartMode: lanConflict.status === 'running' ? lanRestartMode : 'immediate',
+                })}
+                disabled={lanBusy}
+                className="btn bg-sky-500 hover:bg-sky-600 text-white flex-1"
+              >
+                {lanBusy ? 'Working...' : 'Accept and continue'}
+              </button>
+              <button
+                onClick={() => setLanConflict(null)}
+                disabled={lanBusy}
                 className="btn btn-secondary"
               >
                 Cancel

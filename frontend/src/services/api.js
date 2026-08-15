@@ -19,12 +19,14 @@ export const serverApi = {
   restartWithWarning: (id) => api.post(`/servers/${id}/restart-with-warning`),
   cancelWarnedRestart: (id) => api.delete(`/servers/${id}/restart-with-warning`),
   command: (id, cmd) => api.post(`/servers/${id}/command`, { command: cmd }),
-  updateVersion: (id, version) => api.post(`/servers/${id}/update`, { version }),
+  updateVersion: (id, version) => api.post(`/servers/${id}/update`, { version }, { timeout: 120000 }),
   checkUpdates: () => api.get('/servers/check-updates'),
   previewBedrockConnect: () => api.get('/servers/bedrock-connect/preview'),
   createBedrockConnect: (data) => api.post('/servers/bedrock-connect', data, { timeout: 120000 }),
   bedrockConnectVersions: () => api.get('/servers/bedrock-connect/versions'),
   checkBedrockConnectUpdates: () => api.post('/servers/bedrock-connect/check-updates', {}, { timeout: 120000 }),
+  previewLanBroadcast: (id) => api.get(`/servers/${id}/lan-broadcast`),
+  setLanBroadcast: (id, data) => api.put(`/servers/${id}/lan-broadcast`, data, { timeout: 120000 }),
   
   // Auto-update management
   getAutoUpdate: (id) => api.get(`/servers/${id}/auto-update`),
