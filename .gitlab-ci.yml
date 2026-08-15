@@ -1,0 +1,24 @@
+image: node:20-bookworm
+
+stages:
+  - verify
+
+verify:
+  stage: verify
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends python3 make g++
+  script:
+    - npm ci
+    - npm --prefix frontend ci
+    - npm run build
+    - npm test
+  cache:
+    key:
+      files:
+        - package-lock.json
+        - frontend/package-lock.json
+    paths:
+      - .npm/
+  variables:
+    npm_config_cache: "$CI_PROJECT_DIR/.npm"

@@ -1,0 +1,56 @@
+# ============================================
+# Minecraft Bedrock Server Manager
+# Systemd Service File
+# ============================================
+#
+# Install:
+#   1. Copy this file to /etc/systemd/system/mc-manager.service
+#   2. Edit the paths and user as needed
+#   3. Run: sudo systemctl daemon-reload
+#   4. Run: sudo systemctl enable mc-manager
+#   5. Run: sudo systemctl start mc-manager
+#
+# Commands:
+#   sudo systemctl status mc-manager
+#   sudo systemctl stop mc-manager
+#   sudo systemctl restart mc-manager
+#   journalctl -u mc-manager -f
+# ============================================
+
+[Unit]
+Description=Minecraft Bedrock Server Manager
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mcmanager
+Group=mcmanager
+WorkingDirectory=/opt/mc-manager
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+RestartSec=10
+
+# Environment
+Environment=NODE_ENV=production
+Environment=PORT=3000
+EnvironmentFile=/opt/mc-manager/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mc-manager
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/mc-manager/data
+PrivateTmp=true
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

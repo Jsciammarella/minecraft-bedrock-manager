@@ -1,0 +1,148 @@
+import { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
+import { io } from 'socket.io-client';
+
+const SocketContext = createContext(null);
+
+export function SocketProvider({ children }) {
+  const socketRef = useRef(null);
+  const activeServerRef = useRef(null);
+  const [connected, setConnected] = useState(false);
+  // Store output as arrays of lines per server for proper rendering
+  const [serverOutputs, setServerOutputs] = useState({});
+
+  useEffect(() => {
+    const socket = io({
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 10,
+    });
+
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      setConnected(true);
+      if (activeServerRef.current != null) {
+        socket.emit('join-server', activeServerRef.current);
+      }
+    });
+
+    socket.on('disconnect', () => {
+      setConnected(false);
+    });
+
+    socket.on('server-status', (data) => {
+      // Trigger a refresh in parent components via custom event
+      window.dispatchEvent(new CustomEvent('server-status-change', { detail: data }));
+    });
+
+    socket.on('server-output', (data) => {
+      // Append new output as individual lines to the server's output array
+      // Cap at MAX_OUTPUT_LINES to prevent unbounded memory growth
+      const MAX_OUTPUT_LINES = 2000;
+      setServerOutputs(prev => {
+        const existing = prev[data.serverId] || [];
+        // Split incoming data into lines
+        const newLines = data.data.split('\n').filter(line => line.trim().length > 0);
+        const combined = [...existing, ...newLines];
+        // Trim to max lines if exceeded
+        const trimmed = combined.length > MAX_OUTPUT_LINES
+          ? combined.slice(combined.length - MAX_OUTPUT_LINES)
+          : combined;
+        return {
+          ...prev,
+          [data.serverId]: trimmed,
+        };
+      });
+    });
+
+    socket.on('server-updated', (data) => {
+      // Notify about auto-update events
+      window.dispatchEvent(new CustomEvent('server-auto-updated', { detail: data }));
+      // Also trigger a general status change to refresh data
+      window.dispatchEvent(new CustomEvent('server-status-change', { detail: data }));
+    });
+
+    return () => {
+      socket.close();
+    };
+  }, []);
+
+  // Expose the latest output line per server for the component that needs it
+  // This is a compatibility layer - the actual outputs are stored in serverOutputs
+  const serverOutput = {};
+  Object.entries(serverOutputs).forEach(([serverId, lines]) => {
+    // The last line is what components poll for
+    serverOutput[serverId] = lines[lines.length - 1] || '';
+  });
+
+  const sendCommand = useCallback((serverId, command) => {
+    if (socketRef.current) {
+      socketRef.current.emit('send-command', { serverId, command });
+    }
+  }, []);
+
+  const startServer = useCallback((serverId) => {
+    if (socketRef.current) {
+      socketRef.current.emit('start-server', serverId);
+    }
+  }, []);
+
+  const stopServer = useCallback((serverId) => {
+    if (socketRef.current) {
+      socketRef.current.emit('stop-server', serverId);
+    }
+  }, []);
+
+  const joinServer = useCallback((serverId) => {
+    if (socketRef.current) {
+      if (activeServerRef.current != null && String(activeServerRef.current) !== String(serverId)) {
+        socketRef.current.emit('leave-server', activeServerRef.current);
+      }
+      activeServerRef.current = serverId;
+      socketRef.current.emit('join-server', serverId);
+    }
+  }, []);
+
+  const addServerOutput = useCallback((serverId, line) => {
+    setServerOutputs(prev => {
+      const key = String(serverId);
+      const existing = prev[key] || [];
+      return {
+        ...prev,
+        [key]: [...existing, line].slice(-2000),
+      };
+    });
+  }, []);
+
+  // Clear output for a specific server (useful when switching servers)
+  const clearOutput = useCallback((serverId) => {
+    setServerOutputs(prev => ({
+      ...prev,
+      [serverId]: [],
+    }));
+  }, []);
+
+  return (
+    <SocketContext.Provider value={{
+      socket: socketRef.current,
+      connected,
+      serverOutput,
+      serverOutputs,
+      sendCommand,
+      startServer,
+      stopServer,
+      joinServer,
+      addServerOutput,
+      clearOutput,
+    }}>
+      {children}
+    </SocketContext.Provider>
+  );
+}
+
+export function useSocket() {
+  const context = useContext(SocketContext);
+  if (!context) throw new Error('useSocket must be used within SocketProvider');
+  return context;
+}

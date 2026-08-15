@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Generated output
+public/
+frontend/public/
+coverage/
+dist/
+
+# Runtime data (worlds, binaries, database, uploads, mods, and logs)
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.swp
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test output
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.nyc_output/

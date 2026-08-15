@@ -1,0 +1,52 @@
+# ============================================
+# Minecraft Bedrock Server Manager
+# Docker Compose Configuration
+# ============================================
+
+services:
+  mc-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mc-server-manager
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}/tcp"
+      - "${BEDROCK_PORT:-19132}:${BEDROCK_PORT:-19132}/udp"
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=${PORT:-3000}
+      - CURSEFORGE_API_KEY=${CURSEFORGE_API_KEY:-}
+      - AUTO_UPDATE_CHECK_INTERVAL=${AUTO_UPDATE_CHECK_INTERVAL:-86400}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - TZ=${TZ:-UTC}
+    volumes:
+      # Persistent data - server worlds, configs, mods
+      - mc-data:/app/data
+      # Optional: mount custom logs directory
+      - mc-logs:/app/data/logs
+    networks:
+      - mc-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+volumes:
+  mc-data:
+    driver: local
+  mc-logs:
+    driver: local
+
+networks:
+  mc-network:
+    driver: bridge

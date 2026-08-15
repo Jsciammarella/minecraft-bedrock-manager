@@ -1,0 +1,300 @@
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { 
+  Server, Plus, Play, Square, RotateCcw, Terminal, Users, 
+  Clock, ArrowUpRight, Trash2, Settings, Activity, RefreshCw, AlertTriangle
+} from 'lucide-react';
+import { serverApi } from '../services/api';
+import { useApi } from '../context/ApiContext';
+import { useSocket } from '../context/SocketContext';
+
+function Dashboard() {
+  const navigate = useNavigate();
+  const { servers, loading, refresh } = useApi();
+  const { connected } = useSocket();
+  const [actions, setActions] = useState({});
+
+  const handleAction = async (serverId, action) => {
+    setActions(prev => ({ ...prev, [`${serverId}-${action}`]: true }));
+    try {
+      switch (action) {
+        case 'start':
+          await serverApi.start(serverId);
+          break;
+        case 'stop':
+          await serverApi.stop(serverId);
+          break;
+        case 'restart':
+          await serverApi.restart(serverId);
+          break;
+        default:
+          break;
+      }
+    } catch (err) {
+      console.error(`Failed to ${action} server:`, err);
+    } finally {
+      setActions(prev => ({ ...prev, [`${serverId}-${action}`]: false }));
+      refresh();
+    }
+  };
+
+  const handleDelete = async (serverId, serverName) => {
+    if (!confirm(`Are you sure you want to delete "${serverName}"? This will remove all server data.`)) return;
+    try {
+      await serverApi.delete(serverId);
+      refresh();
+    } catch (err) {
+      console.error('Failed to delete server:', err);
+    }
+  };
+
+  const getStatusBadge = (status) => {
+    switch (status) {
+      case 'running':
+        return <span className="badge badge-success"><span className="w-1.5 h-1.5 bg-green-400 rounded-full mr-1.5" />Online</span>;
+      case 'starting':
+        return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Starting</span>;
+      case 'stopped':
+        return <span className="badge badge-danger"><span className="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5" />Offline</span>;
+      default:
+        return <span className="badge badge-info">{status}</span>;
+    }
+  };
+
+  if (loading && servers.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-2 border-mc-accent border-t-transparent rounded-full animate-spin" />
+          <p className="text-sm text-mc-textMuted">Loading servers...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const activeCount = servers.filter(s => s.status === 'running').length;
+  const totalPlayers = servers.reduce((sum, s) => sum + (s.stats?.onlinePlayers || 0), 0);
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Dashboard</h1>
+          <p className="text-mc-textMuted mt-1">Manage your Minecraft Bedrock servers</p>
+          <p className="text-xs text-mc-textMuted mt-1">Automatically updated every 5 minutes.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => refresh()}
+            disabled={loading}
+            className="btn btn-secondary"
+            title="Refresh dashboard now"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+          <button
+            onClick={() => navigate('/servers/new')}
+            className="btn btn-primary"
+          >
+            <Plus className="w-4 h-4" />
+            New Server
+          </button>
+        </div>
+      </div>
+
+      {/* Stats Overview */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        <div className="card">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-mc-textMuted">Total Servers</p>
+              <p className="text-2xl font-bold text-white mt-1">{servers.length}</p>
+            </div>
+            <div className="w-10 h-10 bg-blue-500/20 rounded-lg flex items-center justify-center">
+              <Server className="w-5 h-5 text-blue-400" />
+            </div>
+          </div>
+        </div>
+        <div className="card">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-mc-textMuted">Active</p>
+              <p className="text-2xl font-bold text-green-400 mt-1">{activeCount}</p>
+            </div>
+            <div className="w-10 h-10 bg-green-500/20 rounded-lg flex items-center justify-center">
+              <Activity className="w-5 h-5 text-green-400" />
+            </div>
+          </div>
+        </div>
+        <div className="card">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-mc-textMuted">Total Players</p>
+              <p className="text-2xl font-bold text-mc-text mt-1">{totalPlayers}</p>
+            </div>
+            <div className="w-10 h-10 bg-purple-500/20 rounded-lg flex items-center justify-center">
+              <Users className="w-5 h-5 text-purple-400" />
+            </div>
+          </div>
+        </div>
+        <div className="card">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-mc-textMuted">Connection</p>
+              <p className={`text-sm font-bold mt-1 ${connected ? 'text-green-400' : 'text-red-400'}`}>
+                {connected ? 'Connected' : 'Disconnected'}
+              </p>
+            </div>
+            <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+              connected ? 'bg-green-500/20' : 'bg-red-500/20'
+            }`}>
+              <Clock className={`w-5 h-5 ${connected ? 'text-green-400' : 'text-red-400'}`} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Server List */}
+      {servers.length === 0 ? (
+        <div className="card text-center py-16">
+          <Server className="w-16 h-16 text-mc-textMuted mx-auto mb-4" />
+          <h3 className="text-lg font-semibold text-white mb-2">No servers yet</h3>
+          <p className="text-mc-textMuted mb-6">Create your first Minecraft Bedrock server to get started</p>
+          <button
+            onClick={() => navigate('/servers/new')}
+            className="btn btn-primary"
+          >
+            <Plus className="w-4 h-4" />
+            Create Server
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {servers.map((server) => (
+            <div
+              key={server.id}
+              className="card animate-slide-up cursor-pointer hover:border-mc-accent/40 transition-colors"
+              onClick={() => navigate(`/servers/${server.id}`)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') navigate(`/servers/${server.id}`);
+              }}
+              role="link"
+              tabIndex={0}
+              aria-label={`View ${server.name} details`}
+            >
+              {/* Server Header */}
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className={`w-3 h-3 rounded-full ${
+                    server.status === 'running' ? 'bg-green-400 animate-pulse-glow' : 
+                    server.status === 'starting' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'
+                  }`} />
+                  <div>
+                    <h3 className="font-semibold text-white">{server.name}</h3>
+                    <p className="text-xs text-mc-textMuted">v{server.version} • Port {server.port}</p>
+                  </div>
+                </div>
+                {getStatusBadge(server.status)}
+              </div>
+
+              {server.pending_restart === 1 && (
+                <div className="mb-4 p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>
+                    Restart required. {server.pending_restart_reason || 'Changes are pending'} and will apply after the next restart.
+                  </span>
+                </div>
+              )}
+
+              {/* Server Info */}
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <div className="text-center p-2 bg-mc-darker rounded-lg">
+                  <Users className="w-4 h-4 text-mc-textMuted mx-auto mb-1" />
+                  <p className="text-sm font-medium text-white">{server.stats?.onlinePlayers || 0}</p>
+                  <p className="text-xs text-mc-textMuted">Players</p>
+                </div>
+                <div className="text-center p-2 bg-mc-darker rounded-lg">
+                  <Clock className="w-4 h-4 text-mc-textMuted mx-auto mb-1" />
+                  <p className="text-sm font-medium text-white">{server.stats?.uptime || '0m'}</p>
+                  <p className="text-xs text-mc-textMuted">Uptime</p>
+                </div>
+                <div className="text-center p-2 bg-mc-darker rounded-lg">
+                  <PackageIcon className="w-4 h-4 text-mc-textMuted mx-auto mb-1" />
+                  <p className="text-sm font-medium text-white">{server.stats?.installedMods || 0}</p>
+                  <p className="text-xs text-mc-textMuted">Mods</p>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center gap-2">
+                {server.status !== 'running' && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'start'); }}
+                    disabled={actions[`${server.id}-start`]}
+                    className="btn btn-primary flex-1 text-sm"
+                  >
+                    <Play className="w-3.5 h-3.5" />
+                    {actions[`${server.id}-start`] ? 'Starting...' : 'Start'}
+                  </button>
+                )}
+                {server.status === 'running' && (
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'stop'); }}
+                      disabled={actions[`${server.id}-stop`]}
+                      className="btn btn-danger flex-1 text-sm"
+                    >
+                      <Square className="w-3.5 h-3.5" />
+                      {actions[`${server.id}-stop`] ? 'Stopping...' : 'Stop'}
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'restart'); }}
+                      disabled={actions[`${server.id}-restart`]}
+                      className="btn btn-secondary text-sm"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={(e) => { e.stopPropagation(); navigate(`/servers/${server.id}`); }}
+                  className="btn btn-secondary text-sm"
+                  title="View Details"
+                >
+                  <Terminal className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); navigate(`/servers/${server.id}/properties`); }}
+                  className="btn btn-secondary text-sm"
+                  title="Properties"
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleDelete(server.id, server.name); }}
+                  className="btn btn-secondary text-sm text-mc-danger hover:bg-red-500/20"
+                  title="Delete Server"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PackageIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M16.5 9.4 7.55 4.24" />
+      <path d="M3 7.36v9.26c0 .48.35.9.83.98l8.22 1.53c.5.09 1.01-.04 1.38-.37l4.06-3.63c.2-.18.35-.42.42-.68l2.5-10.33c.18-.74-.37-1.49-1.14-1.6L9.8 2.97a2 2 0 0 0-1.38.37L4.36 6.55A.5.5 0 0 0 3 7.36Z" />
+    </svg>
+  );
+}
+
+export default Dashboard;

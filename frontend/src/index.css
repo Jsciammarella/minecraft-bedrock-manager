@@ -1,0 +1,139 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-mc-surfaceLight;
+  }
+  
+  body {
+    @apply bg-mc-dark text-mc-text antialiased;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    @apply bg-mc-darker;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    @apply bg-mc-surfaceLight rounded;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-mc-textMuted;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium 
+           transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 
+           focus:ring-offset-mc-dark disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  
+  .btn-primary {
+    @apply bg-mc-accent text-mc-darker hover:bg-mc-accentHover focus:ring-mc-accent;
+  }
+  
+  .btn-secondary {
+    @apply bg-mc-surface text-mc-text hover:bg-mc-surfaceLight focus:ring-mc-textMuted;
+  }
+  
+  .btn-danger {
+    @apply bg-mc-danger text-white hover:bg-red-600 focus:ring-mc-danger;
+  }
+  
+  .btn-warning {
+    @apply bg-mc-warning text-mc-darker hover:bg-amber-600 focus:ring-mc-warning;
+  }
+  
+  .card {
+    @apply bg-mc-surface rounded-xl border border-mc-surfaceLight p-6 
+           shadow-lg shadow-black/20;
+  }
+  
+  .input {
+    @apply w-full px-4 py-2.5 bg-mc-darker border border-mc-surfaceLight rounded-lg 
+           text-mc-text placeholder-mc-textMuted focus:outline-none focus:ring-2 
+           focus:ring-mc-accent focus:border-transparent transition-all;
+  }
+  
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+  
+  .badge-success {
+    @apply bg-green-500/20 text-green-400;
+  }
+  
+  .badge-danger {
+    @apply bg-red-500/20 text-red-400;
+  }
+  
+  .badge-warning {
+    @apply bg-amber-500/20 text-amber-400;
+  }
+  
+  .badge-info {
+    @apply bg-blue-500/20 text-blue-400;
+  }
+  
+  .toggle {
+    @apply relative inline-flex h-6 w-11 items-center rounded-full transition-colors;
+  }
+  
+  .toggle-active {
+    @apply bg-mc-accent;
+  }
+  
+  .toggle-inactive {
+    @apply bg-mc-surfaceLight;
+  }
+  
+  .toggle-thumb {
+    @apply inline-block h-4 w-4 rounded-full bg-white transition-transform;
+  }
+}
+
+/* Animations */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(74, 222, 128, 0); }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s infinite;
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
+}
+
+/* Terminal styles */
+.terminal {
+  @apply bg-mc-darker rounded-lg p-4 font-mono text-sm;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.terminal-output {
+  @apply text-mc-textMuted whitespace-pre-wrap break-words;
+}
+
+.terminal-input {
+  @apply bg-transparent text-mc-text outline-none w-full;
+}
+
+.terminal-prompt {
+  @apply text-mc-accent;
+}

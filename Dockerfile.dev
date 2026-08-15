@@ -1,0 +1,38 @@
+# ============================================
+# Minecraft Bedrock Server Manager
+# Development Dockerfile with hot reload
+# ============================================
+
+FROM node:20-bookworm-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    g++ \
+    make \
+    curl \
+    wget \
+    tar \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy package files
+COPY package.json ./
+COPY frontend/package.json ./frontend/
+
+# Install all dependencies (including dev)
+RUN npm install && cd frontend && npm install
+
+# Create data directories
+RUN mkdir -p /app/data/servers /app/data/mods /app/data/logs /app/data/uploads
+
+# Copy source (mounted in development)
+COPY server/ ./server/
+COPY frontend/ ./frontend/
+
+EXPOSE 3000 5173
+
+# Development mode with nodemon for backend
+# Frontend uses Vite dev server with HMR
+CMD ["sh", "-c", "npm run dev & cd frontend && npm run dev -- --host"]
