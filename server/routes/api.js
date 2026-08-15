@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const serverManager = require('../services/serverManager');
+const connectHost = require('../services/connectHost');
 
 // Public API endpoints for external applications
 
@@ -14,12 +15,15 @@ router.get('/overview', async (req, res) => {
       const stats = await serverManager.getServerStats(server.id);
       const players = await serverManager.getOnlinePlayers(server.id);
       
+      const connect = connectHost.attach(server, req);
       result.push({
         id: server.id,
         name: server.name,
         status: server.status,
         version: server.version,
         port: server.port,
+        connectHost: connect.connectHost,
+        connectAddress: connect.connectAddress,
         maxPlayers: server.max_players,
         onlinePlayers: players.length,
         players: players.map(p => ({
@@ -53,12 +57,15 @@ router.get('/server/:id', async (req, res) => {
     const stats = await serverManager.getServerStats(req.params.id);
     const players = await serverManager.getOnlinePlayers(req.params.id);
     
+    const connect = connectHost.attach(server, req);
     res.json({
       id: server.id,
       name: server.name,
       status: server.status,
       version: server.version,
       port: server.port,
+      connectHost: connect.connectHost,
+      connectAddress: connect.connectAddress,
       maxPlayers: server.max_players,
       onlinePlayers: players.length,
       players: players.map(p => ({

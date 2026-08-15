@@ -3,6 +3,7 @@ const router = express.Router();
 const serverManager = require('../services/serverManager');
 const modManager = require('../services/modManager');
 const autoUpdateScheduler = require('../services/autoUpdateScheduler');
+const connectHost = require('../services/connectHost');
 
 // ========== SERVER CRUD ==========
 
@@ -10,10 +11,10 @@ const autoUpdateScheduler = require('../services/autoUpdateScheduler');
 router.get('/', async (req, res) => {
   try {
     const servers = serverManager.getAllServers();
-    const result = await Promise.all(servers.map(async (s) => ({
+    const result = await Promise.all(servers.map(async (s) => connectHost.attach({
       ...s,
       stats: await serverManager.getServerStats(s.id)
-    })));
+    }, req)));
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -30,7 +31,7 @@ router.get('/:id', async (req, res) => {
     const onlinePlayers = await serverManager.getOnlinePlayers(req.params.id);
     const installedMods = await modManager.getInstalledMods(req.params.id);
     
-    res.json({ ...server, stats, onlinePlayers, installedMods });
+    res.json(connectHost.attach({ ...server, stats, onlinePlayers, installedMods }, req));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

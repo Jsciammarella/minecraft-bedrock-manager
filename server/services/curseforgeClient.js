@@ -26,15 +26,20 @@ class CurseForgeClient {
       pageSize = 20,
       page = 1,
       sortBy = 'relevancy',
-      version = ''
+      version = '',
+      offset,
     } = options;
+    const resolvedOffset = offset != null ? Number(offset) : (page - 1) * pageSize;
+    const resolvedPage = Math.floor(Math.max(0, resolvedOffset) / pageSize) + 1;
 
     // Build search URL - CurseForge web scraping fallback
     try {
-      return await this.searchViaAPI(query, { category, pageSize, page, sortBy, version });
+      return await this.searchViaAPI(query, {
+        category, pageSize, page: resolvedPage, sortBy, version, offset: resolvedOffset,
+      });
     } catch (err) {
       logger.warn(`CurseForge API search failed, using web fallback: ${err.message}`);
-      return await this.searchViaWeb(query, { category, pageSize, page, sortBy });
+      return await this.searchViaWeb(query, { category, pageSize, page: resolvedPage, sortBy });
     }
   }
 
@@ -46,7 +51,7 @@ class CurseForgeClient {
     const params = {
       gameId: MINECRAFT_BEDROCK_GAME_ID,
       pageSize: options.pageSize,
-      index: (options.page - 1) * options.pageSize,
+      index: options.offset != null ? options.offset : (options.page - 1) * options.pageSize,
       sortField: this.getSortField(options.sortBy),
       sortOrder: 'desc',
     };

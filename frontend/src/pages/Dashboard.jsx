@@ -193,7 +193,9 @@ function Dashboard() {
                   }`} />
                   <div>
                     <h3 className="font-semibold text-white">{server.name}</h3>
-                    <p className="text-xs text-mc-textMuted">v{server.version} • Port {server.port}</p>
+                    <p className="text-xs text-mc-textMuted" title={server.connectAddress || `Port ${server.port}`}>
+                      v{server.version} • <span className="font-mono text-mc-text">{server.connectAddress || `Port ${server.port}`}</span>
+                    </p>
                   </div>
                 </div>
                 {getStatusBadge(server.status)}

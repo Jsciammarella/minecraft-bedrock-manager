@@ -307,7 +307,9 @@ function ServerDetail() {
               <h1 className="text-2xl font-bold text-white">{server.name}</h1>
               {getStatusBadge(server.status)}
             </div>
-            <p className="text-mc-textMuted mt-1">v{server.version} • Port {server.port} • {server.gamemode} • {server.difficulty}</p>
+            <p className="text-mc-textMuted mt-1">
+              v{server.version} • {server.connectAddress || `Port ${server.port}`} • {server.gamemode} • {server.difficulty}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -720,6 +722,7 @@ function ServerDetail() {
             <h2 className="font-semibold text-white mb-3">Server Info</h2>
             <div className="space-y-2 text-sm">
               <InfoRow label="Version" value={server.version} />
+              <InfoRow label="Address" value={server.connectAddress || `${server.connectHost || '127.0.0.1'}:${server.port}`} />
               <InfoRow label="Port" value={server.port} />
               <InfoRow label="Max Players" value={server.max_players} />
               <InfoRow label="Game Mode" value={server.gamemode} />

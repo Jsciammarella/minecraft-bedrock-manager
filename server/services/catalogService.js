@@ -35,21 +35,13 @@ async function searchMods(query = '', options = {}) {
   const wantCurseforge = source === 'all' || source === 'curseforge';
   const wantGit = source === 'all' || source === 'git';
 
-  if (wantCurseforge) {
-    try {
-      curseforgeResult = await curseforge.searchMods(query, options);
-    } catch (err) {
-      errors.push({ source: 'curseforge', error: err.message });
-      if (source === 'curseforge') throw err;
-    }
-  }
-
   if (wantGit && available.git) {
     try {
+      const start = Math.max(0, (page - 1) * pageSize);
       gitResult = await gitCatalog.searchMods(query, {
         ...options,
         page: source === 'git' ? page : 1,
-        pageSize: source === 'git' ? pageSize : 500,
+        pageSize: source === 'git' ? pageSize : start + pageSize,
       });
     } catch (err) {
       errors.push({ source: 'git', error: err.message });
@@ -60,13 +52,41 @@ async function searchMods(query = '', options = {}) {
   if (source === 'git') {
     return withMeta(gitResult, errors, available);
   }
+
   if (source === 'curseforge') {
+    try {
+      curseforgeResult = await curseforge.searchMods(query, options);
+    } catch (err) {
+      errors.push({ source: 'curseforge', error: err.message });
+      throw err;
+    }
     return withMeta(markSource(curseforgeResult, 'curseforge'), errors, available);
   }
 
-  const gitResults = gitResult.results || [];
+  const gitTotal = gitResult.total || 0;
+  const start = Math.max(0, (page - 1) * pageSize);
+  const gitSlice = (gitResult.results || []).slice(start, start + pageSize);
+  const remaining = pageSize - gitSlice.length;
+  const cfOffset = Math.max(0, start - gitTotal);
+
+  if (wantCurseforge) {
+    try {
+      const cfPageSize = remaining > 0 ? remaining : 1;
+      const cfOffsetActual = remaining > 0 ? cfOffset : 0;
+      curseforgeResult = await curseforge.searchMods(query, {
+        ...options,
+        offset: cfOffsetActual,
+        pageSize: cfPageSize,
+      });
+      if (remaining === 0) {
+        curseforgeResult = { ...curseforgeResult, results: [] };
+      }
+    } catch (err) {
+      errors.push({ source: 'curseforge', error: err.message });
+    }
+  }
+
   const cfResults = (curseforgeResult.results || []).map(item => ({ ...item, source: item.source || 'curseforge' }));
-  const merged = page <= 1 ? [...gitResults, ...cfResults] : cfResults;
 
   let warning;
   if (!available.git && errors.some(item => item.source === 'curseforge')) {
@@ -76,8 +96,8 @@ async function searchMods(query = '', options = {}) {
   }
 
   return withMeta({
-    results: merged.slice(0, pageSize),
-    total: (gitResult.total || 0) + (curseforgeResult.total || 0),
+    results: [...gitSlice, ...cfResults],
+    total: gitTotal + (curseforgeResult.total || 0),
     page,
   }, errors, available, warning);
 }

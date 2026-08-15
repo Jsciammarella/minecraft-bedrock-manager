@@ -190,7 +190,11 @@ Do not store secrets in the catalog repository. Pack archives are treated as unt
 
 ## Size and Git LFS
 
-Keep individual packs within your Git host's file-size limit. If the catalog uses Git LFS, install `git-lfs` on the manager host (the Docker image includes it) so thumbnails and packs are real files rather than pointer files.
+Keep individual packs within your Git host's file-size limit. Repositories that do not use Git LFS clone and index as normal Git; the manager skips `git lfs pull` unless pointer files are present.
+
+If the catalog uses Git LFS, install `git-lfs` on the manager host (the Docker image includes it) so thumbnails and packs are real files rather than pointer files.
+
+A successful Git clone is not enough for LFS. The manager fetches LFS objects with the same catalog token after clone. If a pack downloads at about 0.1 KB, the file is still an LFS pointer (`version https://git-lfs.github.com/spec/v1`) and the real object was not pulled.
 
 ## Troubleshooting
 
@@ -202,4 +206,5 @@ Keep individual packs within your Git host's file-size limit. If the catalog use
 | Sync succeeds but the catalog is empty | Packs are on the selected branch; subdirectory is correct; files use a supported extension |
 | Git is not installed | Install Git on the host, or rebuild the Docker image that now includes Git |
 | Duplicate Git catalog cards for one pack | A `mod.json` in the folder now wins; refresh the catalog after updating the manager |
-| Thumbnail missing | Put `thumbnail.png` next to `mod.json`. If the repo uses Git LFS, rebuild the Docker image so `git-lfs` is installed, then refresh |
+| Thumbnail missing | Put `thumbnail.png` next to `mod.json`. If the repo uses Git LFS, refresh the catalog after a manager update so LFS objects are pulled with the token |
+| Download file size is ~0.1 KB | The pack is still a Git LFS pointer. Refresh the Git catalog. Confirm `git-lfs` is on the PATH of the manager process and the token can download repository files |

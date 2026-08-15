@@ -11,6 +11,7 @@ const curseforge = require('../server/services/curseforgeClient');
 const gitCatalog = require('../server/services/gitCatalogClient');
 const settingsStore = require('../server/services/settingsStore');
 const modManager = require('../server/services/modManager');
+const connectHost = require('../server/services/connectHost');
 
 async function run() {
   const accessTable = db.prepare(
@@ -145,8 +146,42 @@ async function run() {
   const sorted = gitCatalog.sortMods(gitMods, 'relevancy', 'smoke');
   assert.equal(sorted[0].slug, 'smoke-pack', 'Git catalog relevancy sort did not prefer the query match');
 
+  const pointerDir = path.join(gitRoot, 'addons', 'lfs-pack');
+  fs.mkdirSync(pointerDir, { recursive: true });
+  fs.writeFileSync(path.join(pointerDir, 'mod.json'), JSON.stringify({
+    name: 'LFS Pack',
+    type: 'addon',
+  }));
+  fs.writeFileSync(path.join(pointerDir, 'lfs-pack.mcaddon'), 'pack');
+  const pointerThumb = path.join(pointerDir, 'thumbnail.png');
+  fs.writeFileSync(pointerThumb, [
+    'version https://git-lfs.github.com/spec/v1',
+    'oid sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'size 177000',
+    '',
+  ].join('\n'));
+  assert(gitCatalog.isGitLfsPointer(pointerThumb), 'Git LFS pointer file was not detected');
+  const lfsEntry = gitCatalog.parseCatalogFromDir(gitRoot).find(mod => mod.slug === 'lfs-pack');
+  assert(lfsEntry, 'LFS pack folder was not parsed');
+  assert(!lfsEntry.thumbnailPath, 'LFS pointer thumbnail should be ignored until the real file is pulled');
+
   const denied = gitCatalog.friendlyGitError(new Error('remote: You are not allowed to download code.\nfatal: The requested URL returned error: 403'));
   assert.match(denied, /read_repository/, 'GitLab download denial should mention the required token scope');
+
+  const previousConnectHost = process.env.CONNECT_HOST;
+  assert.equal(connectHost.stripHostPort('192.168.1.50:3000'), '192.168.1.50');
+  assert.equal(connectHost.formatAddress('192.168.1.50', 19132), '192.168.1.50:19132');
+  assert.equal(connectHost.formatAddress('2001:db8::1', 19132), '[2001:db8::1]:19132');
+  assert.equal(connectHost.resolve({ headers: { host: '10.0.0.8:3000' } }), '10.0.0.8');
+  process.env.CONNECT_HOST = 'mc.example.com';
+  try {
+    assert.equal(connectHost.resolve({ headers: { host: '10.0.0.8:3000' } }), 'mc.example.com');
+  } finally {
+    if (previousConnectHost == null) delete process.env.CONNECT_HOST;
+    else process.env.CONNECT_HOST = previousConnectHost;
+  }
+  const localConnectHost = connectHost.resolve({ headers: { host: 'localhost:3000' } });
+  assert(localConnectHost, 'connect host should resolve for localhost requests');
 
   const packPath = path.join(testRoot, 'library-mod.mcaddon');
   fs.writeFileSync(packPath, 'pack');

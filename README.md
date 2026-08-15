@@ -44,7 +44,7 @@ For a native installation, use Node.js 20 or newer plus Python 3, `make`, and a 
    cp .env.example .env
    ```
 
-   Change `TZ` and `PORT` if needed. `CURSEFORGE_API_KEY` is optional. Catalog sources can also be configured in the Mod Catalog settings page.
+   Change `TZ` and `PORT` if needed. `CURSEFORGE_API_KEY` is optional. Catalog sources can also be configured in the Mod Catalog settings page. Set `CONNECT_HOST` to the hostname or LAN IP players should use if the dashboard would otherwise show a Docker container address.
 
 3. Configure the Ubuntu host firewall for the web interface and all ports offered by the server-creation dropdown:
 
@@ -72,6 +72,8 @@ For a native installation, use Node.js 20 or newer plus Python 3, `make`, and a 
 Application data is stored in the `mc-data` Docker volume and survives container replacement. Back up this volume before upgrades.
 
 The production Compose file uses Linux host networking. Each Bedrock process therefore binds its selected UDP port directly on the host as soon as the server starts; adding a server does not require editing Compose or recreating the manager container. Host networking is intentional and is supported by the documented Linux deployment target. Firewall rules, not Docker port mappings, control external access.
+
+Dashboard tiles show `version • IP:port` using, in order: `CONNECT_HOST`, the hostname from the browser request (when it is not localhost), then a detected LAN IPv4. Docker bridge addresses such as `172.17.0.2` are not advertised. On Linux host networking and on a native install, auto-detection normally finds the host LAN IP. Docker Desktop and other bridge-network setups should set `CONNECT_HOST` to the host's LAN IP or DNS name.
 
 When upgrading an older bridge-network deployment, run `docker compose down` followed by `docker compose up -d --build` after adding the firewall rules. This recreates only the manager container; the named data volume is retained.
 
@@ -129,6 +131,7 @@ The available-port dropdown combines the manager database with a live host UDP b
 | --- | --- | --- |
 | `NODE_ENV` | `production` | Runtime mode |
 | `PORT` | `3000` | Web interface and API port |
+| `CONNECT_HOST` | empty | Hostname or IP shown as the Minecraft connect address; auto-detected when empty |
 | `LOG_LEVEL` | `info` | Application logging level |
 | `TZ` | `UTC` | Container timezone |
 | `AUTO_UPDATE_CHECK_INTERVAL` | `86400` | Update-check interval in seconds |

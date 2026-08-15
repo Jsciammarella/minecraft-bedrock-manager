@@ -22,6 +22,7 @@ function ModCatalog() {
   const [category, setCategory] = useState('');
   const [source, setSource] = useState('all');
   const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [sortBy, setSortBy] = useState('relevancy');
   const [downloadModal, setDownloadModal] = useState(null);
   const [downloading, setDownloading] = useState(false);
@@ -56,6 +57,7 @@ function ModCatalog() {
         source: requestedSource,
       });
       setMods(res.data.results || []);
+      setTotal(Number(res.data.total) || 0);
       setSources(res.data.sources || sources);
       if (res.data.warning) setWarning(res.data.warning);
       const sourceErrors = (res.data.errors || []).filter(item => item.source !== 'curseforge' || requestedSource === 'curseforge');
@@ -66,6 +68,7 @@ function ModCatalog() {
       }
     } catch (err) {
       setMods([]);
+      setTotal(0);
       setError(err.response?.data?.error || 'Failed to load the catalog. Check Catalog Settings.');
     } finally {
       setSearching(false);
@@ -131,6 +134,16 @@ function ModCatalog() {
     }
     return <span className="badge badge-info">CurseForge</span>;
   };
+
+  const goToPage = (nextPage) => {
+    const safePage = Math.max(1, nextPage);
+    setPage(safePage);
+    searchMods(safePage, source);
+  };
+
+  const totalPages = Math.max(1, Math.ceil((total || 0) / CATALOG_PAGE_SIZE));
+  const pageNumbers = visiblePageNumbers(page, totalPages);
+  const showPager = totalPages > 1 || page > 1;
 
   const searchingLabel = source === 'git'
     ? 'Searching Git catalog...'
@@ -262,6 +275,14 @@ function ModCatalog() {
           <button onClick={() => navigate('/mods/catalog/settings')} className="btn btn-secondary">
             <Settings className="w-4 h-4" /> Catalog Settings
           </button>
+          {showPager && (
+            <CatalogPager
+              page={page}
+              totalPages={totalPages}
+              pageNumbers={pageNumbers}
+              onPage={goToPage}
+            />
+          )}
         </div>
       ) : (
         <>
@@ -278,31 +299,14 @@ function ModCatalog() {
             ))}
           </div>
 
-          <div className="flex items-center justify-center gap-3 mt-8">
-            <button
-              onClick={() => {
-                const nextPage = Math.max(1, page - 1);
-                setPage(nextPage);
-                searchMods(nextPage, source);
-              }}
-              disabled={page <= 1}
-              className="btn btn-secondary text-sm disabled:opacity-30"
-            >
-              Previous
-            </button>
-            <span className="text-sm text-mc-textMuted">Page {page}</span>
-            <button
-              onClick={() => {
-                const nextPage = page + 1;
-                setPage(nextPage);
-                searchMods(nextPage, source);
-              }}
-              disabled={mods.length < CATALOG_PAGE_SIZE}
-              className="btn btn-secondary text-sm disabled:opacity-30"
-            >
-              Next
-            </button>
-          </div>
+          {showPager && (
+            <CatalogPager
+              page={page}
+              totalPages={totalPages}
+              pageNumbers={pageNumbers}
+              onPage={goToPage}
+            />
+          )}
         </>
       )}
 
@@ -363,6 +367,62 @@ function ModCatalog() {
 }
 
 export default ModCatalog;
+
+function visiblePageNumbers(current, totalPages, windowSize = 9) {
+  if (totalPages <= 1) return [];
+  if (totalPages <= windowSize) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  const half = Math.floor(windowSize / 2);
+  let start = current - half;
+  let end = current + half;
+  if (start < 1) {
+    end += 1 - start;
+    start = 1;
+  }
+  if (end > totalPages) {
+    start -= end - totalPages;
+    end = totalPages;
+  }
+  start = Math.max(1, start);
+  return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+}
+
+function CatalogPager({ page, totalPages, pageNumbers, onPage }) {
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-2 mt-8">
+      <button
+        type="button"
+        onClick={() => onPage(page - 1)}
+        disabled={page <= 1}
+        className="btn btn-secondary text-sm disabled:opacity-30"
+      >
+        Previous
+      </button>
+      {pageNumbers.map((number) => (
+        <button
+          key={number}
+          type="button"
+          onClick={() => onPage(number)}
+          disabled={number === page}
+          className={`text-sm min-w-[2.25rem] ${
+            number === page ? 'btn btn-primary' : 'btn btn-secondary'
+          }`}
+        >
+          {number}
+        </button>
+      ))}
+      <button
+        type="button"
+        onClick={() => onPage(page + 1)}
+        disabled={page >= totalPages}
+        className="btn btn-secondary text-sm disabled:opacity-30"
+      >
+        Next
+      </button>
+    </div>
+  );
+}
 
 function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBadge, getSourceBadge }) {
   return (

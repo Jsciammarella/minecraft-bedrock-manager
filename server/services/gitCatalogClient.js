@@ -130,6 +130,16 @@ class GitCatalogClient {
     if (!mod.filePath || !fs.existsSync(mod.filePath)) {
       throw new Error('Catalog entry is missing its downloadable file');
     }
+    if (this.isGitLfsPointer(mod.filePath)) {
+      await this.sync();
+      const refreshed = this.getMod(slug);
+      if (!refreshed?.filePath || this.isGitLfsPointer(refreshed.filePath)) {
+        throw new Error('This pack is stored in Git LFS and was not downloaded. Refresh the Git catalog and confirm git-lfs can authenticate to the repository.');
+      }
+      mod.filePath = refreshed.filePath;
+      mod.thumbnail = refreshed.thumbnail;
+      mod.thumbnailPath = refreshed.thumbnailPath;
+    }
 
     const filename = modManager.getAvailableFilename(
       modManager.sanitizeFilename(path.basename(mod.filePath))
@@ -235,17 +245,23 @@ class GitCatalogClient {
     try {
       if (fs.existsSync(path.join(CLONE_DIR, '.git'))) {
         await this.runGit(['remote', 'set-url', 'origin', remote], { cwd: CLONE_DIR, ...gitAuth });
-        await this.runGit(['fetch', '--depth', '1', 'origin', branch], { cwd: CLONE_DIR, timeout: 120000, ...gitAuth });
-        await this.runGit(['checkout', '-B', branch, `origin/${branch}`], { cwd: CLONE_DIR, ...gitAuth });
-        await this.runGit(['reset', '--hard', `origin/${branch}`], { cwd: CLONE_DIR, ...gitAuth });
+        await this.runGit(['fetch', '--depth', '1', 'origin', branch], {
+          cwd: CLONE_DIR, timeout: 120000, ...gitAuth, skipLfsSmudge: true,
+        });
+        await this.runGit(['checkout', '-B', branch, `origin/${branch}`], {
+          cwd: CLONE_DIR, ...gitAuth, skipLfsSmudge: true,
+        });
+        await this.runGit(['reset', '--hard', `origin/${branch}`], {
+          cwd: CLONE_DIR, ...gitAuth, skipLfsSmudge: true,
+        });
       } else {
         if (fs.existsSync(CLONE_DIR)) fs.rmSync(CLONE_DIR, { recursive: true, force: true });
         await this.runGit(
           ['clone', '--depth', '1', '--branch', branch, '--single-branch', remote, CLONE_DIR],
-          { timeout: 120000, ...gitAuth }
+          { timeout: 120000, ...gitAuth, skipLfsSmudge: true }
         );
       }
-      await this.pullLfs(gitAuth);
+      await this.pullLfs(gitAuth, remote);
     } catch (err) {
       throw new Error(this.friendlyGitError(err));
     }
@@ -258,18 +274,71 @@ class GitCatalogClient {
     return { success: true, lastSync: syncedAt, modCount: entries.length };
   }
 
-  async pullLfs(gitAuth) {
+  async pullLfs(gitAuth, cleanRemote) {
+    const pointerCount = () => this.countPointerFiles();
+    if (pointerCount() === 0) {
+      logger.debug('Catalog repository has no Git LFS pointer files; skipping lfs pull');
+      return;
+    }
+
     try {
       await execFileAsync('git', ['lfs', 'version'], { timeout: 5000, windowsHide: true });
     } catch {
-      logger.warn('git-lfs is not installed; catalog thumbnails and packs stored in Git LFS may not download');
-      return;
+      throw new Error('This catalog uses Git LFS, but git-lfs is not available to the manager process.');
     }
+
+    const authedRemote = gitAuth.token
+      ? this.authenticatedUrl(cleanRemote, gitAuth.username, gitAuth.token)
+      : cleanRemote;
+
     try {
       await this.runGit(['lfs', 'install', '--local'], { cwd: CLONE_DIR, timeout: 15000, ...gitAuth });
-      await this.runGit(['lfs', 'pull'], { cwd: CLONE_DIR, timeout: 120000, ...gitAuth });
+      if (authedRemote !== cleanRemote) {
+        await this.runGit(['remote', 'set-url', 'origin', authedRemote], { cwd: CLONE_DIR });
+      }
+      // git-lfs uses its own HTTP client and often ignores http.extraHeader.
+      // Pass credentials via origin URL (temporary) and lfs.url for the batch API.
+      const lfsUrl = gitAuth.token
+        ? `${authedRemote.replace(/\/+$/, '').replace(/\.git$/i, '')}.git/info/lfs`
+        : undefined;
+      await this.runGit(['lfs', 'pull'], { cwd: CLONE_DIR, timeout: 180000, ...gitAuth, lfsUrl });
+      await this.runGit(['lfs', 'checkout'], { cwd: CLONE_DIR, timeout: 60000, ...gitAuth, lfsUrl });
     } catch (err) {
-      logger.warn(`git lfs pull failed: ${err.message}`);
+      throw new Error(this.friendlyGitError(err));
+    } finally {
+      try {
+        await this.runGit(['remote', 'set-url', 'origin', cleanRemote], { cwd: CLONE_DIR });
+      } catch {
+        // Keep the clone usable even if rewriting the remote URL fails.
+      }
+    }
+
+    const leftover = pointerCount();
+    if (leftover > 0) {
+      throw new Error(`Git LFS left ${leftover} pointer file(s) in the catalog. The token must be able to download LFS objects, not only Git refs.`);
+    }
+    logger.info('Git LFS objects downloaded for the catalog');
+  }
+
+  countPointerFiles() {
+    if (!fs.existsSync(CLONE_DIR)) return 0;
+    try {
+      return this.walkFiles(CLONE_DIR).filter(file => this.isGitLfsPointer(file)).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  authenticatedUrl(url, username, token) {
+    const normalized = this.sshToHttps(url);
+    if (!token) return normalized;
+    try {
+      const parsed = new URL(normalized);
+      parsed.username = username || 'oauth2';
+      parsed.password = token;
+      return parsed.toString();
+    } catch {
+      return normalized;
     }
   }
 
@@ -523,26 +592,33 @@ class GitCatalogClient {
   }
 
   async runGit(args, options = {}) {
-    const { cwd, timeout = 60000, token, username } = options;
+    const { cwd, timeout = 60000, token, username, skipLfsSmudge = false, lfsUrl } = options;
     const gitArgs = [
       '-c', 'credential.helper=',
       '-c', 'credential.interactive=never',
     ];
     if (token) {
       const basic = Buffer.from(`${username || 'oauth2'}:${token}`, 'utf8').toString('base64');
-      gitArgs.push('-c', `http.extraHeader=Authorization: Basic ${basic}`);
+      const header = `Authorization: Basic ${basic}`;
+      gitArgs.push('-c', `http.extraHeader=${header}`);
+      try {
+        const origin = new URL(this.sshToHttps(this.getConfig().url || 'https://example.com')).origin;
+        gitArgs.push('-c', `http.${origin}/.extraHeader=${header}`);
+      } catch {
+        // Host-specific header is optional.
+      }
+    }
+    if (lfsUrl) {
+      gitArgs.push('-c', `lfs.url=${lfsUrl}`);
     }
     gitArgs.push(...args);
 
     const redactedArgs = gitArgs.map((arg) => {
-      if (String(arg).startsWith('http.extraHeader=Authorization:')) {
-        return 'http.extraHeader=Authorization: Basic ***';
+      let value = String(arg);
+      if (value.includes('extraHeader=Authorization:')) {
+        value = value.replace(/Authorization: Basic .+$/, 'Authorization: Basic ***');
       }
-      try {
-        return this.redactUrl(arg);
-      } catch {
-        return arg;
-      }
+      return value.replace(/https?:\/\/[^/\s]+@/gi, 'https://***@');
     });
     logger.debug(`git ${redactedArgs.join(' ')}`);
 
@@ -550,6 +626,7 @@ class GitCatalogClient {
       ...process.env,
       GIT_TERMINAL_PROMPT: '0',
       GCM_INTERACTIVE: 'never',
+      GIT_LFS_SKIP_SMUDGE: skipLfsSmudge ? '1' : '0',
     };
     delete env.GIT_ASKPASS;
     delete env.SSH_ASKPASS;
@@ -589,7 +666,9 @@ class GitCatalogClient {
     if (/\b403\b/.test(text)) {
       return 'The Git host refused access (HTTP 403). For GitLab, the token needs the read_repository scope on this project.';
     }
-    if (err.killed) return 'Git timed out while contacting the remote.';
+    if (/This catalog uses Git LFS|Git LFS left|stored in Git LFS/i.test(text)) {
+      return text.split('\n').filter(Boolean)[0];
+    }
     return text.split('\n').filter(Boolean).slice(-1)[0] || 'Git catalog sync failed';
   }
 

@@ -25,6 +25,7 @@ services:
       - GIT_CATALOG_TOKEN=${GIT_CATALOG_TOKEN:-}
       - GIT_CATALOG_SUBDIR=${GIT_CATALOG_SUBDIR:-}
       - GIT_CATALOG_SYNC_HOURS=${GIT_CATALOG_SYNC_HOURS:-2}
+      - CONNECT_HOST=${CONNECT_HOST:-}
       - LOG_LEVEL=debug
     volumes:
       # Mount source for hot reload
