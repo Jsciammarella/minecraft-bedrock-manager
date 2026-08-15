@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tar \
     git \
     git-lfs \
+    default-jre-headless \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && git lfs install --system
@@ -29,7 +30,7 @@ COPY frontend/package.json ./frontend/
 RUN npm install && cd frontend && npm install
 
 # Create data directories
-RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog
+RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog /app/data/bedrock-connect
 
 # Copy source (mounted in development)
 COPY server/ ./server/

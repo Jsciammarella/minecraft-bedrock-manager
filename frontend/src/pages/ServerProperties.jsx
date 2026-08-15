@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { serverApi } from '../services/api';
+import { serverApi, portApi } from '../services/api';
 import { ArrowLeft, Save, Loader2, Check, AlertCircle, RefreshCw } from 'lucide-react';
 
 function ServerProperties() {
@@ -17,7 +17,10 @@ function ServerProperties() {
   const [autoUpdateInterval, setAutoUpdateInterval] = useState(24);
   const [autoUpdating, setAutoUpdating] = useState(false);
 
+  const [ports, setPorts] = useState({ used: [], available: [] });
+
   const [formData, setFormData] = useState({
+    port: '',
     max_players: '10',
     difficulty: 'peaceful',
     gamemode: 'survival',
@@ -48,6 +51,7 @@ function ServerProperties() {
   useEffect(() => {
     loadServer();
     loadAutoUpdateConfig();
+    loadPorts();
   }, [id]);
 
   const loadServer = async () => {
@@ -57,6 +61,7 @@ function ServerProperties() {
       // Populate form with current values
       setFormData(prev => ({
         ...prev,
+        port: String(res.data.port || ''),
         max_players: String(res.data.max_players || 10),
         difficulty: res.data.difficulty || 'peaceful',
         gamemode: res.data.gamemode || 'survival',
@@ -75,6 +80,15 @@ function ServerProperties() {
     }
   };
 
+  const loadPorts = async () => {
+    try {
+      const res = await portApi.getAll();
+      setPorts(res.data);
+    } catch (err) {
+      console.error('Failed to load ports:', err);
+    }
+  };
+
   const loadAutoUpdateConfig = async () => {
     try {
       const res = await serverApi.getAutoUpdate(id);
@@ -88,6 +102,7 @@ function ServerProperties() {
   };
 
   const handleAutoUpdateToggle = async () => {
+    if (server?.kind === 'bedrock_connect') return;
     setAutoUpdating(true);
     setError('');
     setSuccess('');
@@ -131,7 +146,11 @@ function ServerProperties() {
     setSuccess('');
 
     try {
-      await serverApi.update(id, formData);
+      if (server?.kind === 'bedrock_connect') return;
+      await serverApi.update(id, {
+        ...formData,
+        port: formData.port === '' ? undefined : parseInt(formData.port, 10),
+      });
       navigate(`/servers/${id}`, {
         replace: true,
         state: { message: 'Server properties saved successfully.' },
@@ -154,6 +173,16 @@ function ServerProperties() {
     );
   }
 
+  const isBC = server?.kind === 'bedrock_connect';
+  const portOptions = [];
+  if (server?.port) portOptions.push(Number(server.port));
+  if (server?.pending_port && !portOptions.includes(Number(server.pending_port))) {
+    portOptions.push(Number(server.pending_port));
+  }
+  for (const item of ports.available || []) {
+    if (!portOptions.includes(item.port)) portOptions.push(item.port);
+  }
+
   return (
     <div className="p-6 max-w-3xl mx-auto">
       {/* Header */}
@@ -166,6 +195,12 @@ function ServerProperties() {
           <p className="text-mc-textMuted mt-1">{server?.name} — Configure all server settings</p>
         </div>
       </div>
+
+      {isBC && (
+        <div className="mb-6 p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
+          Bedrock Connect only supports start, stop, and restart. These settings do not apply and cannot be changed.
+        </div>
+      )}
 
       {error && (
         <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-3">
@@ -184,63 +219,88 @@ function ServerProperties() {
         {/* General Settings */}
         <Section title="General Settings">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormField label="Server Description" name="server_description" value={formData.server_description} onChange={handleChange} type="text" />
-            <FormField label="Server MOTD" name="server_motd" value={formData.server_motd} onChange={handleChange} type="text" />
-            <FormField label="Max Players" name="max_players" value={formData.max_players} onChange={handleChange} type="number" min="1" max="1000" />
-            <FormField label="Level Seed" name="level_seed" value={formData.level_seed} onChange={handleChange} type="text" placeholder="Leave empty for random" />
+            <div>
+              <label className="block text-sm font-medium text-mc-text mb-2">Server Port</label>
+              <select
+                name="port"
+                value={formData.port}
+                onChange={handleChange}
+                className="input"
+                disabled={isBC}
+                required
+              >
+                {portOptions.map((port) => (
+                  <option key={port} value={port}>{port}</option>
+                ))}
+              </select>
+              <p className="mt-2 text-xs text-mc-textMuted">
+                {isBC
+                  ? 'Bedrock Connect must stay on UDP 19132 so consoles can reach it.'
+                  : 'Only the current port and other open manager ports are shown. A new port applies after restart if the server is running.'}
+              </p>
+              {server?.pending_port && Number(server.pending_port) !== Number(server.port) && (
+                <p className="mt-1 text-xs text-amber-300">
+                  Port {server.pending_port} is queued and will apply on the next restart.
+                </p>
+              )}
+            </div>
+            <FormField label="Server Description" name="server_description" value={formData.server_description} onChange={handleChange} type="text" disabled={isBC} />
+            <FormField label="Server MOTD" name="server_motd" value={formData.server_motd} onChange={handleChange} type="text" disabled={isBC} />
+            <FormField label="Max Players" name="max_players" value={formData.max_players} onChange={handleChange} type="number" min="1" max="1000" disabled={isBC} />
+            <FormField label="Level Seed" name="level_seed" value={formData.level_seed} onChange={handleChange} type="text" placeholder="Leave empty for random" disabled={isBC} />
           </div>
         </Section>
 
         {/* Game Settings */}
         <Section title="Game Settings">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <SelectField label="Game Mode" name="gamemode" value={formData.gamemode} onChange={handleChange} options={[
+            <SelectField label="Game Mode" name="gamemode" value={formData.gamemode} onChange={handleChange} disabled={isBC} options={[
               { value: 'survival', label: 'Survival' },
               { value: 'creative', label: 'Creative' },
               { value: 'adventure', label: 'Adventure' },
               { value: 'default', label: 'Default' },
             ]} />
-            <SelectField label="Difficulty" name="difficulty" value={formData.difficulty} onChange={handleChange} options={[
+            <SelectField label="Difficulty" name="difficulty" value={formData.difficulty} onChange={handleChange} disabled={isBC} options={[
               { value: 'peaceful', label: 'Peaceful' },
               { value: 'easy', label: 'Easy' },
               { value: 'normal', label: 'Normal' },
               { value: 'hard', label: 'Hard' },
             ]} />
-            <FormField label="View Distance" name="view_distance" value={formData.view_distance} onChange={handleChange} type="number" min="2" max="32" />
-            <FormField label="Tick Distance" name="tick_distance" value={formData.tick_distance} onChange={handleChange} type="number" min="1" max="10" />
-            <FormField label="Player Idle Timeout (min)" name="player_idle_timeout" value={formData.player_idle_timeout} onChange={handleChange} type="number" min="0" max="1440" />
-            <FormField label="TX Rate (FPS)" name="tx_rate" value={formData.tx_rate} onChange={handleChange} type="number" min="1" max="60" />
+            <FormField label="View Distance" name="view_distance" value={formData.view_distance} onChange={handleChange} type="number" min="2" max="32" disabled={isBC} />
+            <FormField label="Tick Distance" name="tick_distance" value={formData.tick_distance} onChange={handleChange} type="number" min="1" max="10" disabled={isBC} />
+            <FormField label="Player Idle Timeout (min)" name="player_idle_timeout" value={formData.player_idle_timeout} onChange={handleChange} type="number" min="0" max="1440" disabled={isBC} />
+            <FormField label="TX Rate (FPS)" name="tx_rate" value={formData.tx_rate} onChange={handleChange} type="number" min="1" max="60" disabled={isBC} />
           </div>
         </Section>
 
         {/* Toggles */}
         <Section title="Server Options">
           <div className="space-y-4">
-            <ToggleRow label="Enable Cheats" name="enable_cheats" value={formData.enable_cheats} onToggle={handleToggle} description="Allow cheats and commands" />
-            <ToggleRow label="Server Authoritative" name="server_authoritative" value={formData.server_authoritative} onToggle={handleToggle} description="Server controls game logic" />
-            <ToggleRow label="Whitelist Mode" name="whitelist_mode" value={formData.whitelist_mode} onToggle={handleToggle} description="Only whitelisted players can join" />
-            <ToggleRow label="Texture Pack Required" name="texture_pack_required" value={formData.texture_pack_required} onToggle={handleToggle} description="Players must accept texture packs" />
-            <ToggleRow label="Auto Ice" name="auto_ice" value={formData.auto_ice} onToggle={handleToggle} description="Water freezes into ice" />
-            <ToggleRow label="Natural Regeneration" name="natural_regeneration" value={formData.natural_regeneration} onToggle={handleToggle} description="Health regenerates over time" />
-            <ToggleRow label="Online Mode" name="online_mode" value={formData.online_mode} onToggle={handleToggle} description="Require Xbox Live authentication" />
-            <ToggleRow label="Remote Discovery" name="remote_discovery" value={formData.remote_discovery} onToggle={handleToggle} description="Show server in external listings" />
-            <ToggleRow label="Allow Third-Party Requests" name="allow_third_party_requests" value={formData.allow_third_party_requests} onToggle={handleToggle} description="Allow realms invites" />
-            <ToggleRow label="Allow Third-Party Pictures" name="allow_third_party_pictures" value={formData.allow_third_party_pictures} onToggle={handleToggle} description="Allow skin data from third parties" />
-            <ToggleRow label="Require Secure Chat" name="require_secure_chat" value={formData.require_secure_chat} onToggle={handleToggle} description="Enforce chat signing" />
-            <ToggleRow label="Server Authoritative Inventory" name="server_authoritative_inventory" value={formData.server_authoritative_inventory} onToggle={handleToggle} description="Server manages inventory" />
-            <ToggleRow label="Enable Player Data Init" name="enable_player_data_initialization" value={formData.enable_player_data_initialization} onToggle={handleToggle} description="Create player data on first join" />
+            <ToggleRow label="Enable Cheats" name="enable_cheats" value={formData.enable_cheats} onToggle={handleToggle} description="Allow cheats and commands" disabled={isBC} />
+            <ToggleRow label="Server Authoritative" name="server_authoritative" value={formData.server_authoritative} onToggle={handleToggle} description="Server controls game logic" disabled={isBC} />
+            <ToggleRow label="Whitelist Mode" name="whitelist_mode" value={formData.whitelist_mode} onToggle={handleToggle} description="Only whitelisted players can join" disabled={isBC} />
+            <ToggleRow label="Texture Pack Required" name="texture_pack_required" value={formData.texture_pack_required} onToggle={handleToggle} description="Players must accept texture packs" disabled={isBC} />
+            <ToggleRow label="Auto Ice" name="auto_ice" value={formData.auto_ice} onToggle={handleToggle} description="Water freezes into ice" disabled={isBC} />
+            <ToggleRow label="Natural Regeneration" name="natural_regeneration" value={formData.natural_regeneration} onToggle={handleToggle} description="Health regenerates over time" disabled={isBC} />
+            <ToggleRow label="Online Mode" name="online_mode" value={formData.online_mode} onToggle={handleToggle} description="Require Xbox Live authentication" disabled={isBC} />
+            <ToggleRow label="Remote Discovery" name="remote_discovery" value={formData.remote_discovery} onToggle={handleToggle} description="Show server in external listings" disabled={isBC} />
+            <ToggleRow label="Allow Third-Party Requests" name="allow_third_party_requests" value={formData.allow_third_party_requests} onToggle={handleToggle} description="Allow realms invites" disabled={isBC} />
+            <ToggleRow label="Allow Third-Party Pictures" name="allow_third_party_pictures" value={formData.allow_third_party_pictures} onToggle={handleToggle} description="Allow skin data from third parties" disabled={isBC} />
+            <ToggleRow label="Require Secure Chat" name="require_secure_chat" value={formData.require_secure_chat} onToggle={handleToggle} description="Enforce chat signing" disabled={isBC} />
+            <ToggleRow label="Server Authoritative Inventory" name="server_authoritative_inventory" value={formData.server_authoritative_inventory} onToggle={handleToggle} description="Server manages inventory" disabled={isBC} />
+            <ToggleRow label="Enable Player Data Init" name="enable_player_data_initialization" value={formData.enable_player_data_initialization} onToggle={handleToggle} description="Create player data on first join" disabled={isBC} />
           </div>
         </Section>
 
         {/* Permission */}
         <Section title="Permissions">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <SelectField label="Default Player Permission" name="default_player_permission" value={formData.default_player_permission} onChange={handleChange} options={[
+            <SelectField label="Default Player Permission" name="default_player_permission" value={formData.default_player_permission} onChange={handleChange} disabled={isBC} options={[
               { value: 'visitor', label: 'Visitor' },
               { value: 'member', label: 'Member' },
               { value: 'operator', label: 'Operator' },
             ]} />
-            <SelectField label="Default 1st Person" name="default_1st_person" value={formData.default_1st_person} onChange={handleChange} options={[
+            <SelectField label="Default 1st Person" name="default_1st_person" value={formData.default_1st_person} onChange={handleChange} disabled={isBC} options={[
               { value: '0', label: 'Off' },
               { value: '1', label: 'On' },
             ]} />
@@ -262,8 +322,8 @@ function ServerProperties() {
                 <button
                   type="button"
                   onClick={handleAutoUpdateToggle}
-                  disabled={autoUpdating}
-                  className={`toggle ${autoUpdateEnabled ? 'toggle-active' : 'toggle-inactive'}`}
+                  disabled={autoUpdating || isBC}
+                  className={`toggle ${autoUpdateEnabled ? 'toggle-active' : 'toggle-inactive'} ${isBC ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <span className={`toggle-thumb ${autoUpdateEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
                 </button>
@@ -276,6 +336,7 @@ function ServerProperties() {
                   value={autoUpdateInterval}
                   onChange={(e) => setAutoUpdateInterval(parseInt(e.target.value))}
                   className="input"
+                  disabled={isBC}
                 >
                   <option value={1}>Every hour</option>
                   <option value={4}>Every 4 hours</option>
@@ -292,7 +353,7 @@ function ServerProperties() {
 
         {/* Submit */}
         <div className="flex items-center gap-3 pt-4 border-t border-mc-surfaceLight">
-          <button type="submit" disabled={saving} className="btn btn-primary flex-1">
+          <button type="submit" disabled={saving || isBC} className="btn btn-primary flex-1">
             {saving ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -305,7 +366,7 @@ function ServerProperties() {
               </>
             )}
           </button>
-          <button type="button" onClick={loadServer} className="btn btn-secondary">
+          <button type="button" onClick={loadServer} disabled={isBC} className="btn btn-secondary">
             <RefreshCw className="w-4 h-4" />
             Reset
           </button>
@@ -336,11 +397,11 @@ function FormField({ label, name, value, onChange, type = 'text', ...props }) {
   );
 }
 
-function SelectField({ label, name, value, onChange, options }) {
+function SelectField({ label, name, value, onChange, options, disabled = false }) {
   return (
     <div>
       <label className="block text-sm font-medium text-mc-text mb-2">{label}</label>
-      <select name={name} value={value} onChange={onChange} className="input">
+      <select name={name} value={value} onChange={onChange} className="input" disabled={disabled}>
         {options.map(opt => (
           <option key={opt.value} value={opt.value}>{opt.label}</option>
         ))}
@@ -349,17 +410,18 @@ function SelectField({ label, name, value, onChange, options }) {
   );
 }
 
-function ToggleRow({ label, name, value, onToggle, description }) {
+function ToggleRow({ label, name, value, onToggle, description, disabled = false }) {
   return (
-    <div className="flex items-center justify-between p-3 bg-mc-darker rounded-lg">
+    <div className={`flex items-center justify-between p-3 bg-mc-darker rounded-lg ${disabled ? 'opacity-50' : ''}`}>
       <div>
         <p className="text-sm font-medium text-white">{label}</p>
         <p className="text-xs text-mc-textMuted">{description}</p>
       </div>
       <button
         type="button"
-        onClick={() => onToggle(name)}
-        className={`toggle ${value === 1 ? 'toggle-active' : 'toggle-inactive'}`}
+        onClick={() => { if (!disabled) onToggle(name); }}
+        disabled={disabled}
+        className={`toggle ${value === 1 ? 'toggle-active' : 'toggle-inactive'} ${disabled ? 'cursor-not-allowed' : ''}`}
       >
         <span className={`toggle-thumb ${value === 1 ? 'translate-x-6' : 'translate-x-1'}`} />
       </button>

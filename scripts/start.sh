@@ -42,8 +42,15 @@ mkdir -p "${DATA_DIR}/servers"
 mkdir -p "${DATA_DIR}/mods"
 mkdir -p "${DATA_DIR}/mods/thumbs"
 mkdir -p "${DATA_DIR}/git-catalog"
+mkdir -p "${DATA_DIR}/bedrock-connect"
 mkdir -p "${LOG_DIR}"
 mkdir -p "${DATA_DIR}/uploads"
+
+if command -v java >/dev/null 2>&1; then
+    echo -e "${YELLOW}Java: $(java -version 2>&1 | head -n 1)${NC}"
+else
+    echo -e "${YELLOW}Warning: Java was not found. Bedrock Connect will not start until a JRE is installed.${NC}"
+fi
 
 # Load environment variables
 if [ -f "${APP_DIR}/.env" ]; then

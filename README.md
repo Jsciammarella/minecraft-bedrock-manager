@@ -5,6 +5,7 @@ A self-hosted web console for creating and operating multiple Minecraft Bedrock 
 ## What it provides
 
 - Server creation with an available-port selector
+- Bedrock Connect for consoles (Xbox, PlayStation, Nintendo Switch) on UDP `19132`
 - Start, stop, immediate restart, and five-minute warned restart controls
 - A server-specific live console with per-server command history
 - Per-server allowlists, player permissions, and ban lists
@@ -27,7 +28,7 @@ The recommended installation uses Docker:
 - TCP access to the management port (default `3000`)
 - Host firewall access to the Bedrock UDP ranges used by the port selector (`19132-19199`, `25565-25665`, and `30000-30100`)
 
-The production image already includes Git and Git LFS for the optional Git mod catalog.
+The production image already includes Git, Git LFS, and a Java runtime for Bedrock Connect.
 
 For a native installation:
 
@@ -35,6 +36,7 @@ For a native installation:
 - Python 3, `make`, and a C++ compiler (`g++`) for native modules such as `better-sqlite3` and `node-pty`
 - `git` for cloning and for the Git catalog; `git-lfs` if that catalog stores packs or thumbnails in Git LFS
 - `wget` and `tar` if you want the manager to attempt Bedrock binary downloads
+- Java 8 or newer (`default-jre-headless`) if you want to run Bedrock Connect
 
 ## Install with Docker (recommended)
 
@@ -111,13 +113,25 @@ Minecraft Bedrock Dedicated Server is licensed and distributed separately by Moj
 
 For a real server, download the current Linux Bedrock Dedicated Server from the [official Minecraft server download page](https://www.minecraft.net/en-us/download/server/bedrock), stop the instance, and place the extracted files in that instance's data directory. The executable must be named `bedrock_server`, be executable, and be owned by the account running the manager. In Docker, the instance directories are inside the `mc-data` volume at `/app/data/servers/<server-name>`.
 
+### Bedrock Connect (consoles)
+
+Consoles cannot add custom Bedrock servers themselves. [Bedrock Connect](https://github.com/Pugmatt/BedrockConnect) is a Java service that presents a server list when a console is sent to this host on UDP `19132`. The manager can create one Bedrock Connect instance; the dashboard button turns grey after it exists, and that tile stays first.
+
+Bedrock Connect always uses UDP `19132`. If another managed server already occupies that port, the manager asks you to accept moving that server to the next free port. You can restart that server immediately or use the five-minute warned restart. After the port is free, Bedrock Connect is created.
+
+DNS rewrites on your network (for example pointing the console's featured-server lookups at this host) remain your responsibility. The manager only runs the JAR (`java -jar BedrockConnect-1.0-SNAPSHOT.jar nodb=true port=19132 bindip=0.0.0.0`).
+
+JAR updates are separate from Bedrock Dedicated Server binaries. The manager checks GitHub releases daily and keeps up to 10 downloaded versions under `data/bedrock-connect/releases/`. From the server page you can check for updates, install a stored version, or enable auto-update to the newest downloaded JAR.
+
+You can also change a regular Bedrock server's port on its Properties page. The dropdown is the same available-port list used when creating a server. That change applies on the next restart, using the existing restart-required banner, unless Bedrock Connect creation moved the port immediately.
+
 ## Native Ubuntu installation
 
 1. Install Node.js 20 and build prerequisites:
 
    ```bash
    sudo apt update
-   sudo apt install -y ca-certificates curl python3 make g++ wget tar git git-lfs ufw
+   sudo apt install -y ca-certificates curl python3 make g++ wget tar git git-lfs ufw default-jre-headless
    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
    sudo apt install -y nodejs
    sudo git lfs install --system
@@ -207,7 +221,7 @@ docker compose down                 # stop it without deleting data
 
 Do not pass `-v` to `docker compose down`. That flag deletes the named volumes and would remove servers, worlds, mods, catalog settings, and player data.
 
-Installing or removing add-ons and changing server properties can require a Bedrock server restart. The UI marks the affected server and offers either an immediate restart or a warned restart that sends player messages at five, two, and one minute.
+Installing or removing add-ons, changing server properties, or changing a server port can require a Bedrock server restart. The UI marks the affected server and offers either an immediate restart or a warned restart that sends player messages at five, two, and one minute.
 
 ## In-place upgrade
 
@@ -218,7 +232,7 @@ Application state lives outside the image:
 | Install | Kept during upgrade |
 | --- | --- |
 | Docker | Named volumes `mc-data` and `mc-logs`, plus `.env` on the host |
-| Native | `data/` (SQLite, worlds, mods, Git catalog clone, player files) and `.env` |
+| Native | `data/` (SQLite, worlds, mods, Git catalog clone, Bedrock Connect JARs, player files) and `.env` |
 
 From the git checkout that you used to install:
 

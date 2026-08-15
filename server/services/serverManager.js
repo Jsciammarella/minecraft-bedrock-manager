@@ -5,10 +5,12 @@ const { exec, spawn } = require('child_process');
 const { promisify } = require('util');
 const db = require('../db/connection');
 const logger = require('./logger');
+const settingsStore = require('./settingsStore');
 const execAsync = promisify(exec);
 
 const BASE_DIR = path.join(__dirname, '../../data/servers');
 const MODS_DIR = path.join(__dirname, '../../data/mods');
+const BEDROCK_CONNECT_PORT = 19132;
 
 class ServerManager {
   constructor() {
@@ -77,7 +79,7 @@ class ServerManager {
     this.broadcastServerStatus(serverId);
   }
 
-  cancelWarnedRestart(serverId, { broadcast = true } = {}) {
+  cancelWarnedRestart(serverId, { broadcast = true, clearPendingBedrockConnect = false } = {}) {
     const key = this.sessionKey(serverId);
     const scheduled = this.scheduledRestarts.get(key);
     if (scheduled) {
@@ -86,8 +88,275 @@ class ServerManager {
     }
     db.prepare('UPDATE servers SET restart_scheduled_at = NULL WHERE id = ?').run(serverId);
     this.invalidateServerCache(serverId);
+    if (clearPendingBedrockConnect) {
+      const pending = this.getPendingBedrockConnect();
+      if (pending && Number(pending.occupantId) === Number(serverId)) {
+        this.setPendingBedrockConnect(null);
+        if (pending.nextPort) {
+          db.prepare(`
+            UPDATE servers
+            SET pending_port = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND pending_port = ?
+          `).run(serverId, pending.nextPort);
+          this.invalidateServerCache(serverId);
+        }
+      }
+    }
     if (broadcast) this.broadcastServerStatus(serverId);
     return { success: true };
+  }
+
+  isBedrockConnect(server) {
+    return Boolean(server && server.kind === 'bedrock_connect');
+  }
+
+  getBedrockConnectServer() {
+    return db.prepare("SELECT * FROM servers WHERE kind = 'bedrock_connect' LIMIT 1").get();
+  }
+
+  getPendingBedrockConnect() {
+    try {
+      const raw = settingsStore.get(settingsStore.KEYS.BEDROCK_CONNECT_PENDING);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  setPendingBedrockConnect(value) {
+    if (!value) settingsStore.remove(settingsStore.KEYS.BEDROCK_CONNECT_PENDING);
+    else settingsStore.set(settingsStore.KEYS.BEDROCK_CONNECT_PENDING, JSON.stringify(value));
+  }
+
+  async nextAvailablePort({ exclude = [] } = {}) {
+    const skip = new Set(exclude.map(Number));
+    const { available } = await this.getAllPorts();
+    const match = available.find(item => !skip.has(item.port));
+    if (!match) throw new Error('No available UDP ports are left in the manager ranges');
+    return match.port;
+  }
+
+  async previewBedrockConnect() {
+    const existing = this.getBedrockConnectServer();
+    const pending = this.getPendingBedrockConnect();
+    if (existing) {
+      return { exists: true, pending: null, conflict: null, port: BEDROCK_CONNECT_PORT };
+    }
+    const occupant = db.prepare('SELECT * FROM servers WHERE port = ?').get(BEDROCK_CONNECT_PORT);
+    if (!occupant) {
+      const free = await this.isUdpPortAvailable(BEDROCK_CONNECT_PORT);
+      return {
+        exists: false,
+        pending,
+        conflict: null,
+        port: BEDROCK_CONNECT_PORT,
+        portBlocked: !free,
+      };
+    }
+    const nextPort = await this.nextAvailablePort({ exclude: [BEDROCK_CONNECT_PORT, occupant.port] });
+    return {
+      exists: false,
+      pending,
+      port: BEDROCK_CONNECT_PORT,
+      conflict: {
+        serverId: occupant.id,
+        serverName: occupant.name,
+        status: occupant.status,
+        currentPort: occupant.port,
+        nextPort,
+      },
+    };
+  }
+
+  async createBedrockConnect({ acceptConflict = false, restartMode = 'immediate' } = {}) {
+    if (this.getBedrockConnectServer()) {
+      throw new Error('A Bedrock Connect server already exists');
+    }
+    if (this.getPendingBedrockConnect()) {
+      throw new Error('Bedrock Connect is already scheduled after a warned restart');
+    }
+    const preview = await this.previewBedrockConnect();
+    if (preview.portBlocked) {
+      throw new Error(`UDP port ${BEDROCK_CONNECT_PORT} is in use by another process. Free it before creating Bedrock Connect.`);
+    }
+    if (preview.conflict && !acceptConflict) {
+      const err = new Error(`Port ${BEDROCK_CONNECT_PORT} is used by ${preview.conflict.serverName}`);
+      err.code = 'PORT_CONFLICT';
+      err.conflict = preview.conflict;
+      throw err;
+    }
+    if (preview.conflict) {
+      const occupant = this.getServer(preview.conflict.serverId);
+      if (occupant.status === 'running' && restartMode === 'warned') {
+        await this.queuePortChange(occupant.id, preview.conflict.nextPort, { restartRequired: true });
+        this.scheduleWarnedRestart(occupant.id);
+        this.setPendingBedrockConnect({
+          occupantId: occupant.id,
+          nextPort: preview.conflict.nextPort,
+          createdAt: new Date().toISOString(),
+        });
+        return {
+          pending: true,
+          conflict: preview.conflict,
+          message: `${occupant.name} will move to port ${preview.conflict.nextPort} after the five-minute restart. Bedrock Connect will be created then.`,
+        };
+      }
+      await this.relocateServerForBedrockConnect(occupant.id, preview.conflict.nextPort, restartMode);
+    }
+
+    return this.provisionBedrockConnect();
+  }
+
+  async relocateServerForBedrockConnect(serverId, nextPort) {
+    const occupant = this.getServer(serverId);
+    const wasRunning = occupant.status === 'running';
+    if (wasRunning) {
+      await this.stopServer(serverId);
+    }
+    await this.commitPortChange(serverId, nextPort);
+    if (wasRunning) {
+      await this.startServer(serverId);
+    }
+  }
+
+  async completePendingBedrockConnectIfNeeded(serverId) {
+    const pending = this.getPendingBedrockConnect();
+    if (!pending || Number(pending.occupantId) !== Number(serverId)) return null;
+    this.setPendingBedrockConnect(null);
+    if (this.getBedrockConnectServer()) return null;
+    const occupant = this.getServer(serverId);
+    if (occupant && occupant.pending_port) {
+      await this.commitPortChange(serverId, occupant.pending_port);
+    } else if (occupant && Number(occupant.port) === BEDROCK_CONNECT_PORT) {
+      const nextPort = pending.nextPort || await this.nextAvailablePort({ exclude: [BEDROCK_CONNECT_PORT] });
+      await this.commitPortChange(serverId, nextPort);
+    }
+    return this.provisionBedrockConnect();
+  }
+
+  async provisionBedrockConnect() {
+    const bedrockConnect = require('./bedrockConnect');
+    await bedrockConnect.assertJavaAvailable();
+    const jar = await bedrockConnect.ensureJarAvailable();
+    const serverPath = path.join(BASE_DIR, 'bedrock-connect');
+    fs.mkdirSync(serverPath, { recursive: true });
+    const installed = bedrockConnect.installJarInto(serverPath, jar.tag);
+
+    const insert = db.prepare(`
+      INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
+        server_description, server_motd, status, data_path, kind)
+      VALUES (?, ?, ?, 0, 0, 'peaceful', 'survival', ?, ?, 'stopped', ?, 'bedrock_connect')
+    `);
+    const result = insert.run(
+      bedrockConnect.DISPLAY_NAME,
+      installed.tag,
+      BEDROCK_CONNECT_PORT,
+      'Console server list for Xbox, PlayStation, and Nintendo Switch',
+      'Bedrock Connect',
+      serverPath
+    );
+    const serverId = result.lastInsertRowid;
+    this.registerPort(serverId, BEDROCK_CONNECT_PORT, 'udp');
+    this.invalidateServerCache(serverId);
+    this.setPendingBedrockConnect(null);
+    logger.info(`Created Bedrock Connect on port ${BEDROCK_CONNECT_PORT} (${installed.tag})`);
+    return { id: serverId, name: bedrockConnect.DISPLAY_NAME, port: BEDROCK_CONNECT_PORT, version: installed.tag };
+  }
+
+  listBedrockConnectVersions() {
+    const bedrockConnect = require('./bedrockConnect');
+    const existing = this.getBedrockConnectServer();
+    return {
+      installed: existing?.version || null,
+      latestStored: bedrockConnect.latestStoredVersion()?.tag || null,
+      stored: bedrockConnect.listVersions().map(item => ({
+        tag: item.tag,
+        publishedAt: item.publishedAt,
+        downloadedAt: item.downloadedAt,
+      })),
+    };
+  }
+
+  async checkBedrockConnectUpdates() {
+    const bedrockConnect = require('./bedrockConnect');
+    const synced = await bedrockConnect.syncLatest({ download: true });
+    const existing = this.getBedrockConnectServer();
+    return {
+      latestTag: synced.latestTag,
+      installed: existing?.version || null,
+      stored: synced.stored.map(item => ({
+        tag: item.tag,
+        publishedAt: item.publishedAt,
+        downloadedAt: item.downloadedAt,
+      })),
+    };
+  }
+
+  async queuePortChange(serverId, newPort, { restartRequired = false } = {}) {
+    const server = this.getServer(serverId);
+    if (!server) throw new Error('Server not found');
+    if (this.isBedrockConnect(server) && Number(newPort) !== BEDROCK_CONNECT_PORT) {
+      throw new Error('Bedrock Connect must stay on UDP port 19132');
+    }
+    const port = parseInt(newPort, 10);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('Port must be between 1 and 65535');
+    }
+    if (port === Number(server.port) && !server.pending_port) return { success: true, port };
+
+    const taken = db.prepare('SELECT id, name FROM servers WHERE port = ? AND id != ?').get(port, serverId);
+    if (taken) throw new Error(`Port ${port} is already assigned to ${taken.name}`);
+    const pendingTaken = db.prepare('SELECT id, name FROM servers WHERE pending_port = ? AND id != ?').get(port, serverId);
+    if (pendingTaken) throw new Error(`Port ${port} is already reserved for ${pendingTaken.name}`);
+
+    const bc = this.getBedrockConnectServer();
+    if (port === BEDROCK_CONNECT_PORT && bc && Number(bc.id) !== Number(serverId)) {
+      throw new Error('UDP port 19132 is reserved for Bedrock Connect');
+    }
+
+    if (port !== Number(server.port) && !(await this.isUdpPortAvailable(port))) {
+      throw new Error(`UDP port ${port} is already in use by another process`);
+    }
+
+    if (restartRequired || server.status === 'running') {
+      db.prepare(`
+        UPDATE servers SET pending_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+      `).run(port, serverId);
+      this.invalidateServerCache(serverId);
+      this.markRestartRequired(serverId, `Port will change to ${port}`);
+      return { success: true, port, pending: true };
+    }
+
+    await this.commitPortChange(serverId, port);
+    return { success: true, port, pending: false };
+  }
+
+  async commitPortChange(serverId, newPort) {
+    const server = this.getServer(serverId);
+    if (!server) throw new Error('Server not found');
+    const port = parseInt(newPort, 10);
+    if (this.isBedrockConnect(server) && port !== BEDROCK_CONNECT_PORT) {
+      throw new Error('Bedrock Connect must stay on UDP port 19132');
+    }
+
+    if (!this.isBedrockConnect(server)) {
+      const propsPath = path.join(server.data_path, 'server.properties');
+      const props = this.readServerProperties(propsPath);
+      props['server-port'] = String(port);
+      props['server-portv6'] = String(port);
+      this.writeServerProperties(propsPath, props);
+    }
+
+    db.prepare(`
+      UPDATE servers
+      SET port = ?, pending_port = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(port, serverId);
+    this.unregisterPorts(serverId);
+    this.registerPort(serverId, port, 'udp');
+    this.invalidateServerCache(serverId);
+    logger.info(`Server ${server.name} is now on port ${port}`);
+    return { success: true, port };
   }
 
   // ========== SERVER LIFECYCLE ==========
@@ -99,11 +368,18 @@ class ServerManager {
     if (port < 1 || port > 65535) {
       throw new Error('Port must be between 1 and 65535');
     }
+    if (Number(port) === BEDROCK_CONNECT_PORT && (this.getBedrockConnectServer() || this.getPendingBedrockConnect())) {
+      throw new Error('UDP port 19132 is reserved for Bedrock Connect');
+    }
 
     // Check port availability
     const existing = db.prepare('SELECT * FROM servers WHERE port = ? OR name = ?').get(port, name);
     if (existing) {
       throw new Error('Port or server name already in use');
+    }
+    const pendingTaken = db.prepare('SELECT name FROM servers WHERE pending_port = ?').get(port);
+    if (pendingTaken) {
+      throw new Error(`Port ${port} is already reserved for ${pendingTaken.name}`);
     }
 
     if (!(await this.isUdpPortAvailable(port))) {
@@ -235,13 +511,77 @@ done
     logger.info(`Created stub server at ${targetDir}`);
   }
 
+  async startBedrockConnect(server) {
+    const bedrockConnect = require('./bedrockConnect');
+    await bedrockConnect.assertJavaAvailable();
+    const installed = bedrockConnect.installedJar(server.data_path)
+      || bedrockConnect.installJarInto(server.data_path, server.version);
+    const sessionKey = this.sessionKey(server.id);
+    try {
+      const { spawn: spawnPty } = require('node-pty');
+      const pty = spawnPty('java', [
+        '-jar', installed.jarPath,
+        'nodb=true',
+        `port=${BEDROCK_CONNECT_PORT}`,
+        'bindip=0.0.0.0',
+      ], {
+        name: 'xterm-color',
+        cols: 120,
+        rows: 30,
+        cwd: server.data_path,
+        env: { ...process.env },
+      });
+
+      this.ptySessions.set(sessionKey, pty);
+      this.setupPtyOutputBroadcast(server.id, pty);
+      db.prepare('UPDATE servers SET status = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('starting', server.id);
+      this.invalidateServerCache(server.id);
+      this.broadcastServerStatus(server.id);
+
+      setTimeout(() => {
+        if (this.ptySessions.has(sessionKey)) {
+          db.prepare(`
+            UPDATE servers
+            SET status = ?, pending_restart = 0, pending_restart_reason = NULL,
+              pending_restart_at = NULL, restart_scheduled_at = NULL,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run('running', server.id);
+          this.invalidateServerCache(server.id);
+          logger.info('Bedrock Connect started');
+          this.broadcastServerStatus(server.id);
+        }
+      }, 3000);
+
+      return { success: true, message: 'Bedrock Connect starting...' };
+    } catch (err) {
+      logger.error(`Failed to start Bedrock Connect: ${err.message}`);
+      db.prepare('UPDATE servers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('stopped', server.id);
+      this.invalidateServerCache(server.id);
+      throw new Error(`Failed to start Bedrock Connect: ${err.message}`);
+    }
+  }
+
   async startServer(serverId) {
     const sessionKey = this.sessionKey(serverId);
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
     if (server.status === 'running') throw new Error('Server already running');
 
-    const serverPath = server.data_path;
+    if (server.pending_port) {
+      await this.commitPortChange(serverId, server.pending_port);
+    }
+    const current = this.getServer(serverId);
+    const serverPath = current.data_path;
+
+    if (this.isBedrockConnect(current)) {
+      const result = await this.startBedrockConnect(current);
+      await this.completePendingBedrockConnectIfNeeded(serverId);
+      return result;
+    }
+
     const serverBin = path.join(serverPath, 'bedrock_server');
 
     // Check if binary exists
@@ -295,6 +635,7 @@ done
         }
       }, 3000);
 
+      await this.completePendingBedrockConnectIfNeeded(serverId);
       return { success: true, message: 'Server starting...' };
     } catch (err) {
       logger.error(`Failed to start server ${server.name}: ${err.message}`);
@@ -315,22 +656,28 @@ done
 
     const pty = this.ptySessions.get(sessionKey);
     if (pty) {
-      // Send stop command
-      pty.write('stop\n');
-      
-      // Wait for shutdown
-      await new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          pty.kill();
-          resolve();
-        }, 15000);
-        
-        pty.on('exit', () => {
-          clearTimeout(timeout);
-          resolve();
+      if (this.isBedrockConnect(server)) {
+        try { pty.kill(); } catch { /* ignore */ }
+        await new Promise((resolve) => {
+          const timeout = setTimeout(resolve, 3000);
+          pty.on('exit', () => {
+            clearTimeout(timeout);
+            resolve();
+          });
         });
-      });
-
+      } else {
+        pty.write('stop\n');
+        await new Promise((resolve) => {
+          const timeout = setTimeout(() => {
+            pty.kill();
+            resolve();
+          }, 15000);
+          pty.on('exit', () => {
+            clearTimeout(timeout);
+            resolve();
+          });
+        });
+      }
       this.ptySessions.delete(sessionKey);
     }
 
@@ -347,12 +694,16 @@ done
   async restartServer(serverId) {
     await this.stopServer(serverId);
     await this.startServer(serverId);
+    await this.completePendingBedrockConnectIfNeeded(serverId);
   }
 
   scheduleWarnedRestart(serverId) {
     const key = this.sessionKey(serverId);
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+    if (this.isBedrockConnect(server)) {
+      throw new Error('Bedrock Connect does not support warned restarts');
+    }
     if (server.status !== 'running' || !this.ptySessions.has(key)) {
       throw new Error('Server must be running to schedule a warned restart');
     }
@@ -414,6 +765,11 @@ done
     // Unregister ports
     this.unregisterPorts(serverId);
 
+    const pending = this.getPendingBedrockConnect();
+    if (pending && (Number(pending.occupantId) === Number(serverId) || this.isBedrockConnect(server))) {
+      this.setPendingBedrockConnect(null);
+    }
+
     // Remove from database
     db.prepare('DELETE FROM servers WHERE id = ?').run(serverId);
     
@@ -425,6 +781,10 @@ done
   // ========== SERVER COMMANDS ==========
 
   sendCommand(serverId, command) {
+    const server = this.getServer(serverId);
+    if (this.isBedrockConnect(server)) {
+      throw new Error('Bedrock Connect does not accept console commands');
+    }
     const pty = this.ptySessions.get(this.sessionKey(serverId));
     if (!pty) {
       this.markServerStopped(serverId);
@@ -436,9 +796,17 @@ done
 
   // ========== SERVER PROPERTIES ==========
 
-  updateSettings(serverId, settings) {
+  async updateSettings(serverId, settings) {
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+
+    if (this.isBedrockConnect(server)) {
+      throw new Error('Bedrock Connect settings cannot be changed');
+    }
+
+    const requestedPort = settings.port;
+    const rest = { ...settings };
+    delete rest.port;
 
     const propsPath = path.join(server.data_path, 'server.properties');
     const currentProps = this.readServerProperties(propsPath);
@@ -479,13 +847,12 @@ done
       'enable_player_data_initialization', 'auto_ice', 'natural_regeneration',
       'remote_discovery',
     ]);
-    for (const [key, value] of Object.entries(settings)) {
-      const propKey = mapping[key] || key;
-      if (propKey) {
-        currentProps[propKey] = booleanSettings.has(key)
-          ? String(value === true || value === 1 || value === '1' || value === 'true')
-          : String(value);
-      }
+    for (const [key, value] of Object.entries(rest)) {
+      const propKey = mapping[key];
+      if (!propKey || value == null) continue;
+      currentProps[propKey] = booleanSettings.has(key)
+        ? String(value === true || value === 1 || value === '1' || value === 'true')
+        : String(value);
     }
 
     this.writeServerProperties(propsPath, currentProps);
@@ -510,16 +877,16 @@ done
       : Number(value === true || value === 1 || value === '1' || value === 'true');
 
     update.run(
-      settings.max_players ?? null,
-      settings.difficulty ?? null,
-      settings.gamemode ?? null,
-      toSqliteBoolean(settings.whitelist_mode),
-      settings.server_description ?? null,
-      settings.server_motd ?? null,
-      toSqliteBoolean(settings.texture_pack_required),
-      toSqliteBoolean(settings.enable_cheats),
-      toSqliteBoolean(settings.server_authoritative),
-      toSqliteBoolean(settings.default_1st_person),
+      rest.max_players ?? null,
+      rest.difficulty ?? null,
+      rest.gamemode ?? null,
+      toSqliteBoolean(rest.whitelist_mode),
+      rest.server_description ?? null,
+      rest.server_motd ?? null,
+      toSqliteBoolean(rest.texture_pack_required),
+      toSqliteBoolean(rest.enable_cheats),
+      toSqliteBoolean(rest.server_authoritative),
+      toSqliteBoolean(rest.default_1st_person),
       serverId
     );
 
@@ -527,8 +894,12 @@ done
     
     // Invalidate cache so next getServer() reads fresh data from DB
     this.invalidateServerCache(serverId);
-    if (server.status === 'running' && Object.keys(settings).length > 0) {
+    if (server.status === 'running' && Object.keys(rest).length > 0) {
       this.markRestartRequired(serverId, 'Server settings changed');
+    }
+
+    if (requestedPort != null && requestedPort !== '' && Number(requestedPort) !== Number(server.port)) {
+      return this.queuePortChange(serverId, requestedPort);
     }
     return { success: true };
   }
@@ -569,6 +940,26 @@ done
   async updateServer(serverId, targetVersion) {
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+
+    if (this.isBedrockConnect(server)) {
+      const bedrockConnect = require('./bedrockConnect');
+      if (!targetVersion || targetVersion === 'latest') {
+        await bedrockConnect.ensureJarAvailable();
+      }
+      const installed = bedrockConnect.installJarInto(server.data_path, targetVersion || 'latest');
+      const fromVersion = server.version;
+      db.prepare('UPDATE servers SET version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run(installed.tag, serverId);
+      db.prepare(`
+        INSERT INTO update_history (server_id, from_version, to_version, status, notes)
+        VALUES (?, ?, ?, 'completed', ?)
+      `).run(serverId, fromVersion, installed.tag, 'Bedrock Connect JAR updated');
+      this.invalidateServerCache(serverId);
+      if (server.status === 'running') {
+        this.markRestartRequired(serverId, `Bedrock Connect ${installed.tag} is ready`);
+      }
+      return { success: true, fromVersion, toVersion: installed.tag };
+    }
 
     const fromVersion = server.version;
     
@@ -766,6 +1157,9 @@ done
     const server = this.getServer(serverId);
     const player = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
     if (!server) throw new Error('Server not found');
+    if (this.isBedrockConnect(server)) {
+      throw new Error('Bedrock Connect does not support player access changes');
+    }
     if (!player) throw new Error('Player not found');
 
     const current = db.prepare(`
@@ -932,8 +1326,33 @@ done
       ORDER BY p.port
     `).all();
 
-    // Generate available ports (common Minecraft ranges)
     const usedPortSet = new Set(usedPorts.map(p => p.port));
+    const pendingRows = db.prepare(`
+      SELECT pending_port AS port, name AS server_name
+      FROM servers
+      WHERE pending_port IS NOT NULL
+    `).all();
+    for (const row of pendingRows) {
+      if (usedPortSet.has(row.port)) continue;
+      usedPortSet.add(row.port);
+      usedPorts.push({
+        port: row.port,
+        protocol: 'udp',
+        in_use: 1,
+        server_name: `${row.server_name} (pending)`,
+      });
+    }
+    if ((this.getBedrockConnectServer() || this.getPendingBedrockConnect()) && !usedPortSet.has(BEDROCK_CONNECT_PORT)) {
+      usedPortSet.add(BEDROCK_CONNECT_PORT);
+      usedPorts.push({
+        port: BEDROCK_CONNECT_PORT,
+        protocol: 'udp',
+        in_use: 1,
+        server_name: 'Bedrock Connect',
+      });
+    }
+
+    // Generate available ports (common Minecraft ranges)
     const candidatePorts = [];
     
     // Check ranges: 1-1024 (system), 1025-49151 (registered), 49152-65535 (dynamic)
@@ -980,7 +1399,10 @@ done
   }
 
   getAllServers() {
-    const rows = db.prepare('SELECT * FROM servers ORDER BY name').all();
+    const rows = db.prepare(`
+      SELECT * FROM servers
+      ORDER BY CASE WHEN kind = 'bedrock_connect' THEN 0 ELSE 1 END, name COLLATE NOCASE
+    `).all();
     rows.forEach(r => this.servers.set(this.sessionKey(r.id), r));
     return rows;
   }

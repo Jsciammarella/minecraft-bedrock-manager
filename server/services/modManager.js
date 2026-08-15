@@ -82,6 +82,9 @@ class ModManager {
   async installModToServer(serverId, modId) {
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
     if (!server) throw new Error('Server not found');
+    if (server.kind === 'bedrock_connect') {
+      throw new Error('Bedrock Connect does not support mods');
+    }
 
     const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
     if (!mod) throw new Error('Mod not found');
@@ -107,6 +110,9 @@ class ModManager {
   async uninstallModFromServer(serverId, modId) {
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
     if (!server) throw new Error('Server not found');
+    if (server.kind === 'bedrock_connect') {
+      throw new Error('Bedrock Connect does not support mods');
+    }
 
     const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
     if (!mod) throw new Error('Mod not found');

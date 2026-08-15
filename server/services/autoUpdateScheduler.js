@@ -56,6 +56,14 @@ class AutoUpdateScheduler {
     try {
       logger.info('Running scheduled auto-update check...');
 
+      try {
+        const bedrockConnect = require('./bedrockConnect');
+        const synced = await bedrockConnect.syncLatest({ download: true });
+        logger.info(`Bedrock Connect JAR repository synced (latest ${synced.latestTag})`);
+      } catch (err) {
+        logger.warn(`Bedrock Connect JAR sync failed: ${err.message}`);
+      }
+
       // Get all servers with auto-update enabled
       const servers = db.prepare(`
         SELECT s.*, au.enabled, au.check_interval_hours, au.last_check
@@ -72,6 +80,8 @@ class AutoUpdateScheduler {
       // Check for latest version
       const updateInfo = await serverManager.checkForUpdates();
       const latestVersion = updateInfo?.latestVersion || 'latest';
+      const bedrockConnect = require('./bedrockConnect');
+      const latestConnect = bedrockConnect.latestStoredVersion();
 
       let updated = 0;
       let skipped = 0;
@@ -79,6 +89,33 @@ class AutoUpdateScheduler {
 
       for (const server of servers) {
         try {
+          if (server.kind === 'bedrock_connect') {
+            if (!latestConnect) {
+              skipped++;
+              this.updateLastCheck(server.id);
+              continue;
+            }
+            if (server.version === latestConnect.tag) {
+              logger.info(`Bedrock Connect already on ${server.version}`);
+              skipped++;
+              this.updateLastCheck(server.id);
+              continue;
+            }
+            logger.info(`Auto-updating Bedrock Connect from ${server.version} to ${latestConnect.tag}`);
+            await serverManager.updateServer(server.id, latestConnect.tag);
+            updated++;
+            this.updateLastCheck(server.id);
+            if (global.io) {
+              global.io.emit('server-updated', {
+                serverId: server.id,
+                name: server.name,
+                fromVersion: server.version,
+                toVersion: latestConnect.tag,
+              });
+            }
+            continue;
+          }
+
           // Skip if already on latest version
           if (server.version === latestVersion) {
             logger.info(`Server ${server.name} already on latest version (${server.version})`);
@@ -141,6 +178,10 @@ class AutoUpdateScheduler {
    */
   enableAutoUpdate(serverId, intervalHours = 24) {
     try {
+      const server = db.prepare('SELECT kind FROM servers WHERE id = ?').get(serverId);
+      if (server?.kind === 'bedrock_connect') {
+        throw new Error('Bedrock Connect auto-update settings cannot be changed');
+      }
       db.prepare(`
         INSERT INTO auto_updates (server_id, enabled, check_interval_hours)
         VALUES (?, 1, ?)

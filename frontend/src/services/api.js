@@ -21,6 +21,10 @@ export const serverApi = {
   command: (id, cmd) => api.post(`/servers/${id}/command`, { command: cmd }),
   updateVersion: (id, version) => api.post(`/servers/${id}/update`, { version }),
   checkUpdates: () => api.get('/servers/check-updates'),
+  previewBedrockConnect: () => api.get('/servers/bedrock-connect/preview'),
+  createBedrockConnect: (data) => api.post('/servers/bedrock-connect', data, { timeout: 120000 }),
+  bedrockConnectVersions: () => api.get('/servers/bedrock-connect/versions'),
+  checkBedrockConnectUpdates: () => api.post('/servers/bedrock-connect/check-updates', {}, { timeout: 120000 }),
   
   // Auto-update management
   getAutoUpdate: (id) => api.get(`/servers/${id}/auto-update`),

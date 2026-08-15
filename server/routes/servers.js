@@ -21,6 +21,66 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/check-updates', async (req, res) => {
+  try {
+    const result = await serverManager.checkForUpdates();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/auto-update/all', async (req, res) => {
+  try {
+    const configs = autoUpdateScheduler.getAllAutoUpdateConfigs();
+    res.json(configs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/bedrock-connect/preview', async (req, res) => {
+  try {
+    const preview = await serverManager.previewBedrockConnect();
+    res.json(preview);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/bedrock-connect/versions', async (req, res) => {
+  try {
+    res.json(serverManager.listBedrockConnectVersions());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/bedrock-connect/check-updates', async (req, res) => {
+  try {
+    const result = await serverManager.checkBedrockConnectUpdates();
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/bedrock-connect', async (req, res) => {
+  try {
+    const { acceptConflict, restartMode } = req.body || {};
+    const result = await serverManager.createBedrockConnect({
+      acceptConflict: Boolean(acceptConflict),
+      restartMode: restartMode === 'warned' ? 'warned' : 'immediate',
+    });
+    res.status(result.pending ? 202 : 201).json(result);
+  } catch (err) {
+    if (err.code === 'PORT_CONFLICT') {
+      return res.status(409).json({ error: err.message, conflict: err.conflict });
+    }
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // Get single server
 router.get('/:id', async (req, res) => {
   try {
@@ -111,7 +171,7 @@ router.post('/:id/restart-with-warning', async (req, res) => {
 
 router.delete('/:id/restart-with-warning', async (req, res) => {
   try {
-    const result = serverManager.cancelWarnedRestart(req.params.id);
+    const result = serverManager.cancelWarnedRestart(req.params.id, { clearPendingBedrockConnect: true });
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -140,16 +200,6 @@ router.post('/:id/update', async (req, res) => {
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
-  }
-});
-
-// Check for updates
-router.get('/check-updates', async (req, res) => {
-  try {
-    const result = await serverManager.checkForUpdates();
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
 });
 
@@ -183,16 +233,6 @@ router.delete('/:id/auto-update', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: err.message });
-  }
-});
-
-// Get all auto-update configs
-router.get('/auto-update/all', async (req, res) => {
-  try {
-    const configs = autoUpdateScheduler.getAllAutoUpdateConfigs();
-    res.json(configs);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
 });
 

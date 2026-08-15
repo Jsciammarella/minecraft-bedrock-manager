@@ -192,6 +192,59 @@ async function run() {
   const updatedMod = await modManager.updateMod(libraryMod.lastInsertRowid, { description: 'Added after upload' });
   assert.equal(updatedMod.description, 'Added after upload');
 
+  const serverColumns = db.prepare('PRAGMA table_info(servers)').all().map(column => column.name);
+  assert(serverColumns.includes('kind'), 'servers.kind column was not created');
+  assert(serverColumns.includes('pending_port'), 'servers.pending_port column was not created');
+
+  const portServerPath = path.join(testRoot, 'port-server');
+  fs.mkdirSync(portServerPath, { recursive: true });
+  fs.writeFileSync(path.join(portServerPath, 'server.properties'), 'server-port=40110\nserver-portv6=40110\n');
+  const portServer = db.prepare(`
+    INSERT INTO servers (name, version, port, data_path)
+    VALUES (?, 'test', ?, ?)
+  `).run(`port-change-${suffix}`, 40110, portServerPath);
+  const queued = await serverManager.queuePortChange(portServer.lastInsertRowid, 40111);
+  assert.equal(queued.pending, false, 'stopped server port change should apply immediately');
+  const moved = serverManager.getServer(portServer.lastInsertRowid);
+  assert.equal(moved.port, 40111);
+  assert.equal(moved.pending_port, null);
+  const props = fs.readFileSync(path.join(portServerPath, 'server.properties'), 'utf8');
+  assert.match(props, /server-port=40111/);
+
+  const occupantPath = path.join(testRoot, 'occupant');
+  fs.mkdirSync(occupantPath, { recursive: true });
+  const occupant = db.prepare(`
+    INSERT INTO servers (name, version, port, data_path)
+    VALUES (?, 'test', 19132, ?)
+  `).run(`occupant-${suffix}`, occupantPath);
+  serverManager.registerPort(occupant.lastInsertRowid, 19132, 'udp');
+  const preview = await serverManager.previewBedrockConnect();
+  assert.equal(preview.exists, false);
+  assert(preview.conflict, 'preview should report a 19132 conflict');
+  assert.equal(preview.conflict.serverId, occupant.lastInsertRowid);
+  assert.notEqual(preview.conflict.nextPort, 19132);
+
+  db.prepare('DELETE FROM servers WHERE id = ?').run(occupant.lastInsertRowid);
+  const bcPath = path.join(testRoot, 'bedrock-connect');
+  fs.mkdirSync(bcPath, { recursive: true });
+  const bc = db.prepare(`
+    INSERT INTO servers (name, version, port, data_path, kind)
+    VALUES (?, 'test-jar', 19132, ?, 'bedrock_connect')
+  `).run('Bedrock Connect', bcPath);
+  const alpha = db.prepare(`
+    INSERT INTO servers (name, version, port, data_path)
+    VALUES (?, 'test', ?, ?)
+  `).run(`aaa-${suffix}`, 40120, path.join(testRoot, 'alpha'));
+  const ordered = serverManager.getAllServers();
+  assert.equal(ordered[0].id, bc.lastInsertRowid, 'Bedrock Connect tile should sort first');
+  assert(ordered.some(row => row.id === alpha.lastInsertRowid));
+  const ports = await serverManager.getAllPorts();
+  assert(ports.used.some(item => item.port === 19132), '19132 should be marked used while Bedrock Connect exists');
+  await assert.rejects(
+    () => serverManager.createServer({ name: `blocked-${suffix}`, port: 19132, version: 'latest' }),
+    /19132 is reserved/
+  );
+
   console.log(JSON.stringify({
     databaseMigration: 'ok',
     udpPortDetection: 'ok',

@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tar \
     git \
     git-lfs \
+    default-jre-headless \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && git lfs install --system
@@ -53,7 +54,7 @@ COPY server/ ./server/
 COPY --from=frontend-build /app/public ./public
 
 # Create data directories
-RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog
+RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog /app/data/bedrock-connect
 
 # Create non-root user
 RUN groupadd -r mcmanager && useradd -r -g mcmanager -d /app -s /bin/bash mcmanager \

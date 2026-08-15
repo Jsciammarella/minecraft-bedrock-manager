@@ -43,6 +43,8 @@ db.exec(`
     pending_restart_reason TEXT,
     pending_restart_at DATETIME,
     restart_scheduled_at DATETIME,
+    kind TEXT NOT NULL DEFAULT 'bedrock',
+    pending_port INTEGER,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -185,5 +187,11 @@ ensureServerColumn('pending_restart', 'INTEGER NOT NULL DEFAULT 0');
 ensureServerColumn('pending_restart_reason', 'TEXT');
 ensureServerColumn('pending_restart_at', 'DATETIME');
 ensureServerColumn('restart_scheduled_at', 'DATETIME');
+ensureServerColumn('kind', "TEXT NOT NULL DEFAULT 'bedrock'");
+ensureServerColumn('pending_port', 'INTEGER');
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_one_bedrock_connect
+  ON servers(kind) WHERE kind = 'bedrock_connect'
+`);
 
 module.exports = db;
