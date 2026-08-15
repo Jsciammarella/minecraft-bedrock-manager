@@ -600,12 +600,11 @@ class GitCatalogClient {
     if (token) {
       const basic = Buffer.from(`${username || 'oauth2'}:${token}`, 'utf8').toString('base64');
       const header = `Authorization: Basic ${basic}`;
-      gitArgs.push('-c', `http.extraHeader=${header}`);
       try {
         const origin = new URL(this.sshToHttps(this.getConfig().url || 'https://example.com')).origin;
         gitArgs.push('-c', `http.${origin}/.extraHeader=${header}`);
       } catch {
-        // Host-specific header is optional.
+        gitArgs.push('-c', `http.extraHeader=${header}`);
       }
     }
     if (lfsUrl) {
