@@ -40,6 +40,8 @@ echo -e "${YELLOW}Platform: $(uname -s) $(uname -m)${NC}"
 # Create required directories
 mkdir -p "${DATA_DIR}/servers"
 mkdir -p "${DATA_DIR}/mods"
+mkdir -p "${DATA_DIR}/mods/thumbs"
+mkdir -p "${DATA_DIR}/git-catalog"
 mkdir -p "${LOG_DIR}"
 mkdir -p "${DATA_DIR}/uploads"
 

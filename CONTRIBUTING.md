@@ -2,7 +2,7 @@
 
 ## Local setup
 
-Use Node.js 20 or newer. Install the backend and frontend dependencies, build the frontend, and run the smoke test:
+Use Node.js 20.x. Install the backend and frontend dependencies, build the frontend, and run the smoke test:
 
 ```bash
 npm ci

@@ -25,9 +25,16 @@ The recommended installation uses Docker:
 - Docker Engine 24 or newer with Docker Compose v2
 - At least 2 GB RAM, plus memory required by each Bedrock server
 - TCP access to the management port (default `3000`)
-- Host firewall access to the Bedrock UDP ranges used by the port selector
+- Host firewall access to the Bedrock UDP ranges used by the port selector (`19132-19199`, `25565-25665`, and `30000-30100`)
 
-For a native installation, use Node.js 20 or newer plus Python 3, `make`, and a C++ compiler for native dependencies.
+The production image already includes Git and Git LFS for the optional Git mod catalog.
+
+For a native installation:
+
+- Node.js **20.x** (the app is tested on 20; 24 and newer are not supported)
+- Python 3, `make`, and a C++ compiler (`g++`) for native modules such as `better-sqlite3` and `node-pty`
+- `git` for cloning and for the Git catalog; `git-lfs` if that catalog stores packs or thumbnails in Git LFS
+- `wget` and `tar` if you want the manager to attempt Bedrock binary downloads
 
 ## Install with Docker (recommended)
 
@@ -38,13 +45,28 @@ For a native installation, use Node.js 20 or newer plus Python 3, `make`, and a 
    cd minecraft-bedrock-manager
    ```
 
+   If you do not have SSH access to the Git host, use HTTPS instead:
+
+   ```bash
+   git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git
+   cd minecraft-bedrock-manager
+   ```
+
 2. Create your local configuration:
 
    ```bash
    cp .env.example .env
    ```
 
-   Change `TZ` and `PORT` if needed. `CURSEFORGE_API_KEY` is optional. Catalog sources can also be configured in the Mod Catalog settings page. Set `CONNECT_HOST` to the hostname or LAN IP players should use if the dashboard would otherwise show a Docker container address.
+   Edit `.env` as needed:
+
+   | Setting | When to change it |
+   | --- | --- |
+   | `TZ` | Host timezone, for example `America/Denver` |
+   | `PORT` | Web UI port if `3000` is already in use |
+   | `CONNECT_HOST` | LAN IP or DNS name players should use. Leave empty on Linux host networking to auto-detect. Set it on Docker Desktop / bridge networks so tiles do not show a container IP |
+   | `CURSEFORGE_API_KEY` | Optional. You can also paste this later in **Mod Catalog → Settings** |
+   | `GIT_CATALOG_*` | Optional. Preferred configuration is **Mod Catalog → Settings** |
 
 3. Configure the Ubuntu host firewall for the web interface and all ports offered by the server-creation dropdown:
 
@@ -52,7 +74,7 @@ For a native installation, use Node.js 20 or newer plus Python 3, `make`, and a 
    sudo ./scripts/configure-ubuntu-firewall.sh
    ```
 
-   The script adds UFW rules but deliberately does not enable UFW, because enabling it without an SSH rule could lock you out.
+   The script adds UFW rules but deliberately does not enable UFW, because enabling it without an SSH rule could lock you out. If UFW is not installed, install it with `sudo apt install ufw` or create equivalent rules on your firewall.
 
 4. Build and start the manager:
 
@@ -68,6 +90,12 @@ For a native installation, use Node.js 20 or newer plus Python 3, `make`, and a 
    ```
 
    Browse to `http://<server-address>:3000`.
+
+6. First-run checks in the UI:
+
+   - Create a Bedrock server from the dashboard
+   - Open **Mod Catalog → Settings** if you want CurseForge or a Git catalog
+   - Confirm each server tile shows the address players should use (`version • IP:port`)
 
 Application data is stored in the `mc-data` Docker volume and survives container replacement. Back up this volume before upgrades.
 
@@ -89,21 +117,27 @@ For a real server, download the current Linux Bedrock Dedicated Server from the 
 
    ```bash
    sudo apt update
-   sudo apt install -y ca-certificates curl python3 make g++ wget tar
+   sudo apt install -y ca-certificates curl python3 make g++ wget tar git git-lfs ufw
    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
    sudo apt install -y nodejs
+   sudo git lfs install --system
    ```
 
-2. Clone the repository, install locked dependencies, and build the UI:
+   Confirm `node -v` reports v20.x.
+
+2. Clone the repository, install locked dependencies, and build the UI. The backend serves the built files from `public/`.
 
    ```bash
-   git clone git@sci-gitlab-01.sciamfam.com:jamey/minecraft-bedrock-manager.git /opt/mc-manager
+   sudo mkdir -p /opt/mc-manager
+   sudo git clone git@sci-gitlab-01.sciamfam.com:jamey/minecraft-bedrock-manager.git /opt/mc-manager
    cd /opt/mc-manager
    cp .env.example .env
    npm ci
    npm --prefix frontend ci
    npm run build
    ```
+
+   Use the HTTPS clone URL if SSH is not configured: `https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git`.
 
 3. Add firewall rules for the management interface and all UDP ports offered in the server dropdown:
 
@@ -119,7 +153,20 @@ For a real server, download the current Linux Bedrock Dedicated Server from the 
    ./scripts/start.sh
    ```
 
-For a persistent service, create a dedicated `mcmanager` user, give it ownership of `/opt/mc-manager`, review `scripts/mc-manager.service`, then install that unit under `/etc/systemd/system/`.
+   Then browse to `http://<server-address>:3000`. If you cloned with `sudo`, either run `sudo ./scripts/start.sh` for this check or continue to the systemd service below.
+
+5. For a persistent service, create a dedicated user, install the unit, and start it:
+
+   ```bash
+   sudo useradd --system --home /opt/mc-manager --shell /usr/sbin/nologin mcmanager
+   sudo chown -R mcmanager:mcmanager /opt/mc-manager
+   sudo cp scripts/mc-manager.service /etc/systemd/system/mc-manager.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now mc-manager
+   sudo systemctl status mc-manager
+   ```
+
+   Review `scripts/mc-manager.service` before copying it if your install path, Node binary, or user differs. The unit loads `/opt/mc-manager/.env`, so that file must exist.
 
 On a native install there is no separate publishing step: every managed Bedrock process binds its configured UDP port directly on the Ubuntu host. The firewall rules above cover every port that the manager offers. Server creation also checks that the selected UDP port is not already bound by another process.
 
@@ -146,7 +193,7 @@ The available-port dropdown combines the manager database with a live host UDP b
 
 Never commit `.env`; it is intentionally ignored.
 
-The Mod Catalog settings page (gear icon on **Mod Catalog**) is the preferred place to add a CurseForge API key and a Git catalog repository. Values saved there override these environment variables. See [docs/git-mod-catalog.md](docs/git-mod-catalog.md) for the Git repository layout.
+The Mod Catalog settings page (gear icon on **Mod Catalog**) is the preferred place to add a CurseForge API key and a Git catalog repository. Values saved there override these environment variables. See [docs/git-mod-catalog.md](docs/git-mod-catalog.md) for the repository layout. The Docker image includes `git` and `git-lfs`; a native host needs those packages if you enable a Git catalog.
 
 ## Everyday operation
 
@@ -176,6 +223,8 @@ Runtime state is intentionally excluded from Git. It includes:
 
 - `data/servers/` — server binaries, worlds, properties, and SQLite data
 - `data/mods/` — manager-level add-on packages
+- `data/mods/thumbs/` — library thumbnail images
+- `data/git-catalog/` — cloned Git catalog repository
 - `data/uploads/` — temporary uploads
 - `data/logs/` — application logs
 

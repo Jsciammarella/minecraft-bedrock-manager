@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { modApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import {
   ArrowLeft, Package, Upload, Search, Trash2, Plus, X,
   AlertCircle, Check, Loader2, Server, Download, Settings, ImagePlus
 } from 'lucide-react';
+
+const LIBRARY_PAGE_SIZE = 40;
 
 function ModLibrary() {
   const navigate = useNavigate();
@@ -19,6 +21,8 @@ function ModLibrary() {
   const [success, setSuccess] = useState('');
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState('all');
+  const [page, setPage] = useState(1);
+  const [expandedMod, setExpandedMod] = useState(null);
 
   // Upload state
   const [uploading, setUploading] = useState(false);
@@ -47,6 +51,7 @@ function ModLibrary() {
     try {
       const res = await modApi.getAll();
       setMods(res.data);
+      setExpandedMod(prev => (prev ? res.data.find(mod => mod.id === prev.id) || null : null));
     } catch (err) {
       setError('Failed to load mods');
     } finally {
@@ -95,6 +100,7 @@ function ModLibrary() {
     try {
       await modApi.delete(modId);
       setSuccess('Mod deleted');
+      setExpandedMod(null);
       loadMods();
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
@@ -173,6 +179,23 @@ function ModLibrary() {
     return matchesSearch && matchesType;
   });
 
+  const totalPages = Math.max(1, Math.ceil(filteredMods.length / LIBRARY_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageMods = filteredMods.slice(
+    (currentPage - 1) * LIBRARY_PAGE_SIZE,
+    currentPage * LIBRARY_PAGE_SIZE
+  );
+  const pageNumbers = visiblePageNumbers(currentPage, totalPages);
+  const showPager = totalPages > 1 || currentPage > 1;
+
+  const goToPage = (nextPage) => {
+    setPage(Math.min(totalPages, Math.max(1, nextPage)));
+  };
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, totalPages));
+  }, [totalPages]);
+
   const getTypeBadge = (type) => {
     const colors = {
       addon: 'badge-info',
@@ -183,7 +206,7 @@ function ModLibrary() {
       skin: 'badge-danger',
       template: 'badge-info',
     };
-    return <span className={`badge ${colors[type] || 'badge-info'}`}>{type.replace('_', ' ')}</span>;
+    return <span className={`badge ${colors[type] || 'badge-info'}`}>{(type || 'addon').replace('_', ' ')}</span>;
   };
 
   const getSourceBadge = (source) => {
@@ -204,7 +227,7 @@ function ModLibrary() {
   }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
+    <div className="p-6 max-w-7xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-4">
@@ -247,14 +270,20 @@ function ModLibrary() {
             <input
               type="text"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
               className="input pl-10"
               placeholder="Search mods..."
             />
           </div>
           <select
             value={filterType}
-            onChange={(e) => setFilterType(e.target.value)}
+            onChange={(e) => {
+              setFilterType(e.target.value);
+              setPage(1);
+            }}
             className="input w-40"
           >
             <option value="all">All Types</option>
@@ -282,74 +311,51 @@ function ModLibrary() {
           </div>
         </div>
       ) : (
-        <div className="space-y-3">
-          {filteredMods.map(mod => (
-            <div key={mod.id} className="card animate-slide-up">
-              <div className="flex items-start gap-4">
-                {/* Icon */}
-                <div className="w-12 h-12 bg-mc-darker rounded-lg flex items-center justify-center flex-shrink-0 overflow-hidden">
-                  {libraryThumbnailSrc(mod) ? (
-                    <img
-                      src={libraryThumbnailSrc(mod)}
-                      alt=""
-                      className="w-full h-full object-cover"
-                      onError={(e) => { e.target.style.display = 'none'; }}
-                    />
-                  ) : (
-                    <Package className="w-6 h-6 text-mc-textMuted" />
-                  )}
-                </div>
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {pageMods.map(mod => (
+              <LibraryTile
+                key={mod.id}
+                mod={mod}
+                onOpen={() => setExpandedMod(mod)}
+                onInstall={() => setInstallModal(mod)}
+                getTypeBadge={getTypeBadge}
+                getSourceBadge={getSourceBadge}
+              />
+            ))}
+          </div>
+          {showPager && (
+            <LibraryPager
+              page={currentPage}
+              totalPages={totalPages}
+              pageNumbers={pageNumbers}
+              onPage={goToPage}
+            />
+          )}
+        </>
+      )}
 
-                {/* Info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="font-semibold text-white truncate">{mod.name}</h3>
-                    {getTypeBadge(mod.type)}
-                    {getSourceBadge(mod.source)}
-                  </div>
-                  <p className="text-sm text-mc-textMuted mb-2 line-clamp-1">
-                    {mod.description || 'No description'}
-                  </p>
-                  <div className="flex items-center gap-4 text-xs text-mc-textMuted">
-                    <span>v{mod.version}</span>
-                    <span>{(mod.file_size / 1024).toFixed(1)} KB</span>
-                    <span>Added {new Date(mod.downloaded_at).toLocaleDateString()}</span>
-                  </div>
-                </div>
-
-                {/* Actions */}
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button
-                    onClick={() => setInstallModal(mod)}
-                    className="btn btn-secondary text-sm"
-                    title="Install to server"
-                  >
-                    <Plus className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => openSettings(mod)}
-                    className="btn btn-secondary text-sm"
-                    title="Mod settings"
-                  >
-                    <Settings className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(mod.id)}
-                    className="btn btn-secondary text-sm text-mc-danger hover:bg-red-500/20"
-                    title="Delete from library"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
+      {expandedMod && (
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+          onClick={() => setExpandedMod(null)}
+        >
+          <LibraryTile
+            mod={expandedMod}
+            expanded
+            onClose={() => setExpandedMod(null)}
+            onInstall={() => setInstallModal(expandedMod)}
+            onSettings={() => openSettings(expandedMod)}
+            onDelete={() => handleDelete(expandedMod.id)}
+            getTypeBadge={getTypeBadge}
+            getSourceBadge={getSourceBadge}
+          />
         </div>
       )}
 
       {/* Upload Modal */}
       {showUploadModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
           <div className="card max-w-md w-full animate-slide-up">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-white">Upload Mod</h3>
@@ -450,7 +456,7 @@ function ModLibrary() {
 
       {/* Install to Server Modal */}
       {installModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4">
           <div className="card max-w-md w-full animate-slide-up">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-white">Install to Server</h3>
@@ -497,7 +503,7 @@ function ModLibrary() {
       )}
 
       {settingsModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4">
           <div className="card max-w-md w-full animate-slide-up">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-white">Mod Settings</h3>
@@ -604,6 +610,175 @@ function libraryThumbnailSrc(mod) {
     return value;
   }
   return `/api/mods/${mod.id}/thumbnail?v=${encodeURIComponent(mod.downloaded_at || mod.id)}`;
+}
+
+function visiblePageNumbers(current, totalPages, windowSize = 9) {
+  if (totalPages <= 1) return [];
+  if (totalPages <= windowSize) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  const half = Math.floor(windowSize / 2);
+  let start = current - half;
+  let end = current + half;
+  if (start < 1) {
+    end += 1 - start;
+    start = 1;
+  }
+  if (end > totalPages) {
+    start -= end - totalPages;
+    end = totalPages;
+  }
+  start = Math.max(1, start);
+  return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+}
+
+function LibraryPager({ page, totalPages, pageNumbers, onPage }) {
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-2 mt-8">
+      <button
+        type="button"
+        onClick={() => onPage(page - 1)}
+        disabled={page <= 1}
+        className="btn btn-secondary text-sm disabled:opacity-30"
+      >
+        Previous
+      </button>
+      {pageNumbers.map((number) => (
+        <button
+          key={number}
+          type="button"
+          onClick={() => onPage(number)}
+          disabled={number === page}
+          className={`text-sm min-w-[2.25rem] ${
+            number === page ? 'btn btn-primary' : 'btn btn-secondary'
+          }`}
+        >
+          {number}
+        </button>
+      ))}
+      <button
+        type="button"
+        onClick={() => onPage(page + 1)}
+        disabled={page >= totalPages}
+        className="btn btn-secondary text-sm disabled:opacity-30"
+      >
+        Next
+      </button>
+    </div>
+  );
+}
+
+function LibraryTile({
+  mod,
+  expanded = false,
+  onOpen,
+  onClose,
+  onInstall,
+  onSettings,
+  onDelete,
+  getTypeBadge,
+  getSourceBadge,
+}) {
+  const thumb = libraryThumbnailSrc(mod);
+  const sizeLabel = Number.isFinite(mod.file_size)
+    ? `${(mod.file_size / 1024).toFixed(1)} KB`
+    : '';
+
+  return (
+    <div
+      className={`card hover:border-mc-accent/30 transition-all duration-200 group ${
+        expanded
+          ? 'relative max-w-2xl w-full max-h-[90vh] overflow-y-auto animate-slide-up'
+          : 'cursor-pointer'
+      }`}
+      onClick={expanded ? (event) => event.stopPropagation() : onOpen}
+      role={expanded ? undefined : 'button'}
+      tabIndex={expanded ? undefined : 0}
+      onKeyDown={expanded ? undefined : (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      {expanded && (
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute top-3 right-3 z-10 p-1.5 rounded-lg bg-black/60 hover:bg-black/80 text-white transition-colors"
+          title="Close"
+        >
+          <X className="w-5 h-5" />
+        </button>
+      )}
+
+      <div className={`bg-mc-darker rounded-lg mb-3 overflow-hidden relative ${expanded ? 'aspect-[16/9]' : 'aspect-video'}`}>
+        {thumb ? (
+          <img
+            src={thumb}
+            alt={mod.name}
+            className="w-full h-full object-cover"
+            loading="lazy"
+            onError={(e) => { e.target.style.display = 'none'; }}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <Package className={`${expanded ? 'w-12 h-12' : 'w-8 h-8'} text-mc-textMuted`} />
+          </div>
+        )}
+        <div className={`absolute top-2 flex flex-col gap-1 ${expanded ? 'left-2 items-start' : 'right-2 items-end'}`}>
+          {getTypeBadge(mod.type)}
+          {getSourceBadge(mod.source)}
+        </div>
+      </div>
+
+      <h3
+        className={`font-semibold text-white mb-1 ${expanded ? 'text-xl pr-10' : 'text-sm truncate'}`}
+        title={mod.name}
+      >
+        {mod.name}
+      </h3>
+      <p className={`text-mc-textMuted mb-3 ${expanded ? 'text-sm whitespace-pre-wrap' : 'text-xs line-clamp-2 min-h-[2.5em]'}`}>
+        {mod.description || 'No description available'}
+      </p>
+
+      <div className={`flex items-center gap-3 text-mc-textMuted mb-3 ${expanded ? 'text-sm' : 'text-xs'}`}>
+        <span>v{mod.version || '1.0.0'}</span>
+        {sizeLabel && <span>{sizeLabel}</span>}
+        {expanded && mod.downloaded_at && (
+          <span>Added {new Date(mod.downloaded_at).toLocaleDateString()}</span>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
+        <button
+          onClick={onInstall}
+          className={`btn btn-primary flex-1 ${expanded ? '' : 'text-xs'}`}
+        >
+          <Plus className={expanded ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
+          Install
+        </button>
+        {expanded && (
+          <>
+            <button
+              onClick={onSettings}
+              className="btn btn-secondary"
+              title="Mod settings"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onDelete}
+              className="btn btn-secondary text-mc-danger hover:bg-red-500/20"
+              title="Delete from library"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default ModLibrary;
