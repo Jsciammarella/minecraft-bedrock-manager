@@ -38,7 +38,8 @@ router.get('/check/:port', async (req, res) => {
     const port = parseInt(req.params.port);
     const ports = await serverManager.getAllPorts();
     const inUse = ports.used.some(p => p.port === port);
-    res.json({ port, available: !inUse, server: inUse ? ports.used.find(p => p.port === port)?.server_name : null });
+    const available = ports.available.some(p => p.port === port);
+    res.json({ port, available, server: inUse ? ports.used.find(p => p.port === port)?.server_name : null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

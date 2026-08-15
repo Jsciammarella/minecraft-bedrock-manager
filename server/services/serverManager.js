@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const dgram = require('dgram');
 const { exec, spawn } = require('child_process');
 const { promisify } = require('util');
 const db = require('../db/connection');
@@ -105,6 +106,10 @@ class ServerManager {
       throw new Error('Port or server name already in use');
     }
 
+    if (!(await this.isUdpPortAvailable(port))) {
+      throw new Error(`UDP port ${port} is already in use by another process`);
+    }
+
     // Download and extract the server
     const serverPath = path.join(BASE_DIR, name);
     fs.mkdirSync(serverPath, { recursive: true });
@@ -159,7 +164,6 @@ class ServerManager {
 
     // Register port
     this.registerPort(serverId, port, 'udp');
-    this.registerPort(serverId, port, 'tcp');
 
     logger.info(`Created server: ${name} on port ${port}`);
     return { id: serverId, name, port, dataPath: serverPath };
@@ -891,6 +895,22 @@ done
 
   // ========== PORT MANAGEMENT ==========
 
+  isUdpPortAvailable(port) {
+    return new Promise((resolve) => {
+      const socket = dgram.createSocket('udp4');
+      let settled = false;
+      const finish = (available) => {
+        if (settled) return;
+        settled = true;
+        try { socket.close(); } catch { /* socket was never bound */ }
+        resolve(available);
+      };
+
+      socket.once('error', () => finish(false));
+      socket.bind(port, '0.0.0.0', () => finish(true));
+    });
+  }
+
   registerPort(serverId, port, protocol = 'udp') {
     db.prepare(`
       INSERT OR REPLACE INTO port_usage (port, server_id, protocol, in_use)
@@ -903,10 +923,8 @@ done
   }
 
   async getAllPorts() {
-    const allPorts = [];
-    
     // Get ports 1-65535 conceptually, but we'll track commonly used ranges
-    // Return known used ports and available ports in common ranges
+    // Return known used ports and OS-level available ports in common ranges.
     const usedPorts = db.prepare(`
       SELECT p.port, p.protocol, p.in_use, s.name as server_name
       FROM port_usage p
@@ -916,24 +934,34 @@ done
 
     // Generate available ports (common Minecraft ranges)
     const usedPortSet = new Set(usedPorts.map(p => p.port));
-    const availablePorts = [];
+    const candidatePorts = [];
     
     // Check ranges: 1-1024 (system), 1025-49151 (registered), 49152-65535 (dynamic)
     for (let port = 19132; port <= 19199; port++) {
       if (!usedPortSet.has(port)) {
-        availablePorts.push({ port, protocol: 'udp', in_use: 0, server_name: null });
+        candidatePorts.push(port);
       }
     }
     for (let port = 25565; port <= 25665; port++) {
       if (!usedPortSet.has(port)) {
-        availablePorts.push({ port, protocol: 'udp', in_use: 0, server_name: null });
+        candidatePorts.push(port);
       }
     }
     for (let port = 30000; port <= 30100; port++) {
       if (!usedPortSet.has(port)) {
-        availablePorts.push({ port, protocol: 'udp', in_use: 0, server_name: null });
+        candidatePorts.push(port);
       }
     }
+
+    const availability = await Promise.all(
+      candidatePorts.map(async port => ({
+        port,
+        available: await this.isUdpPortAvailable(port),
+      }))
+    );
+    const availablePorts = availability
+      .filter(result => result.available)
+      .map(({ port }) => ({ port, protocol: 'udp', in_use: 0, server_name: null }));
 
     return { used: usedPorts, available: availablePorts };
   }

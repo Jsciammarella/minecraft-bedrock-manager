@@ -12,6 +12,7 @@ verify:
     - npm ci
     - npm --prefix frontend ci
     - npm run build
+    - bash -n scripts/*.sh
     - npm test
   cache:
     key:

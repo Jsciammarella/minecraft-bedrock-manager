@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const dgram = require('dgram');
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-manager-smoke-'));
 process.env.MC_MANAGER_DB_PATH = path.join(testRoot, 'mc_manager.db');
 const db = require('../server/db/connection');
@@ -13,6 +14,24 @@ async function run() {
     'SELECT name FROM sqlite_master WHERE type = ? AND name = ?'
   ).get('table', 'server_player_access');
   assert(accessTable, 'server_player_access migration was not created');
+
+  const blocker = dgram.createSocket('udp4');
+  await new Promise((resolve, reject) => {
+    blocker.once('error', reject);
+    blocker.bind(0, '0.0.0.0', resolve);
+  });
+  const blockedPort = blocker.address().port;
+  assert.equal(
+    await serverManager.isUdpPortAvailable(blockedPort),
+    false,
+    'an OS-bound UDP port was incorrectly reported as available'
+  );
+  await new Promise(resolve => blocker.close(resolve));
+  assert.equal(
+    await serverManager.isUdpPortAvailable(blockedPort),
+    true,
+    'a released UDP port was incorrectly reported as unavailable'
+  );
 
   const serverPath = path.join(testRoot, 'server');
   fs.mkdirSync(serverPath, { recursive: true });
@@ -61,6 +80,7 @@ async function run() {
 
   console.log(JSON.stringify({
     databaseMigration: 'ok',
+    udpPortDetection: 'ok',
     playerAccessFiles: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
   }, null, 2));

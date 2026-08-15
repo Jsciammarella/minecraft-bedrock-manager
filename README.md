@@ -24,7 +24,7 @@ The recommended installation uses Docker:
 - Docker Engine 24 or newer with Docker Compose v2
 - At least 2 GB RAM, plus memory required by each Bedrock server
 - TCP access to the management port (default `3000`)
-- One published UDP port per Bedrock server (default `19132`)
+- Host firewall access to the Bedrock UDP ranges used by the port selector
 
 For a native installation, use Node.js 20 or newer plus Python 3, `make`, and a C++ compiler for native dependencies.
 
@@ -33,7 +33,7 @@ For a native installation, use Node.js 20 or newer plus Python 3, `make`, and a 
 1. Clone the repository and enter it:
 
    ```bash
-   git clone <repository-url>
+   git clone git@sci-gitlab-01.sciamfam.com:jamey/minecraft-bedrock-manager.git
    cd minecraft-bedrock-manager
    ```
 
@@ -45,14 +45,13 @@ For a native installation, use Node.js 20 or newer plus Python 3, `make`, and a 
 
    Change `TZ` and `PORT` if needed. `CURSEFORGE_API_KEY` is optional and is only used by the deferred CurseForge catalog integration.
 
-3. Review the UDP mapping in `docker-compose.yml`. The included mapping publishes port `19132`. If a server will use another port, add a matching entry before creating the container, for example:
+3. Configure the Ubuntu host firewall for the web interface and all ports offered by the server-creation dropdown:
 
-   ```yaml
-   ports:
-     - "3000:3000/tcp"
-     - "19132:19132/udp"
-     - "19133:19133/udp"
+   ```bash
+   sudo ./scripts/configure-ubuntu-firewall.sh
    ```
+
+   The script adds UFW rules but deliberately does not enable UFW, because enabling it without an SSH rule could lock you out.
 
 4. Build and start the manager:
 
@@ -70,6 +69,10 @@ For a native installation, use Node.js 20 or newer plus Python 3, `make`, and a 
    Browse to `http://<server-address>:3000`.
 
 Application data is stored in the `mc-data` Docker volume and survives container replacement. Back up this volume before upgrades.
+
+The production Compose file uses Linux host networking. Each Bedrock process therefore binds its selected UDP port directly on the host as soon as the server starts; adding a server does not require editing Compose or recreating the manager container. Host networking is intentional and is supported by the documented Linux deployment target. Firewall rules, not Docker port mappings, control external access.
+
+When upgrading an older bridge-network deployment, run `docker compose down` followed by `docker compose up -d --build` after adding the firewall rules. This recreates only the manager container; the named data volume is retained.
 
 ### Bedrock Dedicated Server binary
 
@@ -91,7 +94,7 @@ For a real server, download the current Linux Bedrock Dedicated Server from the 
 2. Clone the repository, install locked dependencies, and build the UI:
 
    ```bash
-   git clone <repository-url> /opt/mc-manager
+   git clone git@sci-gitlab-01.sciamfam.com:jamey/minecraft-bedrock-manager.git /opt/mc-manager
    cd /opt/mc-manager
    cp .env.example .env
    npm ci
@@ -99,13 +102,25 @@ For a real server, download the current Linux Bedrock Dedicated Server from the 
    npm run build
    ```
 
-3. Start it interactively for an initial check:
+3. Add firewall rules for the management interface and all UDP ports offered in the server dropdown:
+
+   ```bash
+   sudo ./scripts/configure-ubuntu-firewall.sh
+   ```
+
+   If UFW is inactive, review and allow SSH access before enabling it. If the host uses another firewall, create equivalent rules for TCP `3000` and UDP `19132:19199`, `25565:25665`, and `30000:30100`.
+
+4. Start it interactively for an initial check:
 
    ```bash
    ./scripts/start.sh
    ```
 
-For a persistent service, create a dedicated `mcmanager` user, give it ownership of `/opt/mc-manager`, review `scripts/mc-manager.service`, then install that unit under `/etc/systemd/system/`. Open TCP port `3000` and each selected Bedrock UDP port in the host firewall.
+For a persistent service, create a dedicated `mcmanager` user, give it ownership of `/opt/mc-manager`, review `scripts/mc-manager.service`, then install that unit under `/etc/systemd/system/`.
+
+On a native install there is no separate publishing step: every managed Bedrock process binds its configured UDP port directly on the Ubuntu host. The firewall rules above cover every port that the manager offers. Server creation also checks that the selected UDP port is not already bound by another process.
+
+The available-port dropdown combines the manager database with a live host UDP bind check. Ports assigned to another managed server or occupied by another host process are not offered, and availability is checked again during creation to prevent races.
 
 ## Configuration
 
@@ -117,7 +132,6 @@ For a persistent service, create a dedicated `mcmanager` user, give it ownership
 | `TZ` | `UTC` | Container timezone |
 | `AUTO_UPDATE_CHECK_INTERVAL` | `86400` | Update-check interval in seconds |
 | `CURSEFORGE_API_KEY` | empty | Optional CurseForge API credential |
-| `BEDROCK_PORT` | `19132` | UDP port published by the default Compose file |
 
 Never commit `.env`; it is intentionally ignored.
 
