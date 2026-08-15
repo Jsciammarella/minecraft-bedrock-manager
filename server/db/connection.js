@@ -45,6 +45,8 @@ db.exec(`
     restart_scheduled_at DATETIME,
     kind TEXT NOT NULL DEFAULT 'bedrock',
     pending_port INTEGER,
+    ipv6_port INTEGER,
+    pending_ipv6_port INTEGER,
     lan_broadcast INTEGER NOT NULL DEFAULT 0,
     lan_proxy_port INTEGER,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -135,6 +137,7 @@ db.exec(`
     port INTEGER UNIQUE NOT NULL,
     server_id INTEGER,
     protocol TEXT NOT NULL DEFAULT 'udp',
+    family TEXT NOT NULL DEFAULT 'ipv4',
     in_use INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
   );
@@ -191,8 +194,14 @@ ensureServerColumn('pending_restart_at', 'DATETIME');
 ensureServerColumn('restart_scheduled_at', 'DATETIME');
 ensureServerColumn('kind', "TEXT NOT NULL DEFAULT 'bedrock'");
 ensureServerColumn('pending_port', 'INTEGER');
+ensureServerColumn('ipv6_port', 'INTEGER');
+ensureServerColumn('pending_ipv6_port', 'INTEGER');
 ensureServerColumn('lan_broadcast', 'INTEGER NOT NULL DEFAULT 0');
 ensureServerColumn('lan_proxy_port', 'INTEGER');
+const portUsageColumns = new Set(db.prepare('PRAGMA table_info(port_usage)').all().map(column => column.name));
+if (!portUsageColumns.has('family')) {
+  db.exec(`ALTER TABLE port_usage ADD COLUMN family TEXT NOT NULL DEFAULT 'ipv4'`);
+}
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_one_bedrock_connect
   ON servers(kind) WHERE kind = 'bedrock_connect'

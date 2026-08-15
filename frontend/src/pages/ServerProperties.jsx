@@ -21,6 +21,7 @@ function ServerProperties() {
 
   const [formData, setFormData] = useState({
     port: '',
+    ipv6_port: '',
     max_players: '10',
     difficulty: 'peaceful',
     gamemode: 'survival',
@@ -62,6 +63,7 @@ function ServerProperties() {
       setFormData(prev => ({
         ...prev,
         port: String(res.data.port || ''),
+        ipv6_port: String(res.data.ipv6_port || ''),
         max_players: String(res.data.max_players || 10),
         difficulty: res.data.difficulty || 'peaceful',
         gamemode: res.data.gamemode || 'survival',
@@ -155,10 +157,18 @@ function ServerProperties() {
         });
         return;
       }
-      await serverApi.update(id, {
+      const payload = {
         ...formData,
         port: formData.port === '' ? undefined : parseInt(formData.port, 10),
-      });
+      };
+      delete payload.ipv6_port;
+      if (
+        formData.ipv6_port !== ''
+        && Number(formData.ipv6_port) !== Number(server.ipv6_port)
+      ) {
+        payload.ipv6Port = parseInt(formData.ipv6_port, 10);
+      }
+      await serverApi.update(id, payload);
       navigate(`/servers/${id}`, {
         replace: true,
         state: { message: 'Server properties saved successfully.' },
@@ -182,13 +192,23 @@ function ServerProperties() {
   }
 
   const isBC = server?.kind === 'bedrock_connect';
+  const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
+  const ipv6Available = (ports.available || []).filter((item) => item.family === 'ipv6');
   const portOptions = [];
   if (server?.port) portOptions.push(Number(server.port));
   if (server?.pending_port && !portOptions.includes(Number(server.pending_port))) {
     portOptions.push(Number(server.pending_port));
   }
-  for (const item of ports.available || []) {
+  for (const item of ipv4Available) {
     if (!portOptions.includes(item.port)) portOptions.push(item.port);
+  }
+  const ipv6Options = [];
+  if (server?.ipv6_port) ipv6Options.push(Number(server.ipv6_port));
+  if (server?.pending_ipv6_port && !ipv6Options.includes(Number(server.pending_ipv6_port))) {
+    ipv6Options.push(Number(server.pending_ipv6_port));
+  }
+  for (const item of ipv6Available) {
+    if (!ipv6Options.includes(item.port)) ipv6Options.push(item.port);
   }
 
   return (
@@ -228,7 +248,7 @@ function ServerProperties() {
         <Section title="General Settings">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-mc-text mb-2">Server Port</label>
+              <label className="block text-sm font-medium text-mc-text mb-2">IPv4 Port</label>
               <select
                 name="port"
                 value={formData.port}
@@ -244,11 +264,37 @@ function ServerProperties() {
               <p className="mt-2 text-xs text-mc-textMuted">
                 {isBC
                   ? 'Bedrock Connect must stay on UDP 19132 so consoles can reach it.'
-                  : 'Only the current port and other open manager ports are shown. A new port applies after restart if the server is running.'}
+                  : 'Only the current IPv4 port and other open IPv4 manager ports are shown. A new port applies after restart if the server is running.'}
               </p>
               {server?.pending_port && Number(server.pending_port) !== Number(server.port) && (
                 <p className="mt-1 text-xs text-amber-300">
-                  Port {server.pending_port} is queued and will apply on the next restart.
+                  IPv4 port {server.pending_port} is queued and will apply on the next restart.
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-mc-text mb-2">IPv6 Port</label>
+              <select
+                name="ipv6_port"
+                value={formData.ipv6_port}
+                onChange={handleChange}
+                className="input"
+                disabled={isBC}
+                required={!isBC}
+              >
+                {isBC && !formData.ipv6_port && <option value="">19133</option>}
+                {ipv6Options.map((port) => (
+                  <option key={port} value={port}>{port}</option>
+                ))}
+              </select>
+              <p className="mt-2 text-xs text-mc-textMuted">
+                {isBC
+                  ? 'Bedrock Connect uses UDP 19133 for IPv6 discovery.'
+                  : 'Must be a different number from the IPv4 port. Defaults to 1000 below IPv4 when that port is free. A new port applies after restart if the server is running.'}
+              </p>
+              {server?.pending_ipv6_port && Number(server.pending_ipv6_port) !== Number(server.ipv6_port) && (
+                <p className="mt-1 text-xs text-amber-300">
+                  IPv6 port {server.pending_ipv6_port} is queued and will apply on the next restart.
                 </p>
               )}
             </div>

@@ -418,7 +418,12 @@ function ServerDetail() {
       )}
       {server.pending_port && (
         <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg text-sm text-blue-300">
-          Port will change from {server.port} to {server.pending_port} after the next restart.
+          IPv4 port will change from {server.port} to {server.pending_port} after the next restart.
+        </div>
+      )}
+      {server.pending_ipv6_port && (
+        <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg text-sm text-blue-300">
+          IPv6 port will change from {server.ipv6_port || 'unset'} to {server.pending_ipv6_port} after the next restart.
         </div>
       )}
       {server.restart_scheduled_at && (
@@ -929,7 +934,8 @@ function ServerDetail() {
             <div className="space-y-2 text-sm">
               <InfoRow label="Version" value={server.version} />
               <InfoRow label="Address" value={connectLabel} />
-              <InfoRow label="Port" value={server.pending_port ? `${server.port} → ${server.pending_port}` : server.port} />
+              <InfoRow label="IPv4 Port" value={server.pending_port ? `${server.port} → ${server.pending_port}` : server.port} />
+              <InfoRow label="IPv6 Port" value={server.pending_ipv6_port ? `${server.ipv6_port || 'unset'} → ${server.pending_ipv6_port}` : (server.ipv6_port || 'unset')} />
               <InfoRow label="LAN listing" value={isBC ? 'n/a' : (lan.native ? 'Native (19132)' : (lan.active && lan.enabled) ? 'On' : (lan.enabled && bcRunning) ? 'Paused' : 'Off')} />
               <InfoRow label="Max Players" value={server.max_players} />
               <InfoRow label="Game Mode" value={server.gamemode} />

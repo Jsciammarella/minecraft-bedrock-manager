@@ -12,6 +12,15 @@ function PortManager() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all'); // all, used, available
+  const [familyFilter, setFamilyFilter] = useState('all'); // all, ipv4, ipv6
+
+  const matchesFamily = (item) => {
+    if (familyFilter === 'all') return true;
+    if (familyFilter === 'ipv6') return item.family === 'ipv6';
+    return item.family !== 'ipv6';
+  };
+
+  const familyLabel = (item) => (item.family === 'ipv6' ? 'IPv6' : 'IPv4');
 
   useEffect(() => {
     loadPorts();
@@ -28,13 +37,21 @@ function PortManager() {
     }
   };
 
-  const filteredUsed = search
-    ? ports.used.filter(p => String(p.port).includes(search) || (p.server_name && p.server_name.toLowerCase().includes(search.toLowerCase())))
-    : ports.used;
+  const filteredUsed = ports.used.filter((p) => {
+    if (!matchesFamily(p)) return false;
+    if (!search) return true;
+    return String(p.port).includes(search)
+      || (p.server_name && p.server_name.toLowerCase().includes(search.toLowerCase()));
+  });
 
-  const filteredAvailable = search
-    ? ports.available.filter(p => String(p.port).includes(search))
-    : ports.available;
+  const filteredAvailable = ports.available.filter((p) => {
+    if (!matchesFamily(p)) return false;
+    if (!search) return true;
+    return String(p.port).includes(search);
+  });
+
+  const usedForFamily = ports.used.filter(matchesFamily);
+  const availableForFamily = ports.available.filter(matchesFamily);
 
   if (loading) {
     return (
@@ -57,7 +74,7 @@ function PortManager() {
           </button>
           <div>
             <h1 className="text-2xl font-bold text-white">Port Manager</h1>
-            <p className="text-mc-textMuted mt-1">Track and manage server ports</p>
+            <p className="text-mc-textMuted mt-1">IPv4 and IPv6 game ports are kept in separate ranges so they never share a number</p>
           </div>
         </div>
       </div>
@@ -83,7 +100,7 @@ function PortManager() {
               placeholder="Search ports or server names..."
             />
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {['all', 'used', 'available'].map(f => (
               <button
                 key={f}
@@ -95,19 +112,34 @@ function PortManager() {
             ))}
           </div>
         </div>
+        <div className="flex flex-wrap items-center gap-2 mt-4">
+          {[
+            { id: 'ipv4', label: 'IPv4 ports' },
+            { id: 'ipv6', label: 'IPv6 ports' },
+            { id: 'all', label: 'All' },
+          ].map((option) => (
+            <button
+              key={option.id}
+              onClick={() => setFamilyFilter(option.id)}
+              className={`btn text-sm ${familyFilter === option.id ? 'btn-primary' : 'btn-secondary'}`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
 
         {/* Summary */}
         <div className="mt-4 pt-4 border-t border-mc-surfaceLight grid grid-cols-3 gap-4">
           <div className="text-center">
-            <p className="text-2xl font-bold text-white">{ports.used.length}</p>
+            <p className="text-2xl font-bold text-white">{usedForFamily.length}</p>
             <p className="text-xs text-mc-textMuted">Ports in Use</p>
           </div>
           <div className="text-center">
-            <p className="text-2xl font-bold text-green-400">{ports.available.length}</p>
+            <p className="text-2xl font-bold text-green-400">{availableForFamily.length}</p>
             <p className="text-xs text-mc-textMuted">Available Ports</p>
           </div>
           <div className="text-center">
-            <p className="text-2xl font-bold text-blue-400">{new Set(ports.used.map(p => p.server_name)).size}</p>
+            <p className="text-2xl font-bold text-blue-400">{new Set(usedForFamily.map(p => p.server_name)).size}</p>
             <p className="text-xs text-mc-textMuted">Active Servers</p>
           </div>
         </div>
@@ -129,13 +161,13 @@ function PortManager() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {filteredUsed.map((port, idx) => (
-                <div key={`${port.port}-${port.protocol}-${idx}`} className="card flex items-center gap-3 p-4">
+                <div key={`${port.port}-${port.family}-${port.protocol}-${idx}`} className="card flex items-center gap-3 p-4">
                   <div className="w-10 h-10 bg-red-500/20 rounded-lg flex items-center justify-center flex-shrink-0">
                     <Lock className="w-5 h-5 text-red-400" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-lg font-bold text-white">{port.port}</p>
-                    <p className="text-xs text-mc-textMuted capitalize">{port.protocol}</p>
+                    <p className="text-xs text-mc-textMuted capitalize">{familyLabel(port)} · {port.protocol}</p>
                   </div>
                   <div className="text-right">
                     <p className="text-sm font-medium text-white truncate max-w-[120px]" title={port.server_name}>
@@ -167,11 +199,11 @@ function PortManager() {
             <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-2">
               {filteredAvailable.map((port, idx) => (
                 <div
-                  key={`${port.port}-${idx}`}
+                  key={`${port.port}-${port.family}-${idx}`}
                   className="bg-mc-darker border border-mc-surfaceLight rounded-lg p-3 text-center hover:border-green-500/30 transition-colors"
                 >
                   <p className="text-sm font-bold text-green-400">{port.port}</p>
-                  <p className="text-xs text-mc-textMuted mt-1">free</p>
+                  <p className="text-xs text-mc-textMuted mt-1">{familyLabel(port)}</p>
                 </div>
               ))}
             </div>

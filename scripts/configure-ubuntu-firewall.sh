@@ -8,7 +8,7 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 MANAGER_PORT="${PORT:-3000}"
-BEDROCK_RANGES=("19132:19199" "19200:19299" "25565:25665" "30000:30100")
+BEDROCK_RANGES=("18132:18199" "19132:19199" "19200:19299" "24565:24665" "25565:25665" "29000:29100" "30000:30100")
 
 if ! [[ "${MANAGER_PORT}" =~ ^[0-9]+$ ]] || (( MANAGER_PORT < 1 || MANAGER_PORT > 65535 )); then
     echo "PORT must be a number between 1 and 65535." >&2

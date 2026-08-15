@@ -481,7 +481,12 @@ function Dashboard() {
               )}
               {server.pending_port && (
                 <div className="mb-4 p-2.5 rounded-lg border border-blue-500/30 bg-blue-500/10 text-blue-300 text-xs">
-                  Port will change to {server.pending_port} after restart.
+                  IPv4 port will change to {server.pending_port} after restart.
+                </div>
+              )}
+              {server.pending_ipv6_port && (
+                <div className="mb-4 p-2.5 rounded-lg border border-blue-500/30 bg-blue-500/10 text-blue-300 text-xs">
+                  IPv6 port will change to {server.pending_ipv6_port} after restart.
                 </div>
               )}
 

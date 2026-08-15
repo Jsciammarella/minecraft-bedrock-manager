@@ -14,6 +14,7 @@ function CreateServer() {
   const [formData, setFormData] = useState({
     name: '',
     port: '',
+    ipv6Port: '',
     version: 'latest',
     maxPlayers: '10',
     description: '',
@@ -27,10 +28,25 @@ function CreateServer() {
     loadPorts();
   }, []);
 
+  const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
+  const ipv6Available = (ports.available || []).filter((item) => item.family === 'ipv6');
+
   const loadPorts = async () => {
     try {
       const res = await portApi.getAll();
       setPorts(res.data);
+      const v4List = (res.data.available || []).filter((item) => item.family !== 'ipv6');
+      const v6List = (res.data.available || []).filter((item) => item.family === 'ipv6');
+      const defaultV4 = v4List[0]?.port;
+      if (defaultV4) {
+        const preferredV6 = defaultV4 - 1000;
+        const defaultV6 = v6List.find((item) => item.port === preferredV6)?.port || v6List[0]?.port;
+        setFormData((prev) => ({
+          ...prev,
+          port: prev.port || String(defaultV4),
+          ipv6Port: prev.ipv6Port || (defaultV6 != null ? String(defaultV6) : ''),
+        }));
+      }
     } catch (err) {
       console.error('Failed to load ports:', err);
     }
@@ -38,7 +54,17 @@ function CreateServer() {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+    setFormData((prev) => {
+      const next = { ...prev, [name]: value };
+      if (name === 'port') {
+        const v4 = parseInt(value, 10);
+        const preferredV6 = v4 - 1000;
+        const match = ipv6Available.find((item) => item.port === preferredV6)
+          || ipv6Available[0];
+        if (match) next.ipv6Port = String(match.port);
+      }
+      return next;
+    });
     setError('');
   };
 
@@ -51,8 +77,9 @@ function CreateServer() {
     try {
       await serverApi.create({
         ...formData,
-        port: parseInt(formData.port),
-        maxPlayers: parseInt(formData.maxPlayers),
+        port: parseInt(formData.port, 10),
+        ipv6Port: formData.ipv6Port === '' ? undefined : parseInt(formData.ipv6Port, 10),
+        maxPlayers: parseInt(formData.maxPlayers, 10),
       });
       await refresh();
       navigate('/');
@@ -114,7 +141,7 @@ function CreateServer() {
         {/* Port Selection */}
         <div>
           <label className="block text-sm font-medium text-mc-text mb-2">
-            Server Port <span className="text-mc-danger">*</span>
+            IPv4 Port <span className="text-mc-danger">*</span>
           </label>
           <select
               name="port"
@@ -123,13 +150,34 @@ function CreateServer() {
               className="input"
               required
             >
-              <option value="">Select an available port...</option>
-              {ports.available.map(({ port }) => (
+              <option value="">Select an available IPv4 port...</option>
+              {ipv4Available.map(({ port }) => (
                 <option key={port} value={port}>{port}</option>
               ))}
           </select>
           <p className="mt-2 text-xs text-mc-textMuted">
-            Only ports not assigned to another managed server are shown.
+            Defaults to the next free IPv4 port. UDP 19133 is reserved for IPv6 discovery.
+          </p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-mc-text mb-2">
+            IPv6 Port <span className="text-mc-danger">*</span>
+          </label>
+          <select
+              name="ipv6Port"
+              value={formData.ipv6Port}
+              onChange={handleChange}
+              className="input"
+              required
+            >
+              <option value="">Select an available IPv6 port...</option>
+              {ipv6Available.map(({ port }) => (
+                <option key={port} value={port}>{port}</option>
+              ))}
+          </select>
+          <p className="mt-2 text-xs text-mc-textMuted">
+            Defaults to 1000 below the IPv4 port when that IPv6 port is free.
           </p>
         </div>
 

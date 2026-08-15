@@ -6,6 +6,7 @@ const { promisify } = require('util');
 const db = require('../db/connection');
 const logger = require('./logger');
 const settingsStore = require('./settingsStore');
+const portRanges = require('./portRanges');
 const execAsync = promisify(exec);
 
 const BASE_DIR = path.join(__dirname, '../../data/servers');
@@ -398,7 +399,7 @@ class ServerManager {
   async nextAvailablePort({ exclude = [] } = {}) {
     const skip = new Set(exclude.map(Number));
     const { available } = await this.getAllPorts();
-    const match = available.find(item => !skip.has(item.port));
+    const match = available.find(item => item.family !== 'ipv6' && !skip.has(item.port) && item.port !== portRanges.DISCOVERY_IPV6);
     if (!match) throw new Error('No available UDP ports are left in the manager ranges');
     return match.port;
   }
@@ -514,8 +515,8 @@ class ServerManager {
 
     const insert = db.prepare(`
       INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
-        server_description, server_motd, status, data_path, kind)
-      VALUES (?, ?, ?, 0, 0, 'peaceful', 'survival', ?, ?, 'stopped', ?, 'bedrock_connect')
+        server_description, server_motd, status, data_path, kind, ipv6_port)
+      VALUES (?, ?, ?, 0, 0, 'peaceful', 'survival', ?, ?, 'stopped', ?, 'bedrock_connect', ?)
     `);
     const result = insert.run(
       bedrockConnect.DISPLAY_NAME,
@@ -523,10 +524,12 @@ class ServerManager {
       BEDROCK_CONNECT_PORT,
       'Console server list for Xbox, PlayStation, and Nintendo Switch',
       'Bedrock Connect',
-      serverPath
+      serverPath,
+      portRanges.DISCOVERY_IPV6
     );
     const serverId = result.lastInsertRowid;
-    this.registerPort(serverId, BEDROCK_CONNECT_PORT, 'udp');
+    this.registerPort(serverId, BEDROCK_CONNECT_PORT, 'udp', 'ipv4');
+    this.registerPort(serverId, portRanges.DISCOVERY_IPV6, 'udp', 'ipv6');
     this.invalidateServerCache(serverId);
     this.setPendingBedrockConnect(null);
     logger.info(`Created Bedrock Connect on port ${BEDROCK_CONNECT_PORT} (${installed.tag})`);
@@ -573,10 +576,16 @@ class ServerManager {
       throw new Error('Port must be between 1 and 65535');
     }
     if (port === Number(server.port) && !server.pending_port) return { success: true, port };
+    if (port === Number(server.ipv6_port) || port === Number(server.pending_ipv6_port)) {
+      throw new Error('IPv4 and IPv6 ports must be different');
+    }
+    if (!portRanges.isIpv4GamePort(port) && !(this.isBedrockConnect(server) && port === BEDROCK_CONNECT_PORT)) {
+      throw new Error(`UDP port ${port} is not in the IPv4 game ranges`);
+    }
 
-    const taken = db.prepare('SELECT id, name FROM servers WHERE port = ? AND id != ?').get(port, serverId);
+    const taken = db.prepare('SELECT id, name FROM servers WHERE (port = ? OR ipv6_port = ?) AND id != ?').get(port, port, serverId);
     if (taken) throw new Error(`Port ${port} is already assigned to ${taken.name}`);
-    const pendingTaken = db.prepare('SELECT id, name FROM servers WHERE pending_port = ? AND id != ?').get(port, serverId);
+    const pendingTaken = db.prepare('SELECT id, name FROM servers WHERE (pending_port = ? OR pending_ipv6_port = ?) AND id != ?').get(port, port, serverId);
     if (pendingTaken) throw new Error(`Port ${port} is already reserved for ${pendingTaken.name}`);
 
     const bc = this.getBedrockConnectServer();
@@ -609,17 +618,25 @@ class ServerManager {
       throw new Error('Bedrock Connect must stay on UDP port 19132');
     }
 
+    const current = this.getServer(serverId);
+    let ipv6Port = Number(current.ipv6_port) || null;
+    const wasPaired = ipv6Port && ipv6Port === portRanges.preferredIpv6Port(current.port);
+    if (!ipv6Port || wasPaired || ipv6Port === port) {
+      ipv6Port = await this.allocateIpv6Port(port, { excludeServerId: serverId });
+    }
+
     if (!this.isBedrockConnect(server)) {
-      this.writeRuntimeServerProperties({ ...server, port });
+      this.writeRuntimeServerProperties({ ...current, port, ipv6_port: ipv6Port });
     }
 
     db.prepare(`
       UPDATE servers
-      SET port = ?, pending_port = NULL, updated_at = CURRENT_TIMESTAMP
+      SET port = ?, ipv6_port = ?, pending_port = NULL, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(port, serverId);
+    `).run(port, ipv6Port, serverId);
     this.unregisterPorts(serverId);
-    this.registerPort(serverId, port, 'udp');
+    this.registerPort(serverId, port, 'udp', 'ipv4');
+    if (ipv6Port) this.registerPort(serverId, ipv6Port, 'udp', 'ipv6');
     this.invalidateServerCache(serverId);
     logger.info(`Server ${server.name} is now on port ${port}`);
     try {
@@ -635,22 +652,26 @@ class ServerManager {
   // ========== SERVER LIFECYCLE ==========
 
   async createServer(config) {
-    const { name, port, version, maxPlayers, description, gamemode, difficulty } = config;
+    const { name, port, ipv6Port, version, maxPlayers, description, gamemode, difficulty } = config;
 
-    // Validate port
     if (port < 1 || port > 65535) {
       throw new Error('Port must be between 1 and 65535');
+    }
+    if (!portRanges.isIpv4GamePort(port)) {
+      throw new Error(`UDP port ${port} is not in the IPv4 game ranges`);
+    }
+    if (ipv6Port != null && ipv6Port !== '' && Number(ipv6Port) === Number(port)) {
+      throw new Error('IPv4 and IPv6 ports must be different');
     }
     if (Number(port) === BEDROCK_CONNECT_PORT && (this.getBedrockConnectServer() || this.getPendingBedrockConnect())) {
       throw new Error('UDP port 19132 is reserved for Bedrock Connect');
     }
 
-    // Check port availability
-    const existing = db.prepare('SELECT * FROM servers WHERE port = ? OR name = ?').get(port, name);
+    const existing = db.prepare('SELECT * FROM servers WHERE port = ? OR ipv6_port = ? OR name = ?').get(port, port, name);
     if (existing) {
       throw new Error('Port or server name already in use');
     }
-    const pendingTaken = db.prepare('SELECT name FROM servers WHERE pending_port = ?').get(port);
+    const pendingTaken = db.prepare('SELECT name FROM servers WHERE pending_port = ? OR pending_ipv6_port = ?').get(port, port);
     if (pendingTaken) {
       throw new Error(`Port ${port} is already reserved for ${pendingTaken.name}`);
     }
@@ -659,29 +680,37 @@ class ServerManager {
       throw new Error(`UDP port ${port} is already in use by another process`);
     }
 
+    const assignedIpv6 = await this.allocateIpv6Port(port, { requested: ipv6Port });
+    if (assignedIpv6 === Number(port)) {
+      throw new Error('IPv4 and IPv6 ports must be different');
+    }
+
     const serverPath = path.join(BASE_DIR, name);
     fs.mkdirSync(serverPath, { recursive: true });
 
     const insert = db.prepare(`
       INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
-        server_description, server_motd, status, data_path, lan_broadcast)
-      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'creating', ?, 1)
+        server_description, server_motd, status, data_path, lan_broadcast, ipv6_port)
+      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'creating', ?, 1, ?)
     `);
     const result = insert.run(
       name, version || 'latest', port, maxPlayers || 10,
       difficulty || 'peaceful', gamemode || 'survival',
       description || 'Minecraft Bedrock Server',
       description || 'Minecraft Bedrock Server',
-      serverPath
+      serverPath,
+      assignedIpv6
     );
     const serverId = result.lastInsertRowid;
-    this.registerPort(serverId, port, 'udp');
+    this.registerPort(serverId, port, 'udp', 'ipv4');
+    this.registerPort(serverId, assignedIpv6, 'udp', 'ipv6');
     this.invalidateServerCache(serverId);
     this.broadcastServerStatus(serverId);
 
     const job = this.finishCreateServer(serverId, {
       name,
       port,
+      ipv6Port: assignedIpv6,
       maxPlayers: maxPlayers || 10,
       description: description || 'Minecraft Bedrock Server',
       gamemode: gamemode || 'survival',
@@ -691,12 +720,12 @@ class ServerManager {
     }).finally(() => this.provisionJobs.delete(Number(serverId)));
     this.provisionJobs.set(Number(serverId), job);
 
-    logger.info(`Queued server create: ${name} on port ${port}`);
-    return { id: serverId, name, port, status: 'creating', dataPath: serverPath };
+    logger.info(`Queued server create: ${name} on IPv4 ${port} / IPv6 ${assignedIpv6}`);
+    return { id: serverId, name, port, ipv6Port: assignedIpv6, status: 'creating', dataPath: serverPath };
   }
 
   async finishCreateServer(serverId, config) {
-    const { name, port, maxPlayers, description, gamemode, difficulty, version, serverPath } = config;
+    const { name, port, ipv6Port, maxPlayers, description, gamemode, difficulty, version, serverPath } = config;
     try {
       await this.downloadServer(serverPath, version);
       if (!this.getServer(serverId)) return;
@@ -711,6 +740,7 @@ class ServerManager {
         this.bedrockRuntimeProperties({
           name,
           port,
+          ipv6_port: ipv6Port,
           max_players: maxPlayers,
           difficulty,
           gamemode,
@@ -847,7 +877,7 @@ done
   }
 
   async startBedrockConnect(server) {
-    this.stopLanBroadcastsForBedrockConnect();
+    await this.releaseDiscoveryPortsForBedrockConnect();
     const bedrockConnect = require('./bedrockConnect');
     await bedrockConnect.assertJavaAvailable();
     const installed = bedrockConnect.installedJar(server.data_path)
@@ -896,6 +926,7 @@ done
       db.prepare('UPDATE servers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run('stopped', server.id);
       this.invalidateServerCache(server.id);
+      await this.restoreLanBroadcasts();
       throw new Error(`Failed to start Bedrock Connect: ${err.message}`);
     }
   }
@@ -910,6 +941,10 @@ done
     if (server.pending_port) {
       await this.commitPortChange(serverId, server.pending_port);
     }
+    if (this.getServer(serverId)?.pending_ipv6_port) {
+      await this.commitIpv6PortChange(serverId, this.getServer(serverId).pending_ipv6_port);
+    }
+    await this.ensureIpv6PortAssigned(serverId);
     const current = this.getServer(serverId);
     const serverPath = current.data_path;
 
@@ -1040,6 +1075,8 @@ done
     logger.info(`Server ${server.name} stopped`);
     this.broadcastServerStatus(serverId);
     if (this.isBedrockConnect(server)) {
+      await this.waitForUdpPort(portRanges.DISCOVERY_IPV4, 'ipv4');
+      await this.waitForUdpPort(portRanges.DISCOVERY_IPV6, 'ipv6');
       await this.restoreLanBroadcasts();
     }
     return { success: true, message: 'Server stopped' };
@@ -1174,8 +1211,11 @@ done
     }
 
     const requestedPort = settings.port;
+    const requestedIpv6Port = settings.ipv6Port ?? settings.ipv6_port;
     const rest = { ...settings };
     delete rest.port;
+    delete rest.ipv6Port;
+    delete rest.ipv6_port;
 
     const propsPath = path.join(server.data_path, 'server.properties');
     const currentProps = this.readServerProperties(propsPath);
@@ -1267,7 +1307,16 @@ done
     }
 
     if (requestedPort != null && requestedPort !== '' && Number(requestedPort) !== Number(server.port)) {
-      return this.queuePortChange(serverId, requestedPort);
+      await this.queuePortChange(serverId, requestedPort);
+    }
+    const latest = this.getServer(serverId);
+    if (
+      requestedIpv6Port != null
+      && requestedIpv6Port !== ''
+      && Number(requestedIpv6Port) !== Number(server.ipv6_port)
+      && Number(requestedIpv6Port) !== Number(latest.ipv6_port)
+    ) {
+      return this.queueIpv6PortChange(serverId, requestedIpv6Port);
     }
     return { success: true };
   }
@@ -1291,10 +1340,11 @@ done
   }
 
   ipv6PortFor(port) {
-    const v4 = Number(port);
-    if (v4 === BEDROCK_CONNECT_PORT) return 19133;
-    if (v4 === 19133) return 19134;
-    return v4 + 1;
+    return this.preferredOrFallbackIpv6(port);
+  }
+
+  preferredOrFallbackIpv6(ipv4Port) {
+    return portRanges.preferredIpv6Port(ipv4Port) || portRanges.ipv6Candidates()[0];
   }
 
   bedrockRuntimeProperties(server, existing = {}) {
@@ -1314,7 +1364,7 @@ done
       'server-name': server.name,
       'level-name': existing['level-name'] || server.name,
       'server-port': String(v4),
-      'server-portv6': String(this.ipv6PortFor(v4)),
+      'server-portv6': String(server.ipv6_port || this.preferredOrFallbackIpv6(v4)),
       'enable-lan-visibility': nativeLan ? 'true' : 'false',
       'max-players': String(server.max_players || existing['max-players'] || 10),
       'allow-list': existing['allow-list'] || 'false',
@@ -1709,8 +1759,16 @@ done
   // ========== PORT MANAGEMENT ==========
 
   isUdpPortAvailable(port) {
+    return this.bindProbe(port, 'udp4', '0.0.0.0');
+  }
+
+  isUdp6PortAvailable(port) {
+    return this.bindProbe(port, 'udp6', '::');
+  }
+
+  bindProbe(port, type, address) {
     return new Promise((resolve) => {
-      const socket = dgram.createSocket('udp4');
+      const socket = dgram.createSocket(type);
       let settled = false;
       const finish = (available) => {
         if (settled) return;
@@ -1720,61 +1778,193 @@ done
       };
 
       socket.once('error', () => finish(false));
-      socket.bind(port, '0.0.0.0', () => finish(true));
+      socket.bind(port, address, () => finish(true));
     });
   }
 
-  registerPort(serverId, port, protocol = 'udp') {
+  async waitForUdpPort(port, family = 'ipv4', { attempts = 10, delayMs = 200 } = {}) {
+    for (let i = 0; i < attempts; i += 1) {
+      const free = family === 'ipv6'
+        ? await this.isUdp6PortAvailable(port)
+        : await this.isUdpPortAvailable(port);
+      if (free) return true;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    return false;
+  }
+
+  async releaseDiscoveryPortsForBedrockConnect() {
+    this.stopLanBroadcastsForBedrockConnect();
+    const v4Free = await this.waitForUdpPort(portRanges.DISCOVERY_IPV4, 'ipv4');
+    const v6Free = await this.waitForUdpPort(portRanges.DISCOVERY_IPV6, 'ipv6');
+    if (!v4Free || !v6Free) {
+      logger.warn('UDP 19132/19133 were still busy after stopping LAN proxies');
+    }
+  }
+
+  registerPort(serverId, port, protocol = 'udp', family = 'ipv4') {
     db.prepare(`
-      INSERT OR REPLACE INTO port_usage (port, server_id, protocol, in_use)
-      VALUES (?, ?, ?, 1)
-    `).run(port, serverId, protocol);
+      INSERT OR REPLACE INTO port_usage (port, server_id, protocol, family, in_use)
+      VALUES (?, ?, ?, ?, 1)
+    `).run(port, serverId, protocol, family);
   }
 
   unregisterPorts(serverId) {
     db.prepare('DELETE FROM port_usage WHERE server_id = ?').run(serverId);
   }
 
+  assignedPortRows(excludeServerId = null) {
+    const rows = db.prepare(`
+      SELECT id, name, port, ipv6_port, pending_port, pending_ipv6_port
+      FROM servers
+    `).all();
+    const used = [];
+    for (const row of rows) {
+      if (excludeServerId != null && Number(row.id) === Number(excludeServerId)) continue;
+      if (row.port) used.push({ port: Number(row.port), family: 'ipv4', server_name: row.name });
+      if (row.ipv6_port) used.push({ port: Number(row.ipv6_port), family: 'ipv6', server_name: row.name });
+      if (row.pending_port) used.push({ port: Number(row.pending_port), family: 'ipv4', server_name: `${row.name} (pending)` });
+      if (row.pending_ipv6_port) used.push({ port: Number(row.pending_ipv6_port), family: 'ipv6', server_name: `${row.name} (pending IPv6)` });
+    }
+    return used;
+  }
+
+  isPortNumberTaken(port, { excludeServerId = null } = {}) {
+    const value = Number(port);
+    return this.assignedPortRows(excludeServerId).some((row) => row.port === value);
+  }
+
+  async allocateIpv6Port(ipv4Port, { requested, excludeServerId = null } = {}) {
+    const taken = new Set(this.assignedPortRows(excludeServerId).map((row) => row.port));
+    taken.add(Number(ipv4Port));
+    taken.add(portRanges.DISCOVERY_IPV4);
+    taken.add(portRanges.DISCOVERY_IPV6);
+
+    const preferred = requested
+      ? Number(requested)
+      : portRanges.preferredIpv6Port(ipv4Port);
+    const tryPort = async (port) => {
+      if (!portRanges.isIpv6GamePort(port) || taken.has(Number(port))) return null;
+      if (!(await this.isUdp6PortAvailable(port))) return null;
+      return Number(port);
+    };
+
+    if (preferred) {
+      const ok = await tryPort(preferred);
+      if (ok) return ok;
+      if (requested) {
+        throw new Error(`IPv6 UDP port ${requested} is not available`);
+      }
+    }
+
+    for (const port of portRanges.ipv6Candidates()) {
+      const ok = await tryPort(port);
+      if (ok) return ok;
+    }
+    throw new Error('No available UDP ports are left in the IPv6 manager ranges');
+  }
+
+  async ensureIpv6PortAssigned(serverId) {
+    const server = this.getServer(serverId);
+    if (!server || this.isBedrockConnect(server)) return server?.ipv6_port || null;
+    if (server.ipv6_port) return server.ipv6_port;
+    const ipv6Port = await this.allocateIpv6Port(server.port, { excludeServerId: serverId });
+    db.prepare('UPDATE servers SET ipv6_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(ipv6Port, serverId);
+    this.registerPort(serverId, server.port, 'udp', 'ipv4');
+    this.registerPort(serverId, ipv6Port, 'udp', 'ipv6');
+    this.invalidateServerCache(serverId);
+    return ipv6Port;
+  }
+
+  async queueIpv6PortChange(serverId, newPort, { restartRequired = false } = {}) {
+    const server = this.getServer(serverId);
+    if (!server) throw new Error('Server not found');
+    if (this.isBedrockConnect(server)) {
+      throw new Error('Bedrock Connect must stay on UDP ports 19132/19133');
+    }
+    const port = parseInt(newPort, 10);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('Port must be between 1 and 65535');
+    }
+    if (port === Number(server.ipv6_port) && !server.pending_ipv6_port) {
+      return { success: true, ipv6Port: port };
+    }
+    if (!portRanges.isIpv6GamePort(port)) {
+      throw new Error(`UDP port ${port} is not in the IPv6 game ranges`);
+    }
+    if (port === Number(server.port) || port === Number(server.pending_port)) {
+      throw new Error('IPv4 and IPv6 ports must be different');
+    }
+    if (this.isPortNumberTaken(port, { excludeServerId: serverId })) {
+      throw new Error(`Port ${port} is already assigned`);
+    }
+    if (port !== Number(server.ipv6_port) && !(await this.isUdp6PortAvailable(port))) {
+      throw new Error(`UDP port ${port} is already in use by another process`);
+    }
+
+    if (restartRequired || server.status === 'running') {
+      db.prepare(`
+        UPDATE servers SET pending_ipv6_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+      `).run(port, serverId);
+      this.invalidateServerCache(serverId);
+      this.markRestartRequired(serverId, `IPv6 port will change to ${port}`);
+      return { success: true, ipv6Port: port, pending: true };
+    }
+
+    await this.commitIpv6PortChange(serverId, port);
+    return { success: true, ipv6Port: port, pending: false };
+  }
+
+  async commitIpv6PortChange(serverId, newPort) {
+    const server = this.getServer(serverId);
+    if (!server) throw new Error('Server not found');
+    const port = parseInt(newPort, 10);
+    if (port === Number(server.port)) {
+      throw new Error('IPv4 and IPv6 ports must be different');
+    }
+    this.writeRuntimeServerProperties({ ...server, ipv6_port: port });
+    db.prepare(`
+      UPDATE servers
+      SET ipv6_port = ?, pending_ipv6_port = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(port, serverId);
+    this.unregisterPorts(serverId);
+    this.registerPort(serverId, server.port, 'udp', 'ipv4');
+    this.registerPort(serverId, port, 'udp', 'ipv6');
+    this.invalidateServerCache(serverId);
+    logger.info(`Server ${server.name} is now on IPv6 port ${port}`);
+    return { success: true, ipv6Port: port };
+  }
+
   async getAllPorts() {
-    // Get ports 1-65535 conceptually, but we'll track commonly used ranges
-    // Return known used ports and OS-level available ports in common ranges.
     const usedPorts = db.prepare(`
-      SELECT p.port, p.protocol, p.in_use, s.name as server_name
+      SELECT p.port, p.protocol, p.family, p.in_use, s.name as server_name
       FROM port_usage p
       LEFT JOIN servers s ON p.server_id = s.id
       ORDER BY p.port
-    `).all();
+    `).all().map((row) => ({
+      ...row,
+      family: row.family || portRanges.classifyFamily(row.port),
+    }));
 
-    const usedPortSet = new Set(usedPorts.map(p => p.port));
-    const pendingRows = db.prepare(`
-      SELECT pending_port AS port, name AS server_name
-      FROM servers
-      WHERE pending_port IS NOT NULL
-    `).all();
-    for (const row of pendingRows) {
-      if (usedPortSet.has(row.port)) continue;
-      usedPortSet.add(row.port);
-      usedPorts.push({
-        port: row.port,
-        protocol: 'udp',
-        in_use: 1,
-        server_name: `${row.server_name} (pending)`,
-      });
+    const usedPortSet = new Set(usedPorts.map((p) => p.port));
+    const addUsed = (port, family, server_name) => {
+      if (usedPortSet.has(port)) return;
+      usedPortSet.add(port);
+      usedPorts.push({ port, protocol: 'udp', family, in_use: 1, server_name });
+    };
+
+    for (const row of this.assignedPortRows()) {
+      addUsed(row.port, row.family, row.server_name);
     }
-    if ((this.getBedrockConnectServer() || this.getPendingBedrockConnect()) && !usedPortSet.has(BEDROCK_CONNECT_PORT)) {
-      usedPortSet.add(BEDROCK_CONNECT_PORT);
-      usedPorts.push({
-        port: BEDROCK_CONNECT_PORT,
-        protocol: 'udp',
-        in_use: 1,
-        server_name: 'Bedrock Connect',
-      });
+    if (this.getBedrockConnectServer() || this.getPendingBedrockConnect()) {
+      addUsed(portRanges.DISCOVERY_IPV4, 'ipv4', 'Bedrock Connect');
+      addUsed(portRanges.DISCOVERY_IPV6, 'ipv6', 'Bedrock Connect');
     }
     const lanBroadcast = require('./lanBroadcast');
     for (const port of lanBroadcast.usedProxyPorts()) {
-      if (usedPortSet.has(port)) continue;
-      usedPortSet.add(port);
-      usedPorts.push({ port, protocol: 'udp', in_use: 1, server_name: 'LAN proxy' });
+      addUsed(port, 'ipv4', 'LAN proxy');
     }
     const proxyRows = db.prepare(`
       SELECT lan_proxy_port AS port, name AS server_name
@@ -1782,57 +1972,36 @@ done
       WHERE lan_proxy_port IS NOT NULL
     `).all();
     for (const row of proxyRows) {
-      if (usedPortSet.has(row.port)) continue;
-      usedPortSet.add(row.port);
-      usedPorts.push({
-        port: row.port,
-        protocol: 'udp',
-        in_use: 1,
-        server_name: `${row.server_name} (LAN proxy)`,
-      });
+      addUsed(row.port, 'ipv4', `${row.server_name} (LAN proxy)`);
     }
-    if (lanBroadcast.hasAnyActive() && !usedPortSet.has(lanBroadcast.DISCOVERY_PORT) && !this.getBedrockConnectServer()) {
-      usedPortSet.add(lanBroadcast.DISCOVERY_PORT);
-      usedPorts.push({
-        port: lanBroadcast.DISCOVERY_PORT,
-        protocol: 'udp',
-        in_use: 1,
-        server_name: 'Console LAN discovery',
-      });
+    if (lanBroadcast.hasAnyActive() && !this.getBedrockConnectServer()) {
+      addUsed(lanBroadcast.DISCOVERY_PORT, 'ipv4', 'Console LAN discovery');
+      addUsed(portRanges.DISCOVERY_IPV6, 'ipv6', 'Console LAN discovery');
     }
     for (let port = lanBroadcast.PROXY_PORT_START; port <= lanBroadcast.PROXY_PORT_END; port += 1) {
       usedPortSet.add(port);
     }
+    addUsed(portRanges.DISCOVERY_IPV6, 'ipv6', 'Reserved IPv6 discovery');
 
-    // Generate available ports (common Minecraft ranges)
-    const candidatePorts = [];
-    
-    // Check ranges: 1-1024 (system), 1025-49151 (registered), 49152-65535 (dynamic)
-    for (let port = 19132; port <= 19199; port++) {
-      if (!usedPortSet.has(port)) {
-        candidatePorts.push(port);
-      }
-    }
-    for (let port = 25565; port <= 25665; port++) {
-      if (!usedPortSet.has(port)) {
-        candidatePorts.push(port);
-      }
-    }
-    for (let port = 30000; port <= 30100; port++) {
-      if (!usedPortSet.has(port)) {
-        candidatePorts.push(port);
-      }
-    }
-
-    const availability = await Promise.all(
-      candidatePorts.map(async port => ({
+    const ipv4Candidates = portRanges.ipv4Candidates().filter((port) => !usedPortSet.has(port));
+    const ipv6Candidates = portRanges.ipv6Candidates().filter((port) => !usedPortSet.has(port));
+    const ipv4Availability = await Promise.all(
+      ipv4Candidates.map(async (port) => ({
         port,
+        family: 'ipv4',
         available: await this.isUdpPortAvailable(port),
       }))
     );
-    const availablePorts = availability
-      .filter(result => result.available)
-      .map(({ port }) => ({ port, protocol: 'udp', in_use: 0, server_name: null }));
+    const ipv6Availability = await Promise.all(
+      ipv6Candidates.map(async (port) => ({
+        port,
+        family: 'ipv6',
+        available: await this.isUdp6PortAvailable(port),
+      }))
+    );
+    const availablePorts = [...ipv4Availability, ...ipv6Availability]
+      .filter((result) => result.available)
+      .map(({ port, family }) => ({ port, protocol: 'udp', family, in_use: 0, server_name: null }));
 
     return { used: usedPorts, available: availablePorts };
   }

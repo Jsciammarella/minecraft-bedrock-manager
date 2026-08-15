@@ -12,6 +12,7 @@ const gitCatalog = require('../server/services/gitCatalogClient');
 const settingsStore = require('../server/services/settingsStore');
 const modManager = require('../server/services/modManager');
 const connectHost = require('../server/services/connectHost');
+const portRanges = require('../server/services/portRanges');
 
 async function run() {
   const accessTable = db.prepare(
@@ -222,23 +223,44 @@ async function run() {
   const serverColumns = db.prepare('PRAGMA table_info(servers)').all().map(column => column.name);
   assert(serverColumns.includes('kind'), 'servers.kind column was not created');
   assert(serverColumns.includes('pending_port'), 'servers.pending_port column was not created');
+  assert(serverColumns.includes('ipv6_port'), 'servers.ipv6_port column was not created');
+  assert(serverColumns.includes('pending_ipv6_port'), 'servers.pending_ipv6_port column was not created');
   assert(serverColumns.includes('lan_broadcast'), 'servers.lan_broadcast column was not created');
   assert(serverColumns.includes('lan_proxy_port'), 'servers.lan_proxy_port column was not created');
+  const portUsageColumns = db.prepare('PRAGMA table_info(port_usage)').all().map(column => column.name);
+  assert(portUsageColumns.includes('family'), 'port_usage.family column was not created');
+  assert.equal(portRanges.preferredIpv6Port(19140), 18140);
+  assert.equal(portRanges.isIpv4GamePort(19133), false);
+  assert.equal(portRanges.isIpv6GamePort(18132), true);
+  assert.equal(portRanges.classifyFamily(18140), 'ipv6');
 
   const portServerPath = path.join(testRoot, 'port-server');
   fs.mkdirSync(portServerPath, { recursive: true });
-  fs.writeFileSync(path.join(portServerPath, 'server.properties'), 'server-port=40110\nserver-portv6=40110\n');
+  fs.writeFileSync(path.join(portServerPath, 'server.properties'), 'server-port=19150\nserver-portv6=18150\n');
   const portServer = db.prepare(`
-    INSERT INTO servers (name, version, port, data_path)
-    VALUES (?, 'test', ?, ?)
-  `).run(`port-change-${suffix}`, 40110, portServerPath);
-  const queued = await serverManager.queuePortChange(portServer.lastInsertRowid, 40111);
+    INSERT INTO servers (name, version, port, ipv6_port, data_path)
+    VALUES (?, 'test', ?, ?, ?)
+  `).run(`port-change-${suffix}`, 19150, 18150, portServerPath);
+  const queued = await serverManager.queuePortChange(portServer.lastInsertRowid, 19151);
   assert.equal(queued.pending, false, 'stopped server port change should apply immediately');
   const moved = serverManager.getServer(portServer.lastInsertRowid);
-  assert.equal(moved.port, 40111);
+  assert.equal(moved.port, 19151);
   assert.equal(moved.pending_port, null);
+  assert.equal(moved.ipv6_port, 18151, 'paired IPv6 port should move 1000 below the new IPv4 port');
   const props = fs.readFileSync(path.join(portServerPath, 'server.properties'), 'utf8');
-  assert.match(props, /server-port=40111/);
+  assert.match(props, /server-port=19151/);
+  assert.match(props, /server-portv6=18151/);
+  const queuedIpv6 = await serverManager.queueIpv6PortChange(portServer.lastInsertRowid, 18152);
+  assert.equal(queuedIpv6.pending, false);
+  assert.equal(serverManager.getServer(portServer.lastInsertRowid).ipv6_port, 18152);
+  await assert.rejects(
+    () => serverManager.queuePortChange(portServer.lastInsertRowid, 18152),
+    /IPv4 and IPv6 ports must be different/
+  );
+  await assert.rejects(
+    () => serverManager.queuePortChange(portServer.lastInsertRowid, 19133),
+    /not in the IPv4 game ranges/
+  );
 
   const occupantPath = path.join(testRoot, 'occupant');
   fs.mkdirSync(occupantPath, { recursive: true });
@@ -252,6 +274,7 @@ async function run() {
   assert(preview.conflict, 'preview should report a 19132 conflict');
   assert.equal(preview.conflict.serverId, occupant.lastInsertRowid);
   assert.notEqual(preview.conflict.nextPort, 19132);
+  assert.notEqual(preview.conflict.nextPort, 19133);
 
   const nativeLan = await serverManager.previewLanBroadcast(occupant.lastInsertRowid);
   assert.equal(nativeLan.allowed, true);
@@ -279,9 +302,19 @@ async function run() {
   assert(ordered.some(row => row.id === alpha.lastInsertRowid));
   const ports = await serverManager.getAllPorts();
   assert(ports.used.some(item => item.port === 19132), '19132 should be marked used while Bedrock Connect exists');
+  assert(ports.used.some(item => item.port === 19133 && item.family === 'ipv6'), '19133 should be reserved as IPv6 discovery');
+  assert(!ports.available.some(item => item.port === 19133), '19133 must not be offered as an available game port');
+  assert(!ports.available.some(item => item.family !== 'ipv6' && item.port === 19133));
+  const nextIpv4 = await serverManager.nextAvailablePort();
+  assert.notEqual(nextIpv4, 19133);
+  assert(portRanges.isIpv4GamePort(nextIpv4), 'next available port should be an IPv4 game port');
   await assert.rejects(
     () => serverManager.createServer({ name: `blocked-${suffix}`, port: 19132, version: 'latest' }),
     /19132 is reserved/
+  );
+  await assert.rejects(
+    () => serverManager.createServer({ name: `v6asv4-${suffix}`, port: 19133, version: 'latest' }),
+    /not in the IPv4 game ranges/
   );
   const lanWhileBcStopped = await serverManager.previewLanBroadcast(alpha.lastInsertRowid);
   assert.equal(lanWhileBcStopped.allowed, true, 'LAN listing should work while Bedrock Connect is stopped');
