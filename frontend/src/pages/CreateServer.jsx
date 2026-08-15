@@ -52,22 +52,7 @@ function CreateServer() {
         port: parseInt(formData.port),
         maxPlayers: parseInt(formData.maxPlayers),
       });
-      
-      setSuccess(`Server "${data.name}" created successfully!`);
-      
-      // Reset form
-      setFormData({
-        name: '',
-        port: '',
-        version: 'latest',
-        maxPlayers: '10',
-        description: '',
-        gamemode: 'survival',
-        difficulty: 'peaceful',
-      });
-
-      // Navigate after a delay
-      setTimeout(() => navigate(`/servers/${data.id}`), 1500);
+      navigate('/', { state: { message: `Building "${data.name}". It will appear on the dashboard while the Bedrock files download.` } });
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to create server');
     } finally {

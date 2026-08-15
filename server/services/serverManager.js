@@ -18,7 +18,8 @@ class ServerManager {
     this.ptySessions = new Map(); // serverId -> pty session
     this.processes = new Map(); // serverId -> process reference
     this.scheduledRestarts = new Map(); // serverId -> warning/restart timers
-    
+    this.provisionJobs = new Map();
+
     // Ensure directories exist
     fs.mkdirSync(BASE_DIR, { recursive: true });
     fs.mkdirSync(MODS_DIR, { recursive: true });
@@ -29,7 +30,7 @@ class ServerManager {
       UPDATE servers
       SET status = 'stopped', pid = NULL, started_at = NULL, restart_scheduled_at = NULL,
         updated_at = CURRENT_TIMESTAMP
-      WHERE status IN ('running', 'starting')
+      WHERE status IN ('running', 'starting', 'creating')
     `).run();
     if (reconciled.changes > 0) {
       logger.warn(`Reset ${reconciled.changes} stale server status record(s) during manager startup`);
@@ -267,6 +268,9 @@ class ServerManager {
     if (this.isBedrockConnect(server)) {
       throw new Error('Bedrock Connect cannot be advertised as a LAN game');
     }
+    if (server.status === 'creating') {
+      throw new Error('Wait until this server finishes building before enabling LAN listing');
+    }
 
     if (!enabled) {
       lanBroadcast.stop(serverId);
@@ -340,6 +344,10 @@ class ServerManager {
       return lanBroadcast.statusFor(server);
     }
     if (Number(server.port) === lanBroadcast.DISCOVERY_PORT) return lanBroadcast.statusFor(server);
+    if (server.status === 'creating') {
+      lanBroadcast.stop(serverId);
+      return lanBroadcast.statusFor(server);
+    }
     if (lanBroadcast.isActive(serverId)) return lanBroadcast.statusFor(server);
     lanBroadcast.stop(serverId);
     const session = await lanBroadcast.startAndWait(server);
@@ -655,96 +663,155 @@ class ServerManager {
       throw new Error(`UDP port ${port} is already in use by another process`);
     }
 
-    // Download and extract the server
     const serverPath = path.join(BASE_DIR, name);
     fs.mkdirSync(serverPath, { recursive: true });
 
-    // Download Minecraft Bedrock server
-    await this.downloadServer(serverPath, version || 'latest');
-
-    // Create server directory structure
-    fs.mkdirSync(path.join(serverPath, 'behavior_packs'), { recursive: true });
-    fs.mkdirSync(path.join(serverPath, 'texture_packs'), { recursive: true });
-    fs.mkdirSync(path.join(serverPath, 'worlds'), { recursive: true });
-    fs.mkdirSync(path.join(serverPath, 'resource_packs'), { recursive: true });
-
-    // Create initial server.properties
-    const props = {
-      'level-name': name,
-      'server-port': String(port),
-      'server-portv6': String(port),
-      'max-players': String(maxPlayers || 10),
-      'allow-list': 'false',
-      difficulty: difficulty || 'peaceful',
-      gamemode: gamemode || 'survival',
-      'default-player-permission': 'member',
-      'server-authoritative': 'true',
-      'enable-cheats': 'true',
-      'server-description': description || 'Minecraft Bedrock Server',
-      'texturepack-name': '',
-      'texturepacks-required': 'false',
-      'content-log-file-enable': 'false',
-      'compression-threshold-kb': '1',
-    };
-
-    this.writeServerProperties(path.join(serverPath, 'server.properties'), props);
-    fs.writeFileSync(path.join(serverPath, 'allowlist.json'), '[]\n');
-    fs.writeFileSync(path.join(serverPath, 'permissions.json'), '[]\n');
-
-    // Insert into database
     const insert = db.prepare(`
-      INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode, 
+      INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
         server_description, server_motd, status, data_path)
-      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'stopped', ?)
+      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'creating', ?)
     `);
     const result = insert.run(
-      name, version || 'latest', port, maxPlayers || 10, 
+      name, version || 'latest', port, maxPlayers || 10,
       difficulty || 'peaceful', gamemode || 'survival',
       description || 'Minecraft Bedrock Server',
       description || 'Minecraft Bedrock Server',
       serverPath
     );
-
     const serverId = result.lastInsertRowid;
-
-    // Register port
     this.registerPort(serverId, port, 'udp');
+    this.invalidateServerCache(serverId);
+    this.broadcastServerStatus(serverId);
 
-    logger.info(`Created server: ${name} on port ${port}`);
-    return { id: serverId, name, port, dataPath: serverPath };
+    const job = this.finishCreateServer(serverId, {
+      name,
+      port,
+      maxPlayers: maxPlayers || 10,
+      description: description || 'Minecraft Bedrock Server',
+      gamemode: gamemode || 'survival',
+      difficulty: difficulty || 'peaceful',
+      version: version || 'latest',
+      serverPath,
+    }).finally(() => this.provisionJobs.delete(Number(serverId)));
+    this.provisionJobs.set(Number(serverId), job);
+
+    logger.info(`Queued server create: ${name} on port ${port}`);
+    return { id: serverId, name, port, status: 'creating', dataPath: serverPath };
+  }
+
+  async finishCreateServer(serverId, config) {
+    const { name, port, maxPlayers, description, gamemode, difficulty, version, serverPath } = config;
+    try {
+      await this.downloadServer(serverPath, version);
+      if (!this.getServer(serverId)) return;
+
+      fs.mkdirSync(path.join(serverPath, 'behavior_packs'), { recursive: true });
+      fs.mkdirSync(path.join(serverPath, 'texture_packs'), { recursive: true });
+      fs.mkdirSync(path.join(serverPath, 'worlds'), { recursive: true });
+      fs.mkdirSync(path.join(serverPath, 'resource_packs'), { recursive: true });
+
+      const props = {
+        'level-name': name,
+        'server-port': String(port),
+        'server-portv6': String(port),
+        'max-players': String(maxPlayers || 10),
+        'allow-list': 'false',
+        difficulty: difficulty || 'peaceful',
+        gamemode: gamemode || 'survival',
+        'default-player-permission': 'member',
+        'server-authoritative': 'true',
+        'enable-cheats': 'true',
+        'server-description': description || 'Minecraft Bedrock Server',
+        'texturepack-name': '',
+        'texturepacks-required': 'false',
+        'content-log-file-enable': 'false',
+        'compression-threshold-kb': '1',
+      };
+      this.writeServerProperties(path.join(serverPath, 'server.properties'), props);
+      fs.writeFileSync(path.join(serverPath, 'allowlist.json'), '[]\n');
+      fs.writeFileSync(path.join(serverPath, 'permissions.json'), '[]\n');
+
+      db.prepare('UPDATE servers SET status = ?, pending_restart_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('stopped', serverId);
+      this.invalidateServerCache(serverId);
+      this.broadcastServerStatus(serverId);
+      logger.info(`Created server: ${name} on port ${port}`);
+    } catch (err) {
+      logger.error(`Failed to finish creating ${name}: ${err.message}`);
+      if (!this.getServer(serverId)) return;
+      db.prepare('UPDATE servers SET status = ?, pending_restart = 0, pending_restart_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('stopped', `Create failed: ${err.message}`, serverId);
+      this.invalidateServerCache(serverId);
+      this.broadcastServerStatus(serverId);
+    }
+  }
+
+  async resolveBedrockDownloadUrl(version) {
+    const axios = require('axios');
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      Accept: 'text/html,application/xhtml+xml,application/json',
+    };
+    try {
+      const api = await axios.get('https://net-secondary.web.minecraft-services.net/api/v1.0/download/links', {
+        headers: { ...headers, Accept: 'application/json' },
+        timeout: 20000,
+      });
+      const links = api.data?.result?.links || api.data?.links || [];
+      const linux = links.find(item =>
+        /serverBedrockLinux/i.test(item.downloadType || '')
+        || /bin-linux/i.test(item.downloadUrl || item.url || '')
+      );
+      const url = linux?.downloadUrl || linux?.url;
+      if (url) return url;
+    } catch (err) {
+      logger.warn(`Bedrock download API lookup failed: ${err.message}`);
+    }
+
+    const page = await axios.get('https://www.minecraft.net/en-us/download/server/bedrock', {
+      headers,
+      timeout: 20000,
+      maxRedirects: 5,
+    });
+    const html = String(page.data || '');
+    const matches = [...html.matchAll(/https:\/\/www\.minecraft\.net\/bedrockdedicatedserver\/bin-linux\/bedrock-server-[0-9.]+\.zip/g)]
+      .map(match => match[0]);
+    if (version && version !== 'latest') {
+      const pinned = matches.find(url => url.includes(version));
+      if (pinned) return pinned;
+    }
+    if (matches[0]) return matches[0];
+    throw new Error('Could not resolve the official Bedrock Dedicated Server download URL');
   }
 
   async downloadServer(targetDir, version) {
-    const arch = await this.detectArchitecture();
-    const url = version === 'latest'
-      ? 'https://minecraft.net/bedrock-installers'
-      : `https://minecraft.net/bedrock-installers?version=${version}`;
-
     logger.info(`Downloading Minecraft Bedrock server to ${targetDir}`);
-
-    // Try to download the official server
+    const zipPath = path.join(targetDir, 'bedrock_server.zip');
     try {
-      const downloadUrl = `https://www.minecraft.net/download/server/bedrock/`;
-      
-      // Use wget/curl to download
-      const downloadPath = path.join(targetDir, 'bedrock_server.tgz');
-      const { stdout } = await execAsync(
-        `wget -q -O "${downloadPath}" "https://www.minecraft.net/bedrock-server/" 2>/dev/null || true`,
-        { timeout: 120000 }
+      const downloadUrl = await this.resolveBedrockDownloadUrl(version);
+      logger.info(`Fetching Bedrock Dedicated Server from ${downloadUrl}`);
+      await execAsync(
+        `curl -fsSL -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o "${zipPath}" "${downloadUrl}"`,
+        { timeout: 180000 }
       );
-
-      // If direct download fails, try alternative method
-      if (!fs.existsSync(downloadPath) || fs.statSync(downloadPath).size < 1000) {
+      if (!fs.existsSync(zipPath) || fs.statSync(zipPath).size < 1000000) {
         throw new Error('Download failed or file too small');
       }
-
-      // Extract
-      await execAsync(`tar -xzf "${downloadPath}" -C "${targetDir}"`, { timeout: 120000 });
-      fs.unlinkSync(downloadPath);
+      await execAsync(`unzip -o -q "${zipPath}" -d "${targetDir}"`, { timeout: 120000 });
+      try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+      const serverBin = path.join(targetDir, 'bedrock_server');
+      if (!fs.existsSync(serverBin)) {
+        throw new Error('Archive did not contain bedrock_server');
+      }
+      fs.chmodSync(serverBin, '755');
     } catch (err) {
-      logger.warn(`Direct download failed: ${err.message}. Creating stub server files.`);
-      // Create stub files so the manager can still work
-      await this.createStubServer(targetDir);
+      logger.warn(`Direct download failed: ${err.message}`);
+      try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+      if (String(process.env.ALLOW_STUB_SERVER || '') === '1') {
+        await this.createStubServer(targetDir);
+        return;
+      }
+      throw err;
     }
   }
 
@@ -778,6 +845,15 @@ done
     fs.mkdirSync(path.join(targetDir, 'user_data'), { recursive: true });
     
     logger.info(`Created stub server at ${targetDir}`);
+  }
+
+  isStubBedrockBinary(filePath) {
+    try {
+      const header = fs.readFileSync(filePath).subarray(0, 120).toString('utf8');
+      return header.startsWith('#!') || /placeholder|Bedrock Server Stub/i.test(header);
+    } catch {
+      return true;
+    }
   }
 
   async startBedrockConnect(server) {
@@ -839,6 +915,7 @@ done
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
     if (server.status === 'running') throw new Error('Server already running');
+    if (server.status === 'creating') throw new Error('Server is still being built');
 
     if (server.pending_port) {
       await this.commitPortChange(serverId, server.pending_port);
@@ -858,6 +935,9 @@ done
     if (!fs.existsSync(serverBin)) {
       throw new Error(`Server binary not found at ${serverBin}. Please install the server first.`);
     }
+    if (this.isStubBedrockBinary(serverBin)) {
+      throw new Error('This instance has a placeholder binary, not Minecraft Bedrock Dedicated Server. Delete it and create the server again, or unzip the official files into this server directory.');
+    }
 
     try {
       // Make executable
@@ -867,7 +947,7 @@ done
       const { spawn: spawnPty } = require('node-pty');
       const pty = spawnPty('bash', [
         '-c', 
-        `cd "${serverPath}" && PORT=${server.port} ./bedrock_server`
+        `cd "${serverPath}" && LD_LIBRARY_PATH=. PORT=${server.port} ./bedrock_server`
       ], {
         name: 'xterm-color',
         cols: 120,
@@ -923,6 +1003,9 @@ done
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
     this.cancelWarnedRestart(serverId, { broadcast: false });
+    if (server.status === 'creating') {
+      throw new Error('Server is still being built');
+    }
     if (server.status === 'stopped') throw new Error('Server already stopped');
 
     const pty = this.ptySessions.get(sessionKey);
@@ -1027,8 +1110,11 @@ done
     const wasBedrockConnect = this.isBedrockConnect(server);
     require('./lanBroadcast').stop(serverId);
 
-    // Stop if running
-    if (server.status !== 'stopped') {
+    if (server.status === 'creating') {
+      const job = this.provisionJobs.get(Number(serverId));
+      this.provisionJobs.delete(Number(serverId));
+      if (job && typeof job.catch === 'function') job.catch(() => {});
+    } else if (server.status !== 'stopped') {
       await this.stopServer(serverId);
     }
 
@@ -1226,6 +1312,7 @@ done
   async updateServer(serverId, targetVersion) {
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+    if (server.status === 'creating') throw new Error('Server is still being built');
 
       if (this.isBedrockConnect(server)) {
         const bedrockConnect = require('./bedrockConnect');

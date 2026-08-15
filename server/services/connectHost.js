@@ -81,17 +81,25 @@ function formatAddress(host, port) {
   return `${display}:${port}`;
 }
 
-function resolve(req) {
-  const configured = configuredHost();
-  if (configured) return stripHostPort(configured);
+function managerHostname() {
+  try {
+    return String(os.hostname() || '').trim();
+  } catch {
+    return '';
+  }
+}
 
-  const fromRequest = hostnameFromRequest(req);
-  if (fromRequest && !isLoopbackHost(fromRequest)) return fromRequest;
+function resolve(_req) {
+  const configured = stripHostPort(configuredHost());
+  if (configured && isUsableIPv4(configured)) return configured;
 
   const lan = detectLanIPv4();
   if (lan) return lan;
 
-  return fromRequest || '127.0.0.1';
+  const fromRequest = hostnameFromRequest(_req);
+  if (fromRequest && isUsableIPv4(fromRequest)) return fromRequest;
+
+  return '127.0.0.1';
 }
 
 function isPhantomProxied(server) {
@@ -104,6 +112,8 @@ function attach(server, req) {
   return {
     ...server,
     connectHost,
+    lanIp: connectHost,
+    managerHostname: managerHostname(),
     connectAddress: isPhantomProxied(server)
       ? 'Phantom Proxy'
       : formatAddress(connectHost, server.port),
@@ -118,6 +128,8 @@ module.exports = {
   hostnameFromRequest,
   isLoopbackHost,
   isPhantomProxied,
+  isUsableIPv4,
+  managerHostname,
   resolve,
   stripHostPort,
 };

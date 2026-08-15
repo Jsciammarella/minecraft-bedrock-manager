@@ -3,16 +3,24 @@ import {
   Server, Plus, Package, Users, Network, Settings, 
   ChevronLeft, ChevronRight, Home, FolderOpen, Download
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
+import { publicApi } from '../services/api';
 
 function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
+  const [hostName, setHostName] = useState('');
   const { servers, loading } = useApi();
   const { connected } = useSocket();
+
+  useEffect(() => {
+    publicApi.health()
+      .then((res) => setHostName(String(res.data?.hostname || '').trim()))
+      .catch(() => setHostName(''));
+  }, []);
 
   const navItems = [
     { icon: Home, label: 'Dashboard', path: '/', exact: true },
@@ -36,13 +44,15 @@ function Layout() {
         {/* Logo */}
         <div className="p-4 border-b border-mc-surfaceLight">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-mc-accent rounded-lg flex items-center justify-center flex-shrink-0">
+            <div className="w-8 h-8 bg-mc-accent rounded-lg flex items-center justify-center flex-shrink-0" title={hostName || 'MC Manager'}>
               <Server className="w-5 h-5 text-mc-darker" />
             </div>
             {!collapsed && (
               <div className="overflow-hidden">
                 <h1 className="text-sm font-bold text-white truncate">MC Manager</h1>
-                <p className="text-xs text-mc-textMuted truncate">Bedrock Edition</p>
+                <p className="text-xs text-mc-textMuted truncate" title={hostName || undefined}>
+                  {hostName || 'Bedrock Edition'}
+                </p>
               </div>
             )}
           </div>

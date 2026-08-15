@@ -5,6 +5,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
 const logger = require('./services/logger');
+const connectHost = require('./services/connectHost');
 const serverManager = require('./services/serverManager');
 const autoUpdateScheduler = require('./services/autoUpdateScheduler');
 const gitCatalogScheduler = require('./services/gitCatalogScheduler');
@@ -57,7 +58,12 @@ app.use('/api/v1', apiRoutes); // Public API
 
 // Health endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    hostname: connectHost.managerHostname(),
+    lanIp: connectHost.detectLanIPv4() || null,
+  });
 });
 
 // Let client-side routes such as /servers/:id load directly or after refresh.

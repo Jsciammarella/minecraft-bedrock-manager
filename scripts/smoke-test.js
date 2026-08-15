@@ -172,16 +172,25 @@ async function run() {
   assert.equal(connectHost.stripHostPort('192.168.1.50:3000'), '192.168.1.50');
   assert.equal(connectHost.formatAddress('192.168.1.50', 19132), '192.168.1.50:19132');
   assert.equal(connectHost.formatAddress('2001:db8::1', 19132), '[2001:db8::1]:19132');
-  assert.equal(connectHost.resolve({ headers: { host: '10.0.0.8:3000' } }), '10.0.0.8');
+  assert(connectHost.managerHostname(), 'manager hostname should be the OS hostname');
+  process.env.CONNECT_HOST = '10.9.9.9';
+  try {
+    assert.equal(connectHost.resolve({ headers: { host: 'mc.example.com:3000' } }), '10.9.9.9');
+  } finally {
+    if (previousConnectHost == null) delete process.env.CONNECT_HOST;
+    else process.env.CONNECT_HOST = previousConnectHost;
+  }
   process.env.CONNECT_HOST = 'mc.example.com';
   try {
-    assert.equal(connectHost.resolve({ headers: { host: '10.0.0.8:3000' } }), 'mc.example.com');
+    const resolved = connectHost.resolve({ headers: { host: '10.0.0.8:3000' } });
+    assert.match(resolved, /^(?:\d{1,3}\.){3}\d{1,3}$/, 'connect address should be an IPv4, not a hostname');
+    assert.notEqual(resolved, 'mc.example.com');
   } finally {
     if (previousConnectHost == null) delete process.env.CONNECT_HOST;
     else process.env.CONNECT_HOST = previousConnectHost;
   }
   const localConnectHost = connectHost.resolve({ headers: { host: 'localhost:3000' } });
-  assert(localConnectHost, 'connect host should resolve for localhost requests');
+  assert.match(localConnectHost, /^(?:\d{1,3}\.){3}\d{1,3}$/, 'localhost requests should still advertise an IPv4');
   assert.equal(
     connectHost.isPhantomProxied({ lan: { enabled: true, active: true, native: false } }),
     true

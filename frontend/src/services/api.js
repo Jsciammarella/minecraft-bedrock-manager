@@ -10,7 +10,7 @@ const api = axios.create({
 export const serverApi = {
   getAll: () => api.get('/servers'),
   getById: (id) => api.get(`/servers/${id}`),
-  create: (data) => api.post('/servers', data),
+  create: (data) => api.post('/servers', data, { timeout: 60000 }),
   update: (id, data) => api.put(`/servers/${id}`, data),
   delete: (id) => api.delete(`/servers/${id}`),
   start: (id) => api.post(`/servers/${id}/start`),
@@ -105,7 +105,7 @@ export const portApi = {
 export const publicApi = {
   overview: () => api.get('/v1/overview'),
   serverStatus: (id) => api.get(`/v1/server/${id}`),
-  health: () => api.get('/v1/health'),
+  health: () => api.get('/health'),
 };
 
 export default api;

@@ -147,7 +147,7 @@ function ServerDetail() {
 
   const beginLanToggle = async () => {
     const lan = server?.stats?.lan || server?.lan || {};
-    if (server?.kind === 'bedrock_connect' || lan.native) return;
+    if (server?.kind === 'bedrock_connect' || lan.native || server?.status === 'creating') return;
     if (servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting'))) return;
     setLanError('');
     setLanMessage('');
@@ -354,10 +354,12 @@ function ServerDetail() {
   }
 
   const isBC = server.kind === 'bedrock_connect';
+  const isBuilding = server.status === 'creating';
+  const createFailed = String(server.pending_restart_reason || '').startsWith('Create failed');
   const lan = server.stats?.lan || server.lan || {};
   const lanOn = Boolean(lan.native || lan.enabled);
   const bcRunning = servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting'));
-  const lanLocked = isBC || lan.native || bcRunning;
+  const lanLocked = isBC || lan.native || bcRunning || isBuilding;
   const connectLabel = server.connectAddress || `Port ${server.port}`;
 
   return (
@@ -386,6 +388,21 @@ function ServerDetail() {
       {lanMessage && (
         <div className="mb-4 p-3 bg-green-500/10 border border-green-500/30 rounded-lg flex items-center gap-2 text-sm text-green-400">
           <Check className="w-4 h-4" /> {lanMessage}
+        </div>
+      )}
+      {isBuilding && (
+        <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg flex items-start gap-2 text-sm text-yellow-300">
+          <Loader2 className="w-4 h-4 mt-0.5 flex-shrink-0 animate-spin" />
+          <div>
+            <p className="font-medium">Building Server</p>
+            <p className="text-xs mt-1">Downloading Minecraft Bedrock Dedicated Server. Start and LAN unlock when this finishes.</p>
+          </div>
+        </div>
+      )}
+      {createFailed && server.pending_restart !== 1 && (
+        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-start gap-2 text-sm text-red-400">
+          <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          {server.pending_restart_reason}
         </div>
       )}
       {server.pending_restart === 1 && (
@@ -497,7 +514,9 @@ function ServerDetail() {
               title={lanLocked
                 ? (isBC
                   ? 'Bedrock Connect is not a LAN game'
-                  : lan.native
+                  : isBuilding
+                    ? 'Wait until this server finishes building'
+                    : lan.native
                     ? 'Already visible on LAN via UDP 19132'
                     : 'Stop or remove Bedrock Connect to start LAN proxy.')
                 : (lanOn ? 'Turn off LAN listing' : 'Advertise this server as a LAN game')}
@@ -563,7 +582,11 @@ function ServerDetail() {
 
       {/* Server Actions */}
       <div className="flex items-center gap-3 mb-6">
-        {server.status === 'starting' ? (
+        {server.status === 'creating' ? (
+          <button disabled className="btn btn-primary">
+            <Loader2 className="w-4 h-4 animate-spin" /> Building Server...
+          </button>
+        ) : server.status === 'starting' ? (
           <button disabled className="btn btn-primary">
             <Loader2 className="w-4 h-4 animate-spin" /> Starting...
           </button>

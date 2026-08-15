@@ -67,7 +67,7 @@ For a native installation:
    | --- | --- |
    | `TZ` | Host timezone, for example `America/Denver` |
    | `PORT` | Web UI port if `3000` is already in use |
-   | `CONNECT_HOST` | LAN IP or DNS name players should use. Leave empty on Linux host networking to auto-detect. Set it on Docker Desktop / bridge networks so tiles do not show a container IP |
+   | `CONNECT_HOST` | Optional IPv4 override for tiles and Bedrock Connect. Leave empty to use this host's LAN IP. Hostnames are ignored because consoles resolve them unreliably |
    | `CURSEFORGE_API_KEY` | Optional. You can also paste this later in **Mod Catalog → Settings** |
    | `GIT_CATALOG_*` | Optional. Preferred configuration is **Mod Catalog → Settings** |
 
@@ -104,15 +104,17 @@ Application data is stored in the `mc-data` Docker volume and survives container
 
 The production Compose file uses Linux host networking. Each Bedrock process therefore binds its selected UDP port directly on the host as soon as the server starts; adding a server does not require editing Compose or recreating the manager container. Host networking is intentional and is supported by the documented Linux deployment target. Firewall rules, not Docker port mappings, control external access.
 
-Dashboard tiles show `version • IP:port` using, in order: `CONNECT_HOST`, the hostname from the browser request (when it is not localhost), then a detected LAN IPv4. Docker bridge addresses such as `172.17.0.2` are not advertised. On Linux host networking and on a native install, auto-detection normally finds the host LAN IP. Docker Desktop and other bridge-network setups should set `CONNECT_HOST` to the host's LAN IP or DNS name.
+The Docker image runs as root. Game UDP ports are unprivileged (above 1024), but the manager must write the `mc-data` volume, copy Phantom into it, and spawn Bedrock, Java, and Phantom children on the host network. A non-root image user caused permission failures on a clean Docker install. Native Ubuntu installs still run as `mcmanager`.
+
+Dashboard tiles show `version • IP:port` using this host's LAN IPv4 so Bedrock Connect and consoles do not depend on home DNS. `CONNECT_HOST` is used only when it is an IPv4; hostnames are ignored. Docker bridge addresses such as `172.17.0.2` are not advertised. On Linux host networking and on a native install, auto-detection normally finds the host LAN IP. Docker Desktop and other bridge-network setups should set `CONNECT_HOST` to the host's LAN IPv4. The sidebar shows the machine hostname under **MC Manager**.
 
 When upgrading an older bridge-network deployment, run `docker compose down` followed by `docker compose up -d --build` after adding the firewall rules. This recreates only the manager container; the named data volume is retained.
 
 ### Bedrock Dedicated Server binary
 
-Minecraft Bedrock Dedicated Server is licensed and distributed separately by Mojang/Microsoft, so it is not included in this repository or image. Server creation attempts to provision it; if the official download cannot be resolved, the manager creates a development stub so the UI can still be tested.
+Minecraft Bedrock Dedicated Server is licensed and distributed separately by Mojang/Microsoft, so it is not included in this repository or image. Creating a server inserts a **Building Server** tile immediately, then downloads the official Linux zip in the background. Start and LAN stay locked until that finishes. If the download cannot be resolved, the tile stays offline with an error instead of a fake binary. Set `ALLOW_STUB_SERVER=1` only if you need the old development placeholder.
 
-For a real server, download the current Linux Bedrock Dedicated Server from the [official Minecraft server download page](https://www.minecraft.net/en-us/download/server/bedrock), stop the instance, and place the extracted files in that instance's data directory. The executable must be named `bedrock_server`, be executable, and be owned by the account running the manager. In Docker, the instance directories are inside the `mc-data` volume at `/app/data/servers/<server-name>`.
+For a real server, the manager uses a browser User-Agent to resolve the official zip from the [Minecraft Bedrock server download page](https://www.minecraft.net/en-us/download/server/bedrock), then `unzip`s it and starts `bedrock_server` with `LD_LIBRARY_PATH=.`. You can also place extracted files in that instance's data directory yourself. The executable must be named `bedrock_server` and be executable. In Docker, the instance directories are inside the `mc-data` volume at `/app/data/servers/<server-name>`.
 
 ### Bedrock Connect (consoles)
 
@@ -130,7 +132,7 @@ You can also change a regular Bedrock server's port on its Properties page. The 
 
 Consoles look for LAN games by pinging UDP `19132`. A dedicated server that already uses that port is visible on the LAN by itself. Servers on any other port can be advertised with a per-server **LAN** toggle on the dashboard tile and the server page.
 
-The manager ships [Phantom](https://github.com/jhead/phantom) (MIT license) binaries under `vendor/phantom/` (currently `v0.5.3`) and copies the matching one into `data/phantom/` on first use. It does not need GitHub to start. The daily auto-update check looks for a newer Phantom release and downloads it only if GitHub is reachable. Each enabled server gets its own Phantom process: consoles still discover games on UDP `19132` (Phantom uses `SO_REUSEPORT` so several listings can share that port), and game traffic is proxied on UDP `19200-19299` to `127.0.0.1:<server-port>` on the same host. While a server is proxied, the dashboard shows **Phantom Proxy** instead of `IP:port`.
+The manager ships [Phantom](https://github.com/jhead/phantom) (MIT license) binaries under `vendor/phantom/` (currently `v0.5.3`) and copies the matching one into `data/phantom/` on first use. It does not need GitHub to start. The daily auto-update check looks for a newer Phantom release and downloads it only if GitHub is reachable. Each enabled server gets its own Phantom process: consoles still discover games on UDP `19132` (Phantom uses `SO_REUSEPORT` so several listings can share that port), and game traffic is proxied on UDP `19200-19299` to this host's auto-detected LAN IPv4 on the game port (loopback only if no LAN address is found). `CONNECT_HOST` is not used for that target; it only controls the address shown on dashboard tiles. While a server is proxied, the dashboard shows **Phantom Proxy** instead of `IP:port`.
 
 This is the easier path for Xbox, PlayStation, Windows, iOS, and Android on the same LAN. It does **not** replace Bedrock Connect:
 
@@ -145,7 +147,7 @@ If another managed game server occupies UDP `19132`, the manager asks you to mov
 
    ```bash
    sudo apt update
-   sudo apt install -y ca-certificates curl python3 make g++ wget tar git git-lfs ufw default-jre-headless
+   sudo apt install -y ca-certificates curl python3 make g++ wget tar unzip git git-lfs ufw default-jre-headless
    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
    sudo apt install -y nodejs
    sudo git lfs install --system
@@ -208,7 +210,7 @@ The available-port dropdown combines the manager database with a live host UDP b
 | --- | --- | --- |
 | `NODE_ENV` | `production` | Runtime mode |
 | `PORT` | `3000` | Web interface and API port |
-| `CONNECT_HOST` | empty | Hostname or IP shown as the Minecraft connect address; auto-detected when empty |
+| `CONNECT_HOST` | empty | Optional IPv4 shown as the Minecraft connect address; hostnames are ignored and the LAN IP is used instead |
 | `LOG_LEVEL` | `info` | Application logging level |
 | `TZ` | `UTC` | Container timezone |
 | `AUTO_UPDATE_CHECK_INTERVAL` | `86400` | Update-check interval in seconds |

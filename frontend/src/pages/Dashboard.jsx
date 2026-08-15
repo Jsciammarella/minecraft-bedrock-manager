@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   Server, Plus, Play, Square, RotateCcw, Terminal, Users, 
-  Clock, Trash2, Settings, Activity, RefreshCw, AlertTriangle, Radio
+  Clock, Trash2, Settings, Activity, RefreshCw, AlertTriangle, Radio, Loader2
 } from 'lucide-react';
 import { serverApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
@@ -14,6 +14,7 @@ function isBedrockConnect(server) {
 
 function Dashboard() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { servers, loading, refresh } = useApi();
   const { connected } = useSocket();
   const [actions, setActions] = useState({});
@@ -137,7 +138,7 @@ function Dashboard() {
 
   const beginLanToggle = async (server, event) => {
     event?.stopPropagation();
-    if (isBedrockConnect(server) || lanOf(server).native) return;
+    if (isBedrockConnect(server) || lanOf(server).native || server.status === 'creating') return;
     if (servers.some(item => isBedrockConnect(item) && (item.status === 'running' || item.status === 'starting'))) return;
     const enabled = Boolean(lanOf(server).enabled);
     setLanError('');
@@ -201,6 +202,8 @@ function Dashboard() {
         return <span className="badge badge-success"><span className="w-1.5 h-1.5 bg-green-400 rounded-full mr-1.5" />Online</span>;
       case 'starting':
         return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Starting</span>;
+      case 'creating':
+        return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Building</span>;
       case 'stopped':
         return <span className="badge badge-danger"><span className="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5" />Offline</span>;
       default:
@@ -305,6 +308,11 @@ function Dashboard() {
           {lanMessage}
         </div>
       )}
+      {location.state?.message && (
+        <div className="mb-6 p-4 bg-green-500/10 border border-green-500/30 rounded-lg text-sm text-green-400">
+          {location.state.message}
+        </div>
+      )}
 
       {/* Stats Overview */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
@@ -387,10 +395,14 @@ function Dashboard() {
           {sortedServers.map((server) => {
             const lan = lanOf(server);
             const lanOn = Boolean(lan.native || lan.enabled);
-            const lanLocked = isBedrockConnect(server) || lan.native || bcRunning;
+            const isBuilding = server.status === 'creating';
+            const createFailed = String(server.pending_restart_reason || '').startsWith('Create failed');
+            const lanLocked = isBedrockConnect(server) || lan.native || bcRunning || isBuilding;
             const lanTitle = isBedrockConnect(server)
               ? 'Bedrock Connect is a featured-server list, not a LAN game'
-              : lan.native
+              : isBuilding
+                ? 'Wait until this server finishes building'
+                : lan.native
                 ? 'This server already uses UDP 19132, so consoles on the same LAN can see it'
                 : bcRunning
                   ? 'Stop or remove Bedrock Connect to start LAN proxy'
@@ -415,7 +427,7 @@ function Dashboard() {
                 <div className="flex items-center gap-3">
                   <div className={`w-3 h-3 rounded-full ${
                     server.status === 'running' ? 'bg-green-400 animate-pulse-glow' : 
-                    server.status === 'starting' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'
+                    server.status === 'starting' || server.status === 'creating' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'
                   }`} />
                   <div>
                     <div className="flex items-center gap-2">
@@ -444,6 +456,21 @@ function Dashboard() {
                 {getStatusBadge(server.status)}
               </div>
 
+              {isBuilding && (
+                <div className="mb-4 p-2.5 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-yellow-300 text-sm flex items-start gap-2">
+                  <Loader2 className="w-4 h-4 flex-shrink-0 mt-0.5 animate-spin" />
+                  <div>
+                    <p className="font-medium">Building Server</p>
+                    <p className="text-xs text-yellow-200/80 mt-1">Downloading Minecraft Bedrock Dedicated Server. Start and LAN unlock when this finishes.</p>
+                  </div>
+                </div>
+              )}
+              {createFailed && server.pending_restart !== 1 && (
+                <div className="mb-4 p-2.5 rounded-lg border border-red-500/30 bg-red-500/10 text-red-300 text-xs flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  {server.pending_restart_reason}
+                </div>
+              )}
               {server.pending_restart === 1 && (
                 <div className="mb-4 p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
@@ -485,7 +512,13 @@ function Dashboard() {
 
               {/* Actions */}
               <div className="flex items-center gap-2">
-                {server.status !== 'running' && (
+                {server.status === 'creating' && (
+                  <button disabled className="btn btn-secondary flex-1 text-sm">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Building...
+                  </button>
+                )}
+                {server.status !== 'running' && server.status !== 'creating' && (
                   <button
                     onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'start'); }}
                     disabled={actions[`${server.id}-start`]}

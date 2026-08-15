@@ -3,6 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const axios = require('axios');
 const logger = require('./logger');
+const connectHost = require('./connectHost');
 
 const DISCOVERY_PORT = 19132;
 const PROXY_PORT_START = 19200;
@@ -173,6 +174,13 @@ function stopAll() {
   for (const id of [...processes.keys()]) stop(id);
 }
 
+function dedicatedServerTarget(server) {
+  // Always target THIS host's Bedrock process. CONNECT_HOST is only a display
+  // address for tiles and must not be used here (it may be DNS or another box).
+  const lan = connectHost.detectLanIPv4();
+  return `${lan || '127.0.0.1'}:${server.port}`;
+}
+
 function start(server, { proxyPort } = {}) {
   const key = Number(server.id);
   if (isActive(key)) return processes.get(key);
@@ -184,7 +192,8 @@ function start(server, { proxyPort } = {}) {
   }
 
   const port = allocateProxyPort(proxyPort || server.lan_proxy_port);
-  const target = `127.0.0.1:${server.port}`;
+  const target = dedicatedServerTarget(server);
+  logger.info(`Starting Phantom for ${server.name}: -server ${target} -bind 0.0.0.0 -bind_port ${port}`);
   const child = spawn(bin, [
     '-server', target,
     '-bind', '0.0.0.0',

@@ -14,6 +14,11 @@ services:
     # UDP port directly on the host. No container recreation is required when a
     # server is added. Restrict these ports with the host firewall.
     network_mode: host
+    # Share the host hostname so the sidebar shows the Ubuntu name, not the container id.
+    uts: host
+    # Host UDP binds, named-volume writes, and child Bedrock/Phantom/Java
+    # processes all run as the container user. Stay root in Docker.
+    user: "0:0"
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=${PORT:-3000}
@@ -40,13 +45,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    # Resource limits
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-        reservations:
-          memory: 512M
+    # Compose v2 ignores Swarm deploy limits unless you are in swarm mode.
 
 volumes:
   mc-data:
