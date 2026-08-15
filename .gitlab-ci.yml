@@ -1,25 +1,13 @@
-image: node:20-bookworm
-
 stages:
   - verify
 
 verify:
   stage: verify
-  before_script:
-    - apt-get update
-    - apt-get install -y --no-install-recommends python3 make g++
-  script:
-    - npm ci
-    - npm --prefix frontend ci
-    - npm run build
-    - bash -n scripts/*.sh
-    - npm test
-  cache:
-    key:
-      files:
-        - package-lock.json
-        - frontend/package-lock.json
-    paths:
-      - .npm/
   variables:
-    npm_config_cache: "$CI_PROJECT_DIR/.npm"
+    CI_TEST_IMAGE: "minecraft-bedrock-manager-ci:$CI_COMMIT_SHA"
+  script:
+    - bash -n scripts/*.sh
+    - docker build --tag "$CI_TEST_IMAGE" .
+    - docker run --rm --entrypoint node --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" "$CI_TEST_IMAGE" scripts/smoke-test.js
+  after_script:
+    - docker image rm --force "$CI_TEST_IMAGE" >/dev/null 2>&1 || true
