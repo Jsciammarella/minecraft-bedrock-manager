@@ -301,8 +301,10 @@ class GitCatalogClient {
       const lfsUrl = gitAuth.token
         ? `${authedRemote.replace(/\/+$/, '').replace(/\.git$/i, '')}.git/info/lfs`
         : undefined;
-      await this.runGit(['lfs', 'pull'], { cwd: CLONE_DIR, timeout: 180000, ...gitAuth, lfsUrl });
-      await this.runGit(['lfs', 'checkout'], { cwd: CLONE_DIR, timeout: 60000, ...gitAuth, lfsUrl });
+      // The authenticated URLs are the credential source for Git LFS. Adding the
+      // same Basic header as well makes GitLab reject the request as malformed.
+      await this.runGit(['lfs', 'pull'], { cwd: CLONE_DIR, timeout: 180000, lfsUrl });
+      await this.runGit(['lfs', 'checkout'], { cwd: CLONE_DIR, timeout: 60000, lfsUrl });
     } catch (err) {
       throw new Error(this.friendlyGitError(err));
     } finally {
