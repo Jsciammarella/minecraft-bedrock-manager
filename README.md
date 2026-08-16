@@ -32,14 +32,27 @@ The script installs Node.js **20.x**, build tools, Java, Git LFS, firewall rules
 - Create a Bedrock server from the dashboard. The tile shows **Building Server** while the official Linux zip downloads.
 - Use **Bedrock Connect** on the dashboard if consoles need a custom server list, then open **BedrockConnect** in the sidebar for DNS instructions.
 - Optional: **Mod Catalog → Settings** for CurseForge or a Git catalog.
+- Later updates: use `upgrade.sh` below. Never run `docker compose down -v`.
 
-Later updates, without wiping worlds or settings:
+### Update (keep production data)
+
+Do **not** re-run the install one-liner and do **not** clone into a new folder. A second clone can attach new Docker volumes and look like a blank install. Use the original checkout:
+
+Docker, from the directory you cloned into:
 
 ```bash
-sudo ./scripts/upgrade.sh
+sudo ./scripts/upgrade.sh --yes
 ```
 
-Never run `docker compose down -v`. That deletes the named volumes.
+Native:
+
+```bash
+sudo /opt/mc-manager/scripts/upgrade.sh --yes
+```
+
+`upgrade.sh` asks the manager to stop running Bedrock servers so worlds can save, copies data to `upgrade-backups/`, fast-forwards git, adds any new `.env` keys without changing existing values, then rebuilds. Docker uses `docker compose up -d --build` and never `down -v`. Native runs `npm ci`, rebuilds the UI, and restarts `mc-manager`. Start game servers again from the dashboard after the health check succeeds.
+
+If you re-run `install-docker.sh` or `install-native.sh` in that same checkout, they detect `.env` and hand off to `upgrade.sh` instead of treating it as a new install.
 
 ---
 
@@ -104,7 +117,9 @@ Phantom (MIT) ships under `vendor/phantom/` (currently `v0.5.3`) and is copied i
 
 Consoles cannot add a custom Bedrock `IP:port`. [Bedrock Connect](https://github.com/Pugmatt/BedrockConnect) is a Java service that shows an in-game server list when the console is sent to this host on UDP `19132`. The manager can create **one** instance. The dashboard button greys out after it exists, and that tile stays first.
 
-Bedrock Connect always uses UDP `19132` (IPv4) and `19133` (IPv6). If another managed server occupies `19132`, the manager asks you to move it (immediate restart or five-minute warned restart). The JAR is `java -jar BedrockConnect-1.0-SNAPSHOT.jar nodb=true port=19132 bindip=0.0.0.0`. A current release is bundled under `vendor/bedrock-connect/` so first install does not need GitHub. The manager checks GitHub daily and can store newer JARs. Auto-update on the Properties page works the same as a normal server.
+Bedrock Connect always uses UDP `19132` (IPv4) and `19133` (IPv6). If another managed server occupies `19132`, the manager asks you to move it (immediate restart or five-minute warned restart). The JAR is started as `java -jar BedrockConnect-1.0-SNAPSHOT.jar nodb=true port=19132 bindip=0.0.0.0 featured_servers=false custom_servers=custom_servers.json`. A current release is bundled under `vendor/bedrock-connect/` so first install does not need GitHub. The manager checks GitHub daily and can store newer JARs. Auto-update on the Properties page works the same as a normal server.
+
+The in-game list is filled automatically from this manager: every dedicated server appears with this host's LAN IPv4 and that server's game port. Featured servers (Hive, Mineville, and the rest) are hidden because those redirects only land on Bedrock Connect itself. Creating, deleting, or changing a server's port rewrites `custom_servers.json` and restarts Bedrock Connect if it is running, so consoles see the new list. Players can still add extra addresses in the Bedrock Connect UI.
 
 **Bedrock Connect and LAN listing cannot share `19132`/`19133` while Bedrock Connect is running.** Starting it stops every Phantom process. The dashboard header shows that LAN proxy is paused. A stopped or removed Bedrock Connect instance does not block LAN listing.
 
@@ -149,7 +164,7 @@ Docker follows the host timezone via `/etc/localtime`. Do not set `TZ` in Compos
 docker compose logs -f mc-manager   # follow manager logs
 docker compose restart mc-manager   # restart the manager
 docker compose down                 # stop it without deleting data
-sudo ./scripts/upgrade.sh           # pull, rebuild, keep volumes and .env
+sudo ./scripts/upgrade.sh --yes     # pull, rebuild, keep volumes and .env
 ```
 
 Native:
@@ -157,7 +172,7 @@ Native:
 ```bash
 sudo systemctl status mc-manager
 sudo journalctl -u mc-manager -f
-sudo ./scripts/upgrade.sh --mode native
+sudo ./scripts/upgrade.sh --yes --mode native
 ```
 
 If a release adds UDP ranges or DNS `53`, rerun `sudo ./scripts/configure-ubuntu-firewall.sh`. The firewall script adds UFW rules but does not enable UFW, so you cannot lock yourself out of SSH by accident.

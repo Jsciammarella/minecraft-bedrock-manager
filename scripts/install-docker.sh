@@ -69,6 +69,11 @@ fi
 docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required (docker compose)."
 
 cd "${APP_DIR}"
+if [[ -f .env ]]; then
+    log "Existing .env found. Running an in-place upgrade so worlds, mods, and settings are kept."
+    echo "Do not clone into a new directory to update. That can create new Docker volumes."
+    exec "${APP_DIR}/scripts/upgrade.sh" --yes --mode docker
+fi
 if [[ ! -f .env ]]; then
     cp .env.example .env
     log "Created .env from .env.example. Edit it later if you need CONNECT_HOST or a different PORT."
@@ -90,6 +95,9 @@ log "Building and starting the manager..."
 docker compose up -d --build
 
 log "Install complete."
-echo "Open http://<this-host>:${PORT}"
+# shellcheck source=manager-urls.sh
+source "${SCRIPT_DIR}/manager-urls.sh"
+print_manager_connect_urls "${PORT:-3000}"
+echo
 echo "Data is stored in Docker volumes mc-data and mc-logs. Never run docker compose down -v."
-echo "Later updates: sudo ./scripts/upgrade.sh"
+echo "Later updates from this checkout: sudo ./scripts/upgrade.sh --yes"

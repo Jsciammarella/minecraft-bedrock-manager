@@ -486,6 +486,15 @@ async function run() {
   serverManager.invalidateServerCache(bc.lastInsertRowid);
   const blockedLan = await serverManager.previewLanBroadcast(alpha.lastInsertRowid);
   assert.equal(blockedLan.allowed, false);
+
+  const bedrockConnectList = require('../server/services/bedrockConnectList');
+  const listResult = bedrockConnectList.writeList();
+  assert.equal(listResult.written, true);
+  const listed = JSON.parse(fs.readFileSync(listResult.path, 'utf8'));
+  assert(listed.some((item) => item.name === `aaa-${suffix}` && item.port === 40120));
+  assert(!listed.some((item) => item.name === 'Bedrock Connect'));
+  assert(bedrockConnectList.spawnArgs(bcPath).includes('featured_servers=false'));
+  assert(bedrockConnectList.spawnArgs(bcPath).some((arg) => arg.startsWith('custom_servers=')));
   await assert.rejects(
     () => serverManager.setLanBroadcast(bc.lastInsertRowid, true),
     /cannot be advertised/
@@ -607,6 +616,7 @@ async function run() {
     playerPresence: 'ok',
     packInstall: 'ok',
     dnsProxy: 'ok',
+    bedrockConnectList: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));
