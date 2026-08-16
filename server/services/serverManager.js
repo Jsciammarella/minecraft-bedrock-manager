@@ -192,15 +192,6 @@ class ServerManager {
         lan: { ...lan, enabled: false, active: false, native: false, error: null },
       };
     }
-    if (this.isBedrockConnectActive() && lan.enabled && !lan.native && !lan.active) {
-      return {
-        ...server,
-        lan: {
-          ...lan,
-          error: lan.error || 'Bedrock Connect is running on UDP 19132. Stop or remove Bedrock Connect to start LAN proxy.',
-        },
-      };
-    }
     return { ...server, lan };
   }
 
@@ -545,6 +536,9 @@ class ServerManager {
     this.invalidateServerCache(serverId);
     this.setPendingBedrockConnect(null);
     logger.info(`Created Bedrock Connect on port ${BEDROCK_CONNECT_PORT} (${installed.tag})`);
+    require('./dnsProxy').sync().catch((err) => {
+      logger.warn(`DNS proxy sync after Bedrock Connect create failed: ${err.message}`);
+    });
     return { id: serverId, name: bedrockConnect.DISPLAY_NAME, port: BEDROCK_CONNECT_PORT, version: installed.tag };
   }
 
@@ -1209,6 +1203,7 @@ done
     logger.info(`Deleted server: ${server.name}`);
     if (wasBedrockConnect) {
       await this.restoreLanBroadcasts();
+      await require('./dnsProxy').sync();
     }
     return { success: true, message: 'Server deleted' };
   }
@@ -2408,6 +2403,7 @@ done
     this.ptySessions.clear();
     this.servers.clear();
     try { require('./lanBroadcast').stopAll(); } catch { /* ignore */ }
+    try { require('./dnsProxy').stop(); } catch { /* ignore */ }
   }
 }
 

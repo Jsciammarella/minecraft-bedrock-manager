@@ -100,6 +100,11 @@ export const portApi = {
   check: (port) => api.get(`/ports/check/${port}`),
 };
 
+export const bedrockConnectApi = {
+  get: () => api.get('/bedrock-connect'),
+  saveDns: (data) => api.put('/bedrock-connect/dns', data),
+};
+
 // ========== PUBLIC API ==========
 
 export const publicApi = {

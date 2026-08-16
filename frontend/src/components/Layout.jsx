@@ -1,7 +1,7 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { 
-  Server, Plus, Package, Users, Network, Settings, 
-  ChevronLeft, ChevronRight, Home, FolderOpen, Download
+  Server, Plus, Package, Users, Network, Globe,
+  ChevronLeft, ChevronRight, Home, Download
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useApi } from '../context/ApiContext';
@@ -29,6 +29,7 @@ function Layout() {
     { icon: Package, label: 'Mod Library', path: '/mods' },
     { icon: Download, label: 'Mod Catalog', path: '/mods/catalog' },
     { icon: Users, label: 'Players', path: '/players' },
+    { icon: Globe, label: 'BedrockConnect', path: '/bedrock-connect' },
     { icon: Network, label: 'Ports', path: '/ports' },
   ];
 

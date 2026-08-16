@@ -22,12 +22,14 @@ if ! command -v ufw >/dev/null 2>&1; then
 fi
 
 ufw allow "${MANAGER_PORT}/tcp" comment "Minecraft Manager web interface"
+ufw allow 53/udp comment "Minecraft Manager Bedrock Connect DNS"
+ufw allow 53/tcp comment "Minecraft Manager Bedrock Connect DNS"
 for range in "${BEDROCK_RANGES[@]}"; do
     ufw allow "${range}/udp" comment "Minecraft Manager Bedrock servers"
 done
 
 echo
-echo "Firewall rules added for TCP ${MANAGER_PORT} and the manager's Bedrock UDP ranges."
+echo "Firewall rules added for TCP ${MANAGER_PORT}, DNS 53, and the manager's Bedrock UDP ranges."
 if ufw status | grep -q "Status: inactive"; then
     echo "UFW is currently inactive. Review SSH access before enabling it with 'sudo ufw enable'."
 else

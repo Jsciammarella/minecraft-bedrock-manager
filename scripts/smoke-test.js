@@ -526,12 +526,87 @@ async function run() {
   serverManager.setExactOnlinePlayers(server.lastInsertRowid, []);
   assert.equal(serverManager.readOnlinePlayers(server.lastInsertRowid).length, 0);
 
+  const dnsPacket = require('../server/services/dnsPacket');
+  const dnsSettings = require('../server/services/dnsSettings');
+  const { DnsProxy } = require('../server/services/dnsProxy');
+
+  function encodeDnsName(name) {
+    const chunks = String(name).split('.').filter(Boolean).map((label) => {
+      const body = Buffer.from(label);
+      return Buffer.concat([Buffer.from([body.length]), body]);
+    });
+    return Buffer.concat([...chunks, Buffer.from([0])]);
+  }
+
+  function buildDnsQuery(name, type = 1) {
+    const header = Buffer.alloc(12);
+    header.writeUInt16BE(0x1234, 0);
+    header.writeUInt16BE(0x0100, 2);
+    header.writeUInt16BE(1, 4);
+    const question = Buffer.alloc(4);
+    question.writeUInt16BE(type, 0);
+    question.writeUInt16BE(1, 2);
+    return Buffer.concat([header, encodeDnsName(name), question]);
+  }
+
+  const query = buildDnsQuery('geo.hivebedrock.network');
+  const parsedQuery = dnsPacket.parseQuery(query);
+  assert.equal(parsedQuery.name, 'geo.hivebedrock.network');
+  const aResponse = dnsPacket.buildAResponse(query, parsedQuery, '10.0.1.142');
+  assert.equal(aResponse.readUInt16BE(6), 1);
+  const answerStart = parsedQuery.questionEnd;
+  assert.equal(aResponse.readUInt16BE(answerStart + 2), 1);
+  assert.equal(Array.from(aResponse.slice(answerStart + 12, answerStart + 16)).join('.'), '10.0.1.142');
+
+  assert.throws(() => dnsSettings.saveConfig({
+    enabled: false,
+    upstreams: ['1.1.1.1', '8.8.8.8', '9.9.9.9', '8.8.4.4'],
+    overrides: [],
+  }), /At most 3/);
+  assert.throws(() => dnsSettings.saveConfig({
+    enabled: false,
+    upstreams: [],
+    overrides: Array.from({ length: 21 }, (_, i) => ({ hostname: `s${i}.example.net`, ipv4: '10.0.1.10' })),
+  }), /At most 20/);
+  dnsSettings.saveConfig({
+    enabled: false,
+    upstreams: ['1.1.1.1'],
+    overrides: [{ hostname: 'geo.hivebedrock.network', ipv4: '10.0.1.142' }],
+  });
+  assert.equal(dnsSettings.overrideMap().get('geo.hivebedrock.network'), '10.0.1.142');
+
+  const proxy = new DnsProxy();
+  const overrideAnswer = await proxy.handleQuery(query);
+  assert.equal(Array.from(overrideAnswer.slice(answerStart + 12, answerStart + 16)).join('.'), '10.0.1.142');
+  const aaaaAnswer = await proxy.handleQuery(buildDnsQuery('geo.hivebedrock.network', 28));
+  assert.equal(aaaaAnswer.readUInt16BE(6), 0);
+
+  const mockDns = dgram.createSocket('udp4');
+  await new Promise((resolve, reject) => {
+    mockDns.once('error', reject);
+    mockDns.bind(0, '127.0.0.1', resolve);
+  });
+  const mockPort = mockDns.address().port;
+  mockDns.on('message', (msg, rinfo) => {
+    const parsed = dnsPacket.parseQuery(msg);
+    mockDns.send(dnsPacket.buildAResponse(msg, parsed, '9.9.9.9'), rinfo.port, rinfo.address);
+  });
+  const originalUpstreams = dnsSettings.resolveUpstreams;
+  dnsSettings.resolveUpstreams = () => [`127.0.0.1:${mockPort}`];
+  const forwarded = await proxy.handleQuery(buildDnsQuery('example.com'));
+  dnsSettings.resolveUpstreams = originalUpstreams;
+  await new Promise((resolve) => mockDns.close(resolve));
+  const forwardedParsed = dnsPacket.parseQuery(forwarded);
+  const forwardedStart = forwardedParsed.questionEnd;
+  assert.equal(Array.from(forwarded.slice(forwardedStart + 12, forwardedStart + 16)).join('.'), '9.9.9.9');
+
   console.log(JSON.stringify({
     databaseMigration: 'ok',
     udpPortDetection: 'ok',
     playerAccessFiles: 'ok',
     playerPresence: 'ok',
     packInstall: 'ok',
+    dnsProxy: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));

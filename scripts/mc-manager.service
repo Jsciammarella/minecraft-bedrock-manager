@@ -47,6 +47,9 @@ ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/opt/mc-manager/data
 PrivateTmp=true
+# Port 53 for the optional Bedrock Connect DNS proxy
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 # Resource limits
 LimitNOFILE=65536

@@ -9,6 +9,7 @@ import ModCatalogSettings from './pages/ModCatalogSettings';
 import ModLibrary from './pages/ModLibrary';
 import PlayerManagement from './pages/PlayerManagement';
 import PortManager from './pages/PortManager';
+import BedrockConnectPage from './pages/BedrockConnect';
 
 function App() {
   return (
@@ -23,6 +24,7 @@ function App() {
         <Route path="mods/catalog" element={<ModCatalog />} />
         <Route path="mods/catalog/settings" element={<ModCatalogSettings />} />
         <Route path="players" element={<PlayerManagement />} />
+        <Route path="bedrock-connect" element={<BedrockConnectPage />} />
         <Route path="ports" element={<PortManager />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
