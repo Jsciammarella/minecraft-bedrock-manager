@@ -39,9 +39,8 @@ services:
       # Optional: mount custom logs directory
       - mc-logs:/app/data/logs
       # Follow the host timezone. Do not set TZ here; an explicit TZ value
-      # would override these files. Add TZ only if you need to override the host.
+      # would override this file. Add TZ only if you need to override the host.
       - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/api/health"]
       interval: 30s
