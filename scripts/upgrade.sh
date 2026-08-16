@@ -21,6 +21,7 @@ source "${SCRIPT_DIR}/manager-urls.sh"
 BACKUP_ROOT="${APP_DIR}/upgrade-backups"
 ASSUME_YES=0
 SKIP_BACKUP=0
+RESUME=0
 MODE_OVERRIDE=""
 
 GREEN='\033[0;32m'
@@ -55,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --yes|-y) ASSUME_YES=1 ;;
         --skip-backup) SKIP_BACKUP=1 ;;
+        --resume) RESUME=1 ;;
         --mode)
             MODE_OVERRIDE="${2:-}"
             [[ "$MODE_OVERRIDE" == "docker" || "$MODE_OVERRIDE" == "native" ]] \
@@ -213,71 +215,89 @@ wait_for_health() {
     base="http://127.0.0.1:${port}"
     for i in $(seq 1 30); do
         if curl -sf --max-time 3 "${base}/api/health" >/dev/null 2>&1; then
-            log "Manager is healthy at ${base}"
+            log "Manager is healthy."
             return 0
         fi
         sleep 2
     done
-    warn "Timed out waiting for ${base}/api/health. Check logs."
+    warn "Timed out waiting for the manager health check. Check logs."
     return 1
 }
 
 MODE="$(detect_mode)"
-STAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
-
-echo
-log "Minecraft Bedrock Server Manager in-place upgrade"
-echo "Install directory: $APP_DIR"
-echo "Detected mode:     $MODE"
-echo
-echo "This keeps:"
-echo "  - .env"
-echo "  - Docker volumes mc-data and mc-logs (Docker installs)"
-echo "  - data/ worlds, SQLite, mods, Git catalog clone, and player files (native installs)"
-echo
-echo "This will:"
-echo "  - git pull --ff-only the current branch"
-echo "  - rebuild and restart the manager"
-echo "  - stop running Bedrock servers for the restart (start them again from the dashboard)"
-if (( SKIP_BACKUP )); then
-    echo "  - skip the local backup copy"
-else
-    echo "  - copy current data to ${BACKUP_DIR}"
-fi
-echo
-echo "This will not:"
-echo "  - run docker compose down -v"
-echo "  - delete named volumes or data/"
-echo "  - overwrite existing .env values"
-
-confirm || die "Upgrade cancelled."
-
-if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
-    git status --porcelain --untracked-files=no
-    die "Tracked files have local changes. Commit, stash, or revert them, then rerun."
-fi
-
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [[ "$BRANCH" != "HEAD" ]] || die "Checkout is in a detached HEAD state. Check out a branch such as main."
 
-log "Stopping managed Bedrock servers (if the API is up)..."
-stop_managed_servers || true
+if (( RESUME )); then
+    BACKUP_DIR="${MC_UPGRADE_BACKUP_DIR:-}"
+    log "Continuing upgrade with the scripts from ${BRANCH}..."
+else
+    STAMP="$(date +%Y%m%d-%H%M%S)"
+    BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
 
-if (( ! SKIP_BACKUP )); then
-    log "Backing up configuration and data to ${BACKUP_DIR}"
-    mkdir -p "$BACKUP_DIR"
-    if [[ "$MODE" == "docker" ]]; then
-        backup_docker "$BACKUP_DIR" || die "Backup failed; upgrade aborted so application files were not changed."
+    echo
+    log "Minecraft Bedrock Server Manager in-place upgrade"
+    echo "Install directory: $APP_DIR"
+    echo "Detected mode:     $MODE"
+    echo
+    echo "This keeps:"
+    echo "  - .env"
+    echo "  - Docker volumes mc-data and mc-logs (Docker installs)"
+    echo "  - data/ worlds, SQLite, mods, Git catalog clone, and player files (native installs)"
+    echo
+    echo "This will:"
+    echo "  - git pull --ff-only the current branch"
+    echo "  - rebuild and restart the manager"
+    echo "  - stop running Bedrock servers for the restart (start them again from the dashboard)"
+    if (( SKIP_BACKUP )); then
+        echo "  - skip the local backup copy"
     else
-        backup_native "$BACKUP_DIR" || die "Backup failed; upgrade aborted so application files were not changed."
+        echo "  - copy current data to ${BACKUP_DIR}"
     fi
-    log "Backup complete."
+    echo
+    echo "This will not:"
+    echo "  - run docker compose down -v"
+    echo "  - delete named volumes or data/"
+    echo "  - overwrite existing .env values"
+
+    confirm || die "Upgrade cancelled."
+
+    if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+        git status --porcelain --untracked-files=no
+        die "Tracked files have local changes. Commit, stash, or revert them, then rerun."
+    fi
+
+    log "Stopping managed Bedrock servers (if the API is up)..."
+    stop_managed_servers || true
+
+    if (( ! SKIP_BACKUP )); then
+        log "Backing up configuration and data to ${BACKUP_DIR}"
+        mkdir -p "$BACKUP_DIR"
+        if [[ "$MODE" == "docker" ]]; then
+            backup_docker "$BACKUP_DIR" || die "Backup failed; upgrade aborted so application files were not changed."
+        else
+            backup_native "$BACKUP_DIR" || die "Backup failed; upgrade aborted so application files were not changed."
+        fi
+        log "Backup complete."
+    else
+        BACKUP_DIR=""
+    fi
+
+    log "Fetching ${BRANCH}..."
+    git fetch origin "$BRANCH"
+    git pull --ff-only origin "$BRANCH"
+
+    log "Reloading the upgrade script so the messages match this branch..."
+    resume_cmd=(bash "$APP_DIR/scripts/upgrade.sh" --yes --resume --skip-backup)
+    if [[ -n "$MODE_OVERRIDE" ]]; then
+        resume_cmd+=(--mode "$MODE_OVERRIDE")
+    fi
+    export MC_UPGRADE_BACKUP_DIR="${BACKUP_DIR}"
+    exec "${resume_cmd[@]}"
 fi
 
-log "Fetching ${BRANCH}..."
-git fetch origin "$BRANCH"
-git pull --ff-only origin "$BRANCH"
+# shellcheck source=manager-urls.sh
+source "${SCRIPT_DIR}/manager-urls.sh"
 
 merge_new_env_keys
 
@@ -313,7 +333,7 @@ log "Upgrade finished."
 print_manager_connect_urls "$(manager_port)"
 echo
 echo "Start Bedrock servers from the dashboard if they were running before the upgrade."
-if (( ! SKIP_BACKUP )); then
+if [[ -n "${BACKUP_DIR:-}" ]]; then
     echo "Backup kept at: $BACKUP_DIR"
+    echo "Remove old copies under upgrade-backups/ when you no longer need them."
 fi
-echo "Remove old copies under upgrade-backups/ when you no longer need them."
