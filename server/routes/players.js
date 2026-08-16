@@ -30,7 +30,7 @@ router.get('/whitelisted', async (req, res) => {
 // Get players for a specific server
 router.get('/server/:serverId', async (req, res) => {
   try {
-    const online = await serverManager.getOnlinePlayers(req.params.serverId);
+    const online = await serverManager.getOnlinePlayers(req.params.serverId, { refresh: false });
     const players = serverManager.getPlayerAccess(req.params.serverId);
     res.json({
       online,
@@ -72,17 +72,9 @@ router.post('/', async (req, res) => {
   try {
     const { username, xuid } = req.body;
     if (!username) return res.status(400).json({ error: 'Username required' });
-    
-    const result = db.prepare(`
-      INSERT OR IGNORE INTO players (username, xuid) VALUES (?, ?)
-    `).run(username, xuid || null);
-    
-    if (result.changes === 0) {
-      const existing = db.prepare('SELECT * FROM players WHERE username = ?').get(username);
-      return res.json({ ...existing, added: false });
-    }
-    
-    res.status(201).json({ id: result.lastInsertRowid, username, added: true });
+
+    const player = serverManager.ensurePlayer(username, xuid || null);
+    res.status(player.created ? 201 : 200).json({ ...player, added: player.created });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

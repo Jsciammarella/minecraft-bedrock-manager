@@ -206,5 +206,15 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_one_bedrock_connect
   ON servers(kind) WHERE kind = 'bedrock_connect'
 `);
+db.exec(`
+  DELETE FROM server_players
+  WHERE id NOT IN (
+    SELECT MIN(id) FROM server_players GROUP BY server_id, player_id
+  )
+`);
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_server_players_server_player
+  ON server_players(server_id, player_id)
+`);
 
 module.exports = db;

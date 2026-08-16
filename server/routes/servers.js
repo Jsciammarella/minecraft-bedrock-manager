@@ -11,6 +11,7 @@ const connectHost = require('../services/connectHost');
 router.get('/', async (req, res) => {
   try {
     const servers = serverManager.getAllServers();
+    await serverManager.refreshRunningOnlinePlayers();
     const result = await Promise.all(servers.map(async (s) => {
       const stats = await serverManager.getServerStats(s.id);
       return connectHost.attach({ ...s, stats, lan: stats.lan }, req);

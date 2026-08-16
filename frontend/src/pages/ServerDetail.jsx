@@ -10,6 +10,57 @@ import {
   Shield, ShieldOff, Ban, UserPlus, Radio
 } from 'lucide-react';
 
+function PlayerCombobox({ value, onChange, options, disabled, placeholder, onEnter }) {
+  const [open, setOpen] = useState(false);
+  const query = String(value || '').trim().toLowerCase();
+  const filtered = options.filter((player) => (
+    !query || player.username.toLowerCase().includes(query)
+  ));
+
+  return (
+    <div className="relative flex-1">
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            onEnter?.();
+          }
+        }}
+        placeholder={placeholder}
+        disabled={disabled}
+        className="input w-full"
+        autoComplete="off"
+      />
+      {open && !disabled && filtered.length > 0 && (
+        <div className="absolute z-20 mt-1 w-full max-h-48 overflow-auto bg-mc-darker border border-mc-surfaceLight rounded-lg shadow-lg">
+          {filtered.map((player) => (
+            <button
+              type="button"
+              key={player.id}
+              className="w-full text-left px-3 py-2 text-sm text-white hover:bg-mc-surfaceLight"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onChange(player.username);
+                setOpen(false);
+              }}
+            >
+              {player.username}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ServerDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -32,8 +83,8 @@ function ServerDetail() {
   const [updateVersions, setUpdateVersions] = useState([]);
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(false);
   const [playerAccess, setPlayerAccess] = useState([]);
-  const [selectedAllowPlayer, setSelectedAllowPlayer] = useState('');
-  const [selectedBanPlayer, setSelectedBanPlayer] = useState('');
+  const [allowQuery, setAllowQuery] = useState('');
+  const [banQuery, setBanQuery] = useState('');
   const [accessMessage, setAccessMessage] = useState(null);
   const [accessBusy, setAccessBusy] = useState(false);
   const [removingModId, setRemovingModId] = useState(null);
@@ -106,9 +157,57 @@ function ServerDetail() {
       await playerApi.updateServerAccess(id, playerId, changes);
       const res = await playerApi.getByServer(id);
       setPlayerAccess(res.data.players || []);
-      setSelectedAllowPlayer('');
-      setSelectedBanPlayer('');
+      setAllowQuery('');
+      setBanQuery('');
       setAccessMessage({ type: 'success', text: message });
+    } catch (err) {
+      setAccessMessage({ type: 'error', text: err.response?.data?.error || err.message });
+    } finally {
+      setAccessBusy(false);
+    }
+  };
+
+  const resolvePlayerId = async (query) => {
+    const name = String(query || '').trim();
+    if (!name) throw new Error('Enter a player name');
+    const match = playerAccess.find((player) => (
+      String(player.id) === name || player.username.toLowerCase() === name.toLowerCase()
+    ));
+    if (match) return match.id;
+    const created = await playerApi.add({ username: name });
+    return created.data.id;
+  };
+
+  const addAllowPlayer = async () => {
+    setAccessBusy(true);
+    setAccessMessage(null);
+    try {
+      const playerId = await resolvePlayerId(allowQuery);
+      await playerApi.updateServerAccess(id, playerId, { isWhitelisted: true });
+      const res = await playerApi.getByServer(id);
+      setPlayerAccess(res.data.players || []);
+      setAllowQuery('');
+      setAccessMessage({ type: 'success', text: 'Player added to this server allow list.' });
+    } catch (err) {
+      setAccessMessage({ type: 'error', text: err.response?.data?.error || err.message });
+    } finally {
+      setAccessBusy(false);
+    }
+  };
+
+  const addBanPlayer = async () => {
+    setAccessBusy(true);
+    setAccessMessage(null);
+    try {
+      const playerId = await resolvePlayerId(banQuery);
+      await playerApi.updateServerAccess(id, playerId, {
+        isBanned: true,
+        banReason: 'Banned by server administrator',
+      });
+      const res = await playerApi.getByServer(id);
+      setPlayerAccess(res.data.players || []);
+      setBanQuery('');
+      setAccessMessage({ type: 'success', text: 'Player banned from this server.' });
     } catch (err) {
       setAccessMessage({ type: 'error', text: err.response?.data?.error || err.message });
     } finally {
@@ -361,6 +460,7 @@ function ServerDetail() {
   const bcRunning = servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting'));
   const lanLocked = isBC || lan.native || bcRunning || isBuilding;
   const connectLabel = server.connectAddress || `Port ${server.port}`;
+  const onlinePlayers = Array.isArray(server.onlinePlayers) ? server.onlinePlayers : [];
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
@@ -542,7 +642,7 @@ function ServerDetail() {
             </div>
             <div>
               <p className="text-xs text-mc-textMuted">Players</p>
-              <p className={`text-lg font-bold ${isBC ? 'text-mc-textMuted' : 'text-white'}`}>{server.onlinePlayers?.length || 0}/{server.max_players}</p>
+              <p className={`text-lg font-bold ${isBC ? 'text-mc-textMuted' : 'text-white'}`}>{onlinePlayers.length}/{server.max_players}</p>
             </div>
           </div>
         </div>
@@ -727,20 +827,17 @@ function ServerDetail() {
               </div>
             )}
             <div className="flex flex-col sm:flex-row gap-2 mb-4">
-              <select
-                value={selectedAllowPlayer}
-                onChange={(e) => setSelectedAllowPlayer(e.target.value)}
-                className="input flex-1"
+              <PlayerCombobox
+                value={allowQuery}
+                onChange={setAllowQuery}
+                options={playerAccess.filter(player => !player.is_whitelisted && !player.is_banned)}
                 disabled={isBC}
-              >
-                <option value="">Select a console player...</option>
-                {playerAccess.filter(player => !player.is_whitelisted && !player.is_banned).map(player => (
-                  <option key={player.id} value={player.id}>{player.username}</option>
-                ))}
-              </select>
+                placeholder="Type a player name..."
+                onEnter={addAllowPlayer}
+              />
               <button
-                onClick={() => updatePlayerAccess(selectedAllowPlayer, { isWhitelisted: true }, 'Player added to this server allow list.')}
-                disabled={isBC || !selectedAllowPlayer || accessBusy}
+                onClick={addAllowPlayer}
+                disabled={isBC || !allowQuery.trim() || accessBusy}
                 className="btn btn-primary"
               >
                 <UserPlus className="w-4 h-4" /> Add Player
@@ -787,20 +884,17 @@ function ServerDetail() {
             </h2>
             <p className="text-xs text-mc-textMuted mb-4">Banned players are removed from this server's allow list and kicked if they connect.</p>
             <div className="flex flex-col sm:flex-row gap-2 mb-4">
-              <select
-                value={selectedBanPlayer}
-                onChange={(e) => setSelectedBanPlayer(e.target.value)}
-                className="input flex-1"
+              <PlayerCombobox
+                value={banQuery}
+                onChange={setBanQuery}
+                options={playerAccess.filter(player => !player.is_banned)}
                 disabled={isBC}
-              >
-                <option value="">Select a console player...</option>
-                {playerAccess.filter(player => !player.is_banned).map(player => (
-                  <option key={player.id} value={player.id}>{player.username}</option>
-                ))}
-              </select>
+                placeholder="Type a player name..."
+                onEnter={addBanPlayer}
+              />
               <button
-                onClick={() => updatePlayerAccess(selectedBanPlayer, { isBanned: true, banReason: 'Banned by server administrator' }, 'Player banned from this server.')}
-                disabled={isBC || !selectedBanPlayer || accessBusy}
+                onClick={addBanPlayer}
+                disabled={isBC || !banQuery.trim() || accessBusy}
                 className="btn btn-danger"
               >
                 <Ban className="w-4 h-4" /> Ban Player
@@ -845,10 +939,10 @@ function ServerDetail() {
             
             {showPlayers && (
               <div className="mt-3 space-y-2 animate-slide-up">
-                {server.onlinePlayers?.length === 0 ? (
+                {onlinePlayers.length === 0 ? (
                   <p className="text-sm text-mc-textMuted text-center py-4">No players online</p>
                 ) : (
-                  server.onlinePlayers.map(player => (
+                  onlinePlayers.map(player => (
                     <div key={player.id} className="flex items-center gap-3 p-2 bg-mc-darker rounded-lg">
                       <div className="w-8 h-8 bg-mc-surfaceLight rounded-full flex items-center justify-center">
                         <span className="text-xs font-bold text-mc-textMuted">

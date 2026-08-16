@@ -329,10 +329,46 @@ async function run() {
     /cannot be advertised/
   );
 
+  const playerPresence = require('../server/services/playerPresence');
+  const listOutput = [
+    '\u001b[0mThere are 2/10 players online:',
+    'SneezyPuma42904, TestPlayer',
+    '[2026-08-16 03:22:00:123 INFO] Server started.',
+  ].join('\n');
+  assert.deepEqual(playerPresence.parseListOutput(listOutput), ['SneezyPuma42904', 'TestPlayer']);
+  assert.deepEqual(playerPresence.parseListOutput('There are 0/10 players online:'), []);
+  const joinEvents = playerPresence.parsePresenceEvents(
+    'Player connected: SneezyPuma42904, xuid: 2533274790000000\nPlayer Spawned: SneezyPuma42904 xuid: 2533274790000000'
+  );
+  assert.equal(joinEvents.length, 2);
+  assert.equal(joinEvents[0].username, 'SneezyPuma42904');
+  assert.equal(joinEvents[0].xuid, '2533274790000000');
+  const leaveEvents = playerPresence.parsePresenceEvents(
+    'Player disconnected: SneezyPuma42904, xuid: 2533274790000000, Pfid: abc'
+  );
+  assert.equal(leaveEvents[0].type, 'leave');
+  const inferred = playerPresence.inferOnlineFromBuffer([
+    'Player connected: Alpha, xuid: 1',
+    'Player connected: Beta, xuid: 2',
+    'Player disconnected: Alpha, xuid: 1',
+  ].join('\n'));
+  assert.deepEqual(inferred.map((event) => event.username), ['Beta']);
+
+  const created = serverManager.ensurePlayer('SmokeNewPlayer');
+  assert.equal(created.created, true);
+  const again = serverManager.ensurePlayer('smokenewplayer');
+  assert.equal(again.created, false);
+  assert.equal(again.id, created.id);
+  serverManager.markPlayerOnline(server.lastInsertRowid, created.id);
+  assert.equal(serverManager.readOnlinePlayers(server.lastInsertRowid).length, 1);
+  serverManager.setExactOnlinePlayers(server.lastInsertRowid, []);
+  assert.equal(serverManager.readOnlinePlayers(server.lastInsertRowid).length, 0);
+
   console.log(JSON.stringify({
     databaseMigration: 'ok',
     udpPortDetection: 'ok',
     playerAccessFiles: 'ok',
+    playerPresence: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));

@@ -7,6 +7,7 @@ const db = require('../db/connection');
 const logger = require('./logger');
 const settingsStore = require('./settingsStore');
 const portRanges = require('./portRanges');
+const playerPresence = require('./playerPresence');
 const execAsync = promisify(exec);
 
 const BASE_DIR = path.join(__dirname, '../../data/servers');
@@ -20,6 +21,10 @@ class ServerManager {
     this.processes = new Map(); // serverId -> process reference
     this.scheduledRestarts = new Map(); // serverId -> warning/restart timers
     this.provisionJobs = new Map();
+    this.consoleBuffers = new Map(); // serverId -> recent PTY text
+    this.ptyCaptures = new Map(); // serverId -> pending command captures
+    this.onlineRefreshInFlight = new Map();
+    this.onlineListAt = new Map();
 
     // Ensure directories exist
     fs.mkdirSync(BASE_DIR, { recursive: true });
@@ -36,6 +41,7 @@ class ServerManager {
     if (reconciled.changes > 0) {
       logger.warn(`Reset ${reconciled.changes} stale server status record(s) during manager startup`);
     }
+    db.prepare('UPDATE server_players SET is_online = 0').run();
   }
 
   sessionKey(serverId) {
@@ -55,6 +61,9 @@ class ServerManager {
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(serverId);
+    this.markAllPlayersOffline(serverId);
+    this.consoleBuffers.delete(this.sessionKey(serverId));
+    this.onlineListAt.delete(this.sessionKey(serverId));
     this.invalidateServerCache(serverId);
     if (broadcast) this.broadcastServerStatus(serverId);
     if (this.isBedrockConnect(server)) {
@@ -1550,80 +1559,325 @@ done
 
   // ========== PLAYER MANAGEMENT ==========
 
-  async getOnlinePlayers(serverId) {
+  readOnlinePlayers(serverId) {
+    return db.prepare(`
+      SELECT p.*, sp.joined_at
+      FROM players p
+      JOIN server_players sp ON p.id = sp.player_id
+      WHERE sp.server_id = ? AND sp.is_online = 1
+      ORDER BY p.username COLLATE NOCASE
+    `).all(serverId);
+  }
+
+  ensurePlayer(username, xuid = null) {
+    const name = playerPresence.normalizeUsername(username);
+    if (!name) throw new Error('Username required');
+    const xuidValue = xuid ? String(xuid) : null;
+
+    if (xuidValue) {
+      const byXuid = db.prepare('SELECT * FROM players WHERE xuid = ?').get(xuidValue);
+      if (byXuid) {
+        const renamed = byXuid.username.toLowerCase() !== name.toLowerCase();
+        if (renamed) {
+          db.prepare('UPDATE players SET username = ? WHERE id = ?').run(name, byXuid.id);
+        }
+        return {
+          ...db.prepare('SELECT * FROM players WHERE id = ?').get(byXuid.id),
+          created: false,
+          xuidUpdated: false,
+          renamed,
+        };
+      }
+    }
+
+    const existing = db.prepare('SELECT * FROM players WHERE username = ? COLLATE NOCASE').get(name);
+    if (existing) {
+      const xuidUpdated = Boolean(xuidValue && !existing.xuid);
+      if (xuidUpdated) {
+        db.prepare('UPDATE players SET xuid = ? WHERE id = ?').run(xuidValue, existing.id);
+      }
+      return {
+        ...db.prepare('SELECT * FROM players WHERE id = ?').get(existing.id),
+        created: false,
+        xuidUpdated,
+        renamed: false,
+      };
+    }
+
+    const inserted = db.prepare('INSERT INTO players (username, xuid) VALUES (?, ?)').run(name, xuidValue);
+    return {
+      id: inserted.lastInsertRowid,
+      username: name,
+      xuid: xuidValue,
+      created: true,
+      xuidUpdated: Boolean(xuidValue),
+      renamed: false,
+    };
+  }
+
+  markPlayerOnline(serverId, playerId) {
+    const current = db.prepare(`
+      SELECT is_online FROM server_players WHERE server_id = ? AND player_id = ?
+    `).get(serverId, playerId);
+    db.prepare(`
+      INSERT INTO server_players (server_id, player_id, is_online)
+      VALUES (?, ?, 1)
+      ON CONFLICT(server_id, player_id) DO UPDATE SET
+        is_online = 1,
+        joined_at = CASE WHEN server_players.is_online = 0 THEN CURRENT_TIMESTAMP ELSE server_players.joined_at END
+    `).run(serverId, playerId);
+    db.prepare('UPDATE players SET last_seen = CURRENT_TIMESTAMP WHERE id = ?').run(playerId);
+    return !current?.is_online;
+  }
+
+  markPlayerOffline(serverId, playerId) {
+    const result = db.prepare(`
+      UPDATE server_players
+      SET is_online = 0
+      WHERE server_id = ? AND player_id = ? AND is_online = 1
+    `).run(serverId, playerId);
+    return result.changes > 0;
+  }
+
+  markAllPlayersOffline(serverId) {
+    db.prepare('UPDATE server_players SET is_online = 0 WHERE server_id = ?').run(serverId);
+  }
+
+  setExactOnlinePlayers(serverId, players) {
+    const onlineIds = [];
+    for (const entry of players) {
+      const username = typeof entry === 'string' ? entry : entry.username;
+      const xuid = typeof entry === 'string' ? null : entry.xuid;
+      const player = this.ensurePlayer(username, xuid);
+      this.markPlayerOnline(serverId, player.id);
+      onlineIds.push(player.id);
+    }
+    if (onlineIds.length === 0) {
+      this.markAllPlayersOffline(serverId);
+      return;
+    }
+    const placeholders = onlineIds.map(() => '?').join(', ');
+    db.prepare(`
+      UPDATE server_players
+      SET is_online = 0
+      WHERE server_id = ? AND player_id NOT IN (${placeholders})
+    `).run(serverId, ...onlineIds);
+  }
+
+  kickIfBanned(serverId, username) {
+    const banned = db.prepare(`
+      SELECT a.ban_reason FROM server_player_access a
+      JOIN players p ON p.id = a.player_id
+      WHERE a.server_id = ? AND a.is_banned = 1 AND p.username = ? COLLATE NOCASE
+    `).get(serverId, username);
+    const sessionKey = this.sessionKey(serverId);
+    if (!banned || !this.ptySessions.has(sessionKey)) return;
+    const reason = banned.ban_reason || 'Banned by server administrator';
+    this.ptySessions.get(sessionKey).write(
+      `kick ${this.quoteCommandArgument(username)} ${this.quoteCommandArgument(reason)}\n`
+    );
+  }
+
+  appendConsoleBuffer(serverId, text) {
+    const key = this.sessionKey(serverId);
+    const next = `${this.consoleBuffers.get(key) || ''}${text}`.slice(-65536);
+    this.consoleBuffers.set(key, next);
+    const waiters = this.ptyCaptures.get(key) || [];
+    for (const waiter of waiters) waiter.onData(text);
+    return next;
+  }
+
+  capturePtyCommand(serverId, command, { timeoutMs = 1800, ready } = {}) {
+    const key = this.sessionKey(serverId);
+    const pty = this.ptySessions.get(key);
+    if (!pty) {
+      this.markServerStopped(serverId);
+      throw new Error('Server process is not running. Its status has been corrected to Offline.');
+    }
+
+    return new Promise((resolve) => {
+      const waiter = {
+        buffer: '',
+        timer: null,
+        settleTimer: null,
+        done: false,
+        onData(chunk) {
+          waiter.buffer += String(chunk);
+          if (!ready || !ready(waiter.buffer)) return;
+          clearTimeout(waiter.settleTimer);
+          waiter.settleTimer = setTimeout(() => waiter.finish(waiter.buffer), 250);
+        },
+        finish: (value) => {
+          if (waiter.done) return;
+          waiter.done = true;
+          clearTimeout(waiter.timer);
+          clearTimeout(waiter.settleTimer);
+          const remaining = (this.ptyCaptures.get(key) || []).filter((item) => item !== waiter);
+          if (remaining.length) this.ptyCaptures.set(key, remaining);
+          else this.ptyCaptures.delete(key);
+          resolve(value);
+        },
+      };
+      const waiters = this.ptyCaptures.get(key) || [];
+      waiters.push(waiter);
+      this.ptyCaptures.set(key, waiters);
+      waiter.timer = setTimeout(() => waiter.finish(waiter.buffer), timeoutMs);
+      pty.write(`${command}\n`);
+    });
+  }
+
+  async refreshOnlinePlayersFromList(serverId, { force = false, timeoutMs = 1800 } = {}) {
+    const server = this.getServer(serverId);
+    if (!server || this.isBedrockConnect(server) || server.status !== 'running') {
+      return this.readOnlinePlayers(serverId);
+    }
+
+    const key = this.sessionKey(serverId);
+    if (!force && this.onlineListAt.get(key) && Date.now() - this.onlineListAt.get(key) < 2000) {
+      return this.readOnlinePlayers(serverId);
+    }
+    if (this.onlineRefreshInFlight.has(key)) {
+      return this.onlineRefreshInFlight.get(key);
+    }
+
+    const pending = (async () => {
+      try {
+        const output = await this.capturePtyCommand(serverId, 'list', {
+          timeoutMs,
+          ready: playerPresence.hasListResult,
+        });
+        if (playerPresence.hasListResult(output)) {
+          this.setExactOnlinePlayers(serverId, playerPresence.parseListOutput(output));
+          this.onlineListAt.set(key, Date.now());
+        }
+      } catch (err) {
+        logger.warn(`Could not refresh online players for server ${serverId}: ${err.message}`);
+      }
+      return this.readOnlinePlayers(serverId);
+    })().finally(() => {
+      this.onlineRefreshInFlight.delete(key);
+    });
+
+    this.onlineRefreshInFlight.set(key, pending);
+    return pending;
+  }
+
+  async refreshRunningOnlinePlayers() {
+    const running = this.getAllServers().filter((server) => (
+      server.status === 'running'
+      && !this.isBedrockConnect(server)
+      && this.ptySessions.has(this.sessionKey(server.id))
+    ));
+    await Promise.all(running.map((server) => (
+      this.refreshOnlinePlayersFromList(server.id).catch((err) => {
+        logger.warn(`Online player refresh failed for ${server.name}: ${err.message}`);
+      })
+    )));
+  }
+
+  async getOnlinePlayers(serverId, { refresh = true } = {}) {
     const server = this.getServer(serverId);
     if (!server) return [];
-    if (server.status !== 'running') return [];
+    if (server.status !== 'running' || this.isBedrockConnect(server)) return [];
 
     try {
-      // Send list command and capture output
-      const pty = this.ptySessions.get(this.sessionKey(serverId));
-      if (!pty) return [];
-
-      // Read current players from database
-      const players = db.prepare(`
-        SELECT p.*, sp.joined_at 
-        FROM players p
-        JOIN server_players sp ON p.id = sp.player_id
-        WHERE sp.server_id = ? AND sp.is_online = 1
-      `).all(serverId);
-
-      return players;
+      if (refresh && this.ptySessions.has(this.sessionKey(serverId))) {
+        return await this.refreshOnlinePlayersFromList(serverId);
+      }
+      return this.readOnlinePlayers(serverId);
     } catch (err) {
       logger.error(`Error getting online players: ${err.message}`);
-      return [];
+      return this.readOnlinePlayers(serverId);
     }
+  }
+
+  discoverPlayersFromFiles(server) {
+    const discovered = [];
+    const allowlistPath = path.join(server.data_path, 'allowlist.json');
+    if (fs.existsSync(allowlistPath)) {
+      try {
+        const allowlist = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'));
+        if (Array.isArray(allowlist)) {
+          for (const entry of allowlist) {
+            if (entry?.name) discovered.push({ username: entry.name, xuid: entry.xuid || null });
+          }
+        }
+      } catch { /* ignore invalid allowlist */ }
+    }
+
+    const userDataPath = path.join(server.data_path, 'user_data');
+    if (fs.existsSync(userDataPath)) {
+      for (const file of fs.readdirSync(userDataPath)) {
+        const filePath = path.join(userDataPath, file);
+        if (!fs.statSync(filePath).isFile()) continue;
+        try {
+          const content = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          if (content.name || content.xuid) {
+            discovered.push({
+              username: content.name || file,
+              xuid: content.xuid || null,
+            });
+          }
+        } catch { /* skip invalid files */ }
+      }
+    }
+    return discovered;
   }
 
   async scanPlayers(serverId) {
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+    if (this.isBedrockConnect(server)) {
+      return { scanned: 0, added: 0, message: 'Bedrock Connect does not have players to scan' };
+    }
 
     try {
-      // Try to get player list from server command
-      const pty = this.ptySessions.get(this.sessionKey(serverId));
-      if (!pty) {
-        return { scanned: 0, message: 'Server not running, cannot scan players' };
+      const discovered = this.discoverPlayersFromFiles(server);
+      const buffer = this.consoleBuffers.get(this.sessionKey(serverId)) || '';
+      for (const event of playerPresence.parsePresenceEvents(buffer)) {
+        discovered.push({ username: event.username, xuid: event.xuid });
       }
 
-      // Read user_data to find known players
-      const userDataPath = path.join(server.data_path, 'user_data');
-      const discovered = [];
-
-      if (fs.existsSync(userDataPath)) {
-        const files = fs.readdirSync(userDataPath);
-        for (const file of files) {
-          const filePath = path.join(userDataPath, file);
-          if (fs.statSync(filePath).isFile()) {
-            try {
-              const content = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              if (content.name || content.xuid) {
-                discovered.push({
-                  username: content.name || file,
-                  xuid: content.xuid || null
-                });
-              }
-            } catch { /* skip invalid files */ }
+      let onlineNames = [];
+      const pty = this.ptySessions.get(this.sessionKey(serverId));
+      if (pty && server.status === 'running') {
+        const output = await this.capturePtyCommand(serverId, 'list', {
+          timeoutMs: 2000,
+          ready: playerPresence.hasListResult,
+        });
+        if (playerPresence.hasListResult(output)) {
+          onlineNames = playerPresence.parseListOutput(output);
+          this.onlineListAt.set(this.sessionKey(serverId), Date.now());
+          this.setExactOnlinePlayers(serverId, onlineNames.map((username) => ({ username })));
+        } else {
+          onlineNames = playerPresence.inferOnlineFromBuffer(`${buffer}\n${output}`)
+            .map((event) => event.username);
+          if (onlineNames.length) {
+            this.setExactOnlinePlayers(serverId, onlineNames.map((username) => ({ username })));
           }
         }
+        for (const username of onlineNames) discovered.push({ username });
       }
 
-      // Add to database
+      const seen = new Set();
       let added = 0;
+      let scanned = 0;
       for (const player of discovered) {
-        try {
-          const insert = db.prepare(`
-            INSERT OR IGNORE INTO players (username, xuid) VALUES (?, ?)
-          `).run(player.username, player.xuid);
-          if (insert.changes > 0) added++;
-        } catch { /* duplicate */ }
+        const name = playerPresence.normalizeUsername(player.username);
+        if (!name) continue;
+        const key = name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        scanned += 1;
+        const saved = this.ensurePlayer(name, player.xuid);
+        if (saved.created) added += 1;
       }
 
-      logger.info(`Scanned ${discovered.length} players, added ${added} new`);
-      return { scanned: discovered.length, added };
+      logger.info(`Scanned ${scanned} players on ${server.name}, added ${added} new`);
+      return { scanned, added, online: onlineNames.length };
     } catch (err) {
       logger.error(`Player scan failed: ${err.message}`);
-      return { scanned: 0, error: err.message };
+      return { scanned: 0, added: 0, error: err.message };
     }
   }
 
@@ -1751,35 +2005,30 @@ done
     return `"${String(value ?? '').replace(/["\\\r\n]/g, '')}"`;
   }
 
-  enforceBansFromOutput(serverId, data) {
+  observePlayerTraffic(serverId, data) {
     const text = String(data);
-    const patterns = [
-      /Player connected:\s*([^,\r\n]+)(?:,\s*xuid:\s*(\d+))?/gi,
-    ];
-    const seen = new Set();
-    for (const pattern of patterns) {
-      let match;
-      while ((match = pattern.exec(text)) !== null) {
-        const username = match[1].trim();
-        if (!username || seen.has(username.toLowerCase())) continue;
-        seen.add(username.toLowerCase());
-        if (match[2]) {
-          const updated = db.prepare('UPDATE players SET xuid = COALESCE(xuid, ?) WHERE username = ? COLLATE NOCASE')
-            .run(match[2], username);
-          if (updated.changes) this.syncPlayerAccessFiles(serverId);
-        }
-        const banned = db.prepare(`
-          SELECT a.ban_reason FROM server_player_access a
-          JOIN players p ON p.id = a.player_id
-          WHERE a.server_id = ? AND a.is_banned = 1 AND p.username = ? COLLATE NOCASE
-        `).get(serverId, username);
-        const sessionKey = this.sessionKey(serverId);
-        if (banned && this.ptySessions.has(sessionKey)) {
-          const reason = banned.ban_reason || 'Banned by server administrator';
-          this.ptySessions.get(sessionKey).write(`kick ${this.quoteCommandArgument(username)} ${this.quoteCommandArgument(reason)}\n`);
+    this.appendConsoleBuffer(serverId, text);
+
+    let changed = false;
+    for (const event of playerPresence.parsePresenceEvents(text)) {
+      const player = this.ensurePlayer(event.username, event.xuid);
+      if (player.xuidUpdated || player.renamed) {
+        try { this.syncPlayerAccessFiles(serverId); } catch (err) {
+          logger.warn(`Could not sync player files after join: ${err.message}`);
         }
       }
+      if (event.type === 'join') {
+        if (this.markPlayerOnline(serverId, player.id)) changed = true;
+        this.kickIfBanned(serverId, event.username);
+      } else if (this.markPlayerOffline(serverId, player.id)) {
+        changed = true;
+      }
     }
+    if (changed) this.broadcastServerStatus(serverId);
+  }
+
+  enforceBansFromOutput(serverId, data) {
+    this.observePlayerTraffic(serverId, data);
   }
 
   // ========== PORT MANAGEMENT ==========
@@ -2112,7 +2361,7 @@ done
     existing.forEach(listener => pty.removeListener('data', listener));
 
     pty.on('data', (data) => {
-      this.enforceBansFromOutput(serverId, data);
+      this.observePlayerTraffic(serverId, data);
       if (global.io) {
         global.io.to(`server-${serverId}`).emit('server-output', {
           serverId,
