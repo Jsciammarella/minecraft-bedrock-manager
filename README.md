@@ -32,14 +32,27 @@ The script installs Node.js **20.x**, build tools, Java, Git LFS, firewall rules
 - Create a Bedrock server from the dashboard. The tile shows **Building Server** while the official Linux zip downloads.
 - Use **Bedrock Connect** on the dashboard if consoles need a custom server list, then open **BedrockConnect** in the sidebar for DNS instructions.
 - Optional: **Mod Catalog → Settings** for CurseForge or a Git catalog.
+- Later updates: use `upgrade.sh` below. Never run `docker compose down -v`.
 
-Later updates, without wiping worlds or settings:
+### Update (keep production data)
+
+Do **not** re-run the install one-liner and do **not** clone into a new folder. A second clone can attach new Docker volumes and look like a blank install. Use the original checkout:
+
+Docker, from the directory you cloned into:
 
 ```bash
-sudo ./scripts/upgrade.sh
+sudo ./scripts/upgrade.sh --yes
 ```
 
-Never run `docker compose down -v`. That deletes the named volumes.
+Native:
+
+```bash
+sudo /opt/mc-manager/scripts/upgrade.sh --yes
+```
+
+`upgrade.sh` asks the manager to stop running Bedrock servers so worlds can save, copies data to `upgrade-backups/`, fast-forwards git, adds any new `.env` keys without changing existing values, then rebuilds. Docker uses `docker compose up -d --build` and never `down -v`. Native runs `npm ci`, rebuilds the UI, and restarts `mc-manager`. Start game servers again from the dashboard after the health check succeeds.
+
+If you re-run `install-docker.sh` or `install-native.sh` in that same checkout, they detect `.env` and hand off to `upgrade.sh` instead of treating it as a new install.
 
 ---
 
@@ -151,7 +164,7 @@ Docker follows the host timezone via `/etc/localtime`. Do not set `TZ` in Compos
 docker compose logs -f mc-manager   # follow manager logs
 docker compose restart mc-manager   # restart the manager
 docker compose down                 # stop it without deleting data
-sudo ./scripts/upgrade.sh           # pull, rebuild, keep volumes and .env
+sudo ./scripts/upgrade.sh --yes     # pull, rebuild, keep volumes and .env
 ```
 
 Native:
@@ -159,7 +172,7 @@ Native:
 ```bash
 sudo systemctl status mc-manager
 sudo journalctl -u mc-manager -f
-sudo ./scripts/upgrade.sh --mode native
+sudo ./scripts/upgrade.sh --yes --mode native
 ```
 
 If a release adds UDP ranges or DNS `53`, rerun `sudo ./scripts/configure-ubuntu-firewall.sh`. The firewall script adds UFW rules but does not enable UFW, so you cannot lock yourself out of SSH by accident.

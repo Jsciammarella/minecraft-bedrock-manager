@@ -84,6 +84,10 @@ node_major="$(node -v | sed -E 's/^v([0-9]+).*/\1/')"
 [[ "${node_major}" == "20" ]] || die "Node.js 20.x is required (found $(node -v))."
 
 cd "${APP_DIR}"
+if [[ -f .env ]] && { systemctl is-active --quiet mc-manager 2>/dev/null || systemctl is-enabled --quiet mc-manager 2>/dev/null || [[ -d "${APP_DIR}/data/servers" ]]; }; then
+    log "Existing native install found. Running an in-place upgrade so worlds, mods, and settings are kept."
+    exec "${APP_DIR}/scripts/upgrade.sh" --yes --mode native
+fi
 if [[ ! -f .env ]]; then
     cp .env.example .env
     log "Created .env from .env.example. Edit it later if you need CONNECT_HOST or a different PORT."
@@ -131,4 +135,4 @@ systemctl --no-pager --full status mc-manager || true
 log "Install complete."
 echo "Open http://<this-host>:${PORT}"
 echo "Service: systemctl status mc-manager"
-echo "Later updates from ${APP_DIR}: sudo ./scripts/upgrade.sh --mode native"
+echo "Later updates from ${APP_DIR}: sudo ./scripts/upgrade.sh --yes"
