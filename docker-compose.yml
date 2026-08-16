@@ -14,6 +14,11 @@ services:
     # UDP port directly on the host. No container recreation is required when a
     # server is added. Restrict these ports with the host firewall.
     network_mode: host
+    # Share the host hostname so the sidebar shows the Ubuntu name, not the container id.
+    uts: host
+    # Host UDP binds, named-volume writes, and child Bedrock/Phantom/Java
+    # processes all run as the container user. Stay root in Docker.
+    user: "0:0"
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=${PORT:-3000}
@@ -28,25 +33,21 @@ services:
       - CONNECT_HOST=${CONNECT_HOST:-}
       - AUTO_UPDATE_CHECK_INTERVAL=${AUTO_UPDATE_CHECK_INTERVAL:-86400}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - TZ=${TZ:-UTC}
     volumes:
       # Persistent data - server worlds, configs, mods
       - mc-data:/app/data
       # Optional: mount custom logs directory
       - mc-logs:/app/data/logs
+      # Follow the host timezone. Do not set TZ here; an explicit TZ value
+      # would override this file. Add TZ only if you need to override the host.
+      - /etc/localtime:/etc/localtime:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-    # Resource limits
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-        reservations:
-          memory: 512M
+    # Compose v2 ignores Swarm deploy limits unless you are in swarm mode.
 
 volumes:
   mc-data:

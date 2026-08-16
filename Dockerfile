@@ -26,7 +26,7 @@ FROM node:20-bookworm-slim AS production
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Install system dependencies required for native modules
+# Install system dependencies required for native modules and BDS zips
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     g++ \
@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     tar \
+    unzip \
     git \
     git-lfs \
     default-jre-headless \
@@ -49,18 +50,19 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy backend source
 COPY server/ ./server/
+COPY vendor/ ./vendor/
 
 # Copy built frontend from Stage 1
 COPY --from=frontend-build /app/public ./public
 
 # Create data directories
-RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog /app/data/bedrock-connect
+RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog /app/data/bedrock-connect /app/data/phantom
 
-# Create non-root user
-RUN groupadd -r mcmanager && useradd -r -g mcmanager -d /app -s /bin/bash mcmanager \
-    && chown -R mcmanager:mcmanager /app
-
-USER mcmanager
+# Stay root in the image. Game UDP ports are unprivileged (>1024), but this
+# process writes the named volume, copies Phantom, and spawns Bedrock / Java /
+# Phantom children on the host network. A non-root image user caused permission
+# failures on a clean Docker volume. Native installs still run as mcmanager.
+USER root
 
 # Expose port
 EXPOSE ${PORT}

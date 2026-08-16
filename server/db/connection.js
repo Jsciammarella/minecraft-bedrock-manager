@@ -9,7 +9,7 @@ const DB_PATH = process.env.MC_MANAGER_DB_PATH
 // Ensure data directory exists
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
-const db = new Database(DB_PATH, { verbose: console.log });
+const db = new Database(DB_PATH);
 
 // Enable WAL mode for better concurrency
 db.pragma('journal_mode = WAL');
@@ -45,6 +45,10 @@ db.exec(`
     restart_scheduled_at DATETIME,
     kind TEXT NOT NULL DEFAULT 'bedrock',
     pending_port INTEGER,
+    ipv6_port INTEGER,
+    pending_ipv6_port INTEGER,
+    lan_broadcast INTEGER NOT NULL DEFAULT 0,
+    lan_proxy_port INTEGER,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -133,6 +137,7 @@ db.exec(`
     port INTEGER UNIQUE NOT NULL,
     server_id INTEGER,
     protocol TEXT NOT NULL DEFAULT 'udp',
+    family TEXT NOT NULL DEFAULT 'ipv4',
     in_use INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
   );
@@ -189,9 +194,31 @@ ensureServerColumn('pending_restart_at', 'DATETIME');
 ensureServerColumn('restart_scheduled_at', 'DATETIME');
 ensureServerColumn('kind', "TEXT NOT NULL DEFAULT 'bedrock'");
 ensureServerColumn('pending_port', 'INTEGER');
+ensureServerColumn('ipv6_port', 'INTEGER');
+ensureServerColumn('pending_ipv6_port', 'INTEGER');
+ensureServerColumn('lan_broadcast', 'INTEGER NOT NULL DEFAULT 0');
+ensureServerColumn('lan_proxy_port', 'INTEGER');
+const portUsageColumns = new Set(db.prepare('PRAGMA table_info(port_usage)').all().map(column => column.name));
+if (!portUsageColumns.has('family')) {
+  db.exec(`ALTER TABLE port_usage ADD COLUMN family TEXT NOT NULL DEFAULT 'ipv4'`);
+}
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_one_bedrock_connect
   ON servers(kind) WHERE kind = 'bedrock_connect'
 `);
+db.exec(`
+  DELETE FROM server_players
+  WHERE id NOT IN (
+    SELECT MIN(id) FROM server_players GROUP BY server_id, player_id
+  )
+`);
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_server_players_server_player
+  ON server_players(server_id, player_id)
+`);
+const serverModColumns = new Set(db.prepare('PRAGMA table_info(server_mods)').all().map(column => column.name));
+if (!serverModColumns.has('install_manifest')) {
+  db.exec('ALTER TABLE server_mods ADD COLUMN install_manifest TEXT');
+}
 
 module.exports = db;

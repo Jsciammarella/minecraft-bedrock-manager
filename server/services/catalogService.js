@@ -197,10 +197,10 @@ function saveSettings(body = {}) {
 async function testGitConnection(body = {}) {
   const current = settingsStore.getGitConfig();
   return gitCatalog.testConnection({
-    url: body.url || current.url,
-    branch: body.branch || current.branch,
-    username: body.username != null ? body.username : current.username,
-    token: body.token || current.token,
+    url: (body.url && String(body.url).trim()) || current.url,
+    branch: (body.branch && String(body.branch).trim()) || current.branch,
+    username: (body.username && String(body.username).trim()) || current.username,
+    token: (body.token && String(body.token).trim()) || current.token,
   });
 }
 

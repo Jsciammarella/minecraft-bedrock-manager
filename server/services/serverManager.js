@@ -6,6 +6,8 @@ const { promisify } = require('util');
 const db = require('../db/connection');
 const logger = require('./logger');
 const settingsStore = require('./settingsStore');
+const portRanges = require('./portRanges');
+const playerPresence = require('./playerPresence');
 const execAsync = promisify(exec);
 
 const BASE_DIR = path.join(__dirname, '../../data/servers');
@@ -18,7 +20,12 @@ class ServerManager {
     this.ptySessions = new Map(); // serverId -> pty session
     this.processes = new Map(); // serverId -> process reference
     this.scheduledRestarts = new Map(); // serverId -> warning/restart timers
-    
+    this.provisionJobs = new Map();
+    this.consoleBuffers = new Map(); // serverId -> recent PTY text
+    this.ptyCaptures = new Map(); // serverId -> pending command captures
+    this.onlineRefreshInFlight = new Map();
+    this.onlineListAt = new Map();
+
     // Ensure directories exist
     fs.mkdirSync(BASE_DIR, { recursive: true });
     fs.mkdirSync(MODS_DIR, { recursive: true });
@@ -29,11 +36,12 @@ class ServerManager {
       UPDATE servers
       SET status = 'stopped', pid = NULL, started_at = NULL, restart_scheduled_at = NULL,
         updated_at = CURRENT_TIMESTAMP
-      WHERE status IN ('running', 'starting')
+      WHERE status IN ('running', 'starting', 'creating')
     `).run();
     if (reconciled.changes > 0) {
       logger.warn(`Reset ${reconciled.changes} stale server status record(s) during manager startup`);
     }
+    db.prepare('UPDATE server_players SET is_online = 0').run();
   }
 
   sessionKey(serverId) {
@@ -45,6 +53,7 @@ class ServerManager {
   }
 
   markServerStopped(serverId, { broadcast = true } = {}) {
+    const server = this.getServer(serverId);
     this.cancelWarnedRestart(serverId, { broadcast: false });
     db.prepare(`
       UPDATE servers
@@ -52,8 +61,16 @@ class ServerManager {
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(serverId);
+    this.markAllPlayersOffline(serverId);
+    this.consoleBuffers.delete(this.sessionKey(serverId));
+    this.onlineListAt.delete(this.sessionKey(serverId));
     this.invalidateServerCache(serverId);
     if (broadcast) this.broadcastServerStatus(serverId);
+    if (this.isBedrockConnect(server)) {
+      this.restoreLanBroadcasts().catch((err) => {
+        logger.warn(`LAN broadcast restore after Bedrock Connect stop failed: ${err.message}`);
+      });
+    }
   }
 
   markRestartRequired(serverId, reason) {
@@ -101,6 +118,24 @@ class ServerManager {
           this.invalidateServerCache(serverId);
         }
       }
+      const pendingLan = this.getPendingLanBroadcast();
+      if (pendingLan && Number(pendingLan.occupantId) === Number(serverId)) {
+        this.setPendingLanBroadcast(null);
+        if (pendingLan.nextPort) {
+          db.prepare(`
+            UPDATE servers
+            SET pending_port = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND pending_port = ?
+          `).run(serverId, pendingLan.nextPort);
+          this.invalidateServerCache(serverId);
+        }
+        const requesterIds = (pendingLan.enableIds || [])
+          .filter(id => Number(id) !== Number(pendingLan.occupantId));
+        for (const id of requesterIds) {
+          db.prepare('UPDATE servers SET lan_broadcast = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+          this.invalidateServerCache(id);
+        }
+      }
     }
     if (broadcast) this.broadcastServerStatus(serverId);
     return { success: true };
@@ -112,6 +147,11 @@ class ServerManager {
 
   getBedrockConnectServer() {
     return db.prepare("SELECT * FROM servers WHERE kind = 'bedrock_connect' LIMIT 1").get();
+  }
+
+  isBedrockConnectActive() {
+    const bc = this.getBedrockConnectServer();
+    return Boolean(bc && (bc.status === 'running' || bc.status === 'starting'));
   }
 
   getPendingBedrockConnect() {
@@ -128,10 +168,250 @@ class ServerManager {
     else settingsStore.set(settingsStore.KEYS.BEDROCK_CONNECT_PENDING, JSON.stringify(value));
   }
 
+  getPendingLanBroadcast() {
+    try {
+      const raw = settingsStore.get(settingsStore.KEYS.LAN_BROADCAST_PENDING);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  setPendingLanBroadcast(value) {
+    if (!value) settingsStore.remove(settingsStore.KEYS.LAN_BROADCAST_PENDING);
+    else settingsStore.set(settingsStore.KEYS.LAN_BROADCAST_PENDING, JSON.stringify(value));
+  }
+
+  attachLanStatus(server) {
+    if (!server) return server;
+    const lanBroadcast = require('./lanBroadcast');
+    const lan = lanBroadcast.statusFor(server);
+    if (this.isBedrockConnect(server)) {
+      return {
+        ...server,
+        lan: { ...lan, enabled: false, active: false, native: false, error: null },
+      };
+    }
+    if (this.isBedrockConnectActive() && lan.enabled && !lan.native && !lan.active) {
+      return {
+        ...server,
+        lan: {
+          ...lan,
+          error: lan.error || 'Bedrock Connect is running on UDP 19132. Stop or remove Bedrock Connect to start LAN proxy.',
+        },
+      };
+    }
+    return { ...server, lan };
+  }
+
+  stopLanBroadcastsForBedrockConnect() {
+    require('./lanBroadcast').stopAll();
+  }
+
+  async previewLanBroadcast(serverId) {
+    const lanBroadcast = require('./lanBroadcast');
+    const server = this.getServer(serverId);
+    if (!server) throw new Error('Server not found');
+    if (this.isBedrockConnect(server)) {
+      return {
+        allowed: false,
+        reason: 'bedrock_connect',
+        message: 'Bedrock Connect is a featured-server list, not a LAN game. Nintendo Switch still needs it.',
+        lan: lanBroadcast.statusFor(server),
+      };
+    }
+    if (this.isBedrockConnectActive()) {
+      return {
+        allowed: false,
+        reason: 'bedrock_connect_occupies',
+        message: 'Bedrock Connect is running on UDP 19132. Stop or remove Bedrock Connect to start LAN listing.',
+        lan: lanBroadcast.statusFor(server),
+      };
+    }
+    if (Number(server.port) === lanBroadcast.DISCOVERY_PORT) {
+      return {
+        allowed: true,
+        native: true,
+        conflict: null,
+        message: 'This server already uses UDP 19132, so consoles on the same LAN can see it without a proxy.',
+        lan: lanBroadcast.statusFor({ ...server, lan_broadcast: 1 }),
+      };
+    }
+    if (lanBroadcast.isActive(serverId) || [...this.getAllServers()].some(item => lanBroadcast.isActive(item.id))) {
+      return { allowed: true, native: false, conflict: null, lan: lanBroadcast.statusFor(server) };
+    }
+    const occupant = db.prepare('SELECT * FROM servers WHERE port = ? AND id != ?').get(lanBroadcast.DISCOVERY_PORT, serverId);
+    if (occupant && !this.isBedrockConnect(occupant)) {
+      const nextPort = await this.nextAvailablePort({
+        exclude: [lanBroadcast.DISCOVERY_PORT, occupant.port, server.port],
+      });
+      return {
+        allowed: true,
+        native: false,
+        conflict: {
+          serverId: occupant.id,
+          serverName: occupant.name,
+          status: occupant.status,
+          currentPort: occupant.port,
+          nextPort,
+        },
+        message: `${occupant.name} is using UDP 19132. Consoles look for LAN games on that port, so it must be moved before LAN listing can start.`,
+        lan: lanBroadcast.statusFor(server),
+      };
+    }
+    const free = lanBroadcast.hasAnyActive() || await this.isUdpPortAvailable(lanBroadcast.DISCOVERY_PORT);
+    if (!free) {
+      return {
+        allowed: false,
+        reason: 'port_blocked',
+        message: 'UDP 19132 is in use by another process. Free it before enabling LAN listing.',
+        lan: lanBroadcast.statusFor(server),
+      };
+    }
+    return { allowed: true, native: false, conflict: null, lan: lanBroadcast.statusFor(server) };
+  }
+
+  async setLanBroadcast(serverId, enabled, { acceptConflict = false, restartMode = 'immediate' } = {}) {
+    const lanBroadcast = require('./lanBroadcast');
+    const server = this.getServer(serverId);
+    if (!server) throw new Error('Server not found');
+    if (this.isBedrockConnect(server)) {
+      throw new Error('Bedrock Connect cannot be advertised as a LAN game');
+    }
+    if (server.status === 'creating') {
+      throw new Error('Wait until this server finishes building before enabling LAN listing');
+    }
+
+    if (!enabled) {
+      lanBroadcast.stop(serverId);
+      db.prepare('UPDATE servers SET lan_broadcast = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(serverId);
+      this.invalidateServerCache(serverId);
+      this.broadcastServerStatus(serverId);
+      return { success: true, enabled: false, lan: lanBroadcast.statusFor(this.getServer(serverId)) };
+    }
+
+    const preview = await this.previewLanBroadcast(serverId);
+    if (!preview.allowed) {
+      const err = new Error(preview.message);
+      err.code = preview.reason === 'bedrock_connect_occupies' ? 'BC_CONFLICT' : 'LAN_BLOCKED';
+      throw err;
+    }
+
+    if (preview.conflict && !acceptConflict) {
+      const err = new Error(preview.message);
+      err.code = 'PORT_CONFLICT';
+      err.conflict = preview.conflict;
+      throw err;
+    }
+
+    if (preview.conflict) {
+      const occupant = this.getServer(preview.conflict.serverId);
+      if (occupant.status === 'running' && restartMode === 'warned') {
+        await this.queuePortChange(occupant.id, preview.conflict.nextPort, { restartRequired: true });
+        this.scheduleWarnedRestart(occupant.id);
+        this.setPendingLanBroadcast({
+          occupantId: occupant.id,
+          nextPort: preview.conflict.nextPort,
+          enableIds: [Number(serverId), Number(occupant.id)],
+          createdAt: new Date().toISOString(),
+        });
+        db.prepare('UPDATE servers SET lan_broadcast = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(serverId);
+        this.invalidateServerCache(serverId);
+        return {
+          pending: true,
+          conflict: preview.conflict,
+          message: `${occupant.name} will move to port ${preview.conflict.nextPort} after the five-minute restart. LAN listing starts then.`,
+        };
+      }
+      await this.relocateServerForBedrockConnect(occupant.id, preview.conflict.nextPort);
+      db.prepare('UPDATE servers SET lan_broadcast = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(occupant.id);
+      this.invalidateServerCache(occupant.id);
+    }
+
+    db.prepare('UPDATE servers SET lan_broadcast = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(serverId);
+    this.invalidateServerCache(serverId);
+
+    if (preview.native) {
+      this.broadcastServerStatus(serverId);
+      return { success: true, enabled: true, native: true, lan: lanBroadcast.statusFor(this.getServer(serverId)) };
+    }
+
+    await this.syncLanBroadcast(serverId);
+    if (preview.conflict) await this.syncLanBroadcast(preview.conflict.serverId);
+    this.broadcastServerStatus(serverId);
+    return { success: true, enabled: true, lan: lanBroadcast.statusFor(this.getServer(serverId)) };
+  }
+
+  async syncLanBroadcast(serverId) {
+    const lanBroadcast = require('./lanBroadcast');
+    const server = this.getServer(serverId);
+    if (!server || this.isBedrockConnect(server) || Number(server.lan_broadcast) !== 1) {
+      lanBroadcast.stop(serverId);
+      return null;
+    }
+    if (this.isBedrockConnectActive()) {
+      lanBroadcast.stop(serverId);
+      return lanBroadcast.statusFor(server);
+    }
+    // BDS 1.26.30+ needs enable-lan-visibility=true to send a valid MOTD pong,
+    // but that also tries to bind UDP 19132/19133. Occupy those first so only
+    // Phantom (LAN toggle on) advertises, then start Phantom if requested.
+    if (Number(server.port) === lanBroadcast.DISCOVERY_PORT) return lanBroadcast.statusFor(server);
+    if (server.status === 'creating') {
+      lanBroadcast.stop(serverId);
+      return lanBroadcast.statusFor(server);
+    }
+    if (lanBroadcast.isActive(serverId)) return lanBroadcast.statusFor(server);
+    lanBroadcast.stop(serverId);
+    const session = await lanBroadcast.startAndWait(server);
+    db.prepare('UPDATE servers SET lan_proxy_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(session.proxyPort, serverId);
+    this.invalidateServerCache(serverId);
+    return lanBroadcast.statusFor(this.getServer(serverId));
+  }
+
+  async restoreLanBroadcasts() {
+    const lanBroadcast = require('./lanBroadcast');
+    if (this.isBedrockConnectActive()) {
+      logger.info('Skipping LAN broadcast restore because Bedrock Connect is running');
+      return;
+    }
+    const rows = db.prepare("SELECT id FROM servers WHERE lan_broadcast = 1 AND kind != 'bedrock_connect'").all();
+    for (const row of rows) {
+      try {
+        await this.syncLanBroadcast(row.id);
+      } catch (err) {
+        logger.warn(`Could not restore LAN broadcast for server ${row.id}: ${err.message}`);
+      }
+    }
+  }
+
+  async completePendingLanBroadcastIfNeeded(serverId) {
+    const pending = this.getPendingLanBroadcast();
+    if (!pending || Number(pending.occupantId) !== Number(serverId)) return null;
+    this.setPendingLanBroadcast(null);
+    const occupant = this.getServer(serverId);
+    if (occupant && occupant.pending_port) {
+      await this.commitPortChange(serverId, occupant.pending_port);
+    } else if (occupant && Number(occupant.port) === BEDROCK_CONNECT_PORT) {
+      const nextPort = pending.nextPort || await this.nextAvailablePort({ exclude: [BEDROCK_CONNECT_PORT] });
+      await this.commitPortChange(serverId, nextPort);
+    }
+    const enableIds = pending.enableIds || [serverId];
+    for (const id of enableIds) {
+      db.prepare('UPDATE servers SET lan_broadcast = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+      this.invalidateServerCache(id);
+      try { await this.syncLanBroadcast(id); } catch (err) {
+        logger.warn(`LAN broadcast failed for server ${id}: ${err.message}`);
+      }
+    }
+    return { success: true };
+  }
+
   async nextAvailablePort({ exclude = [] } = {}) {
     const skip = new Set(exclude.map(Number));
     const { available } = await this.getAllPorts();
-    const match = available.find(item => !skip.has(item.port));
+    const match = available.find(item => item.family !== 'ipv6' && !skip.has(item.port) && item.port !== portRanges.DISCOVERY_IPV6);
     if (!match) throw new Error('No available UDP ports are left in the manager ranges');
     return match.port;
   }
@@ -144,13 +424,16 @@ class ServerManager {
     }
     const occupant = db.prepare('SELECT * FROM servers WHERE port = ?').get(BEDROCK_CONNECT_PORT);
     if (!occupant) {
-      const free = await this.isUdpPortAvailable(BEDROCK_CONNECT_PORT);
+      const lanBroadcast = require('./lanBroadcast');
+      const lanActive = lanBroadcast.hasAnyActive();
+      const free = lanActive || await this.isUdpPortAvailable(BEDROCK_CONNECT_PORT);
       return {
         exists: false,
         pending,
         conflict: null,
         port: BEDROCK_CONNECT_PORT,
         portBlocked: !free,
+        lanWillStop: lanActive,
       };
     }
     const nextPort = await this.nextAvailablePort({ exclude: [BEDROCK_CONNECT_PORT, occupant.port] });
@@ -244,8 +527,8 @@ class ServerManager {
 
     const insert = db.prepare(`
       INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
-        server_description, server_motd, status, data_path, kind)
-      VALUES (?, ?, ?, 0, 0, 'peaceful', 'survival', ?, ?, 'stopped', ?, 'bedrock_connect')
+        server_description, server_motd, status, data_path, kind, ipv6_port)
+      VALUES (?, ?, ?, 0, 0, 'peaceful', 'survival', ?, ?, 'stopped', ?, 'bedrock_connect', ?)
     `);
     const result = insert.run(
       bedrockConnect.DISPLAY_NAME,
@@ -253,10 +536,12 @@ class ServerManager {
       BEDROCK_CONNECT_PORT,
       'Console server list for Xbox, PlayStation, and Nintendo Switch',
       'Bedrock Connect',
-      serverPath
+      serverPath,
+      portRanges.DISCOVERY_IPV6
     );
     const serverId = result.lastInsertRowid;
-    this.registerPort(serverId, BEDROCK_CONNECT_PORT, 'udp');
+    this.registerPort(serverId, BEDROCK_CONNECT_PORT, 'udp', 'ipv4');
+    this.registerPort(serverId, portRanges.DISCOVERY_IPV6, 'udp', 'ipv6');
     this.invalidateServerCache(serverId);
     this.setPendingBedrockConnect(null);
     logger.info(`Created Bedrock Connect on port ${BEDROCK_CONNECT_PORT} (${installed.tag})`);
@@ -303,10 +588,16 @@ class ServerManager {
       throw new Error('Port must be between 1 and 65535');
     }
     if (port === Number(server.port) && !server.pending_port) return { success: true, port };
+    if (port === Number(server.ipv6_port) || port === Number(server.pending_ipv6_port)) {
+      throw new Error('IPv4 and IPv6 ports must be different');
+    }
+    if (!portRanges.isIpv4GamePort(port) && !(this.isBedrockConnect(server) && port === BEDROCK_CONNECT_PORT)) {
+      throw new Error(`UDP port ${port} is not in the IPv4 game ranges`);
+    }
 
-    const taken = db.prepare('SELECT id, name FROM servers WHERE port = ? AND id != ?').get(port, serverId);
+    const taken = db.prepare('SELECT id, name FROM servers WHERE (port = ? OR ipv6_port = ?) AND id != ?').get(port, port, serverId);
     if (taken) throw new Error(`Port ${port} is already assigned to ${taken.name}`);
-    const pendingTaken = db.prepare('SELECT id, name FROM servers WHERE pending_port = ? AND id != ?').get(port, serverId);
+    const pendingTaken = db.prepare('SELECT id, name FROM servers WHERE (pending_port = ? OR pending_ipv6_port = ?) AND id != ?').get(port, port, serverId);
     if (pendingTaken) throw new Error(`Port ${port} is already reserved for ${pendingTaken.name}`);
 
     const bc = this.getBedrockConnectServer();
@@ -339,45 +630,60 @@ class ServerManager {
       throw new Error('Bedrock Connect must stay on UDP port 19132');
     }
 
+    const current = this.getServer(serverId);
+    let ipv6Port = Number(current.ipv6_port) || null;
+    const wasPaired = ipv6Port && ipv6Port === portRanges.preferredIpv6Port(current.port);
+    if (!ipv6Port || wasPaired || ipv6Port === port) {
+      ipv6Port = await this.allocateIpv6Port(port, { excludeServerId: serverId });
+    }
+
     if (!this.isBedrockConnect(server)) {
-      const propsPath = path.join(server.data_path, 'server.properties');
-      const props = this.readServerProperties(propsPath);
-      props['server-port'] = String(port);
-      props['server-portv6'] = String(port);
-      this.writeServerProperties(propsPath, props);
+      this.writeRuntimeServerProperties({ ...current, port, ipv6_port: ipv6Port });
     }
 
     db.prepare(`
       UPDATE servers
-      SET port = ?, pending_port = NULL, updated_at = CURRENT_TIMESTAMP
+      SET port = ?, ipv6_port = ?, pending_port = NULL, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(port, serverId);
+    `).run(port, ipv6Port, serverId);
     this.unregisterPorts(serverId);
-    this.registerPort(serverId, port, 'udp');
+    this.registerPort(serverId, port, 'udp', 'ipv4');
+    if (ipv6Port) this.registerPort(serverId, ipv6Port, 'udp', 'ipv6');
     this.invalidateServerCache(serverId);
     logger.info(`Server ${server.name} is now on port ${port}`);
+    try {
+      if (Number(this.getServer(serverId)?.lan_broadcast) === 1) {
+        await this.syncLanBroadcast(serverId);
+      }
+    } catch (err) {
+      logger.warn(`LAN broadcast did not restart after port change for ${server.name}: ${err.message}`);
+    }
     return { success: true, port };
   }
 
   // ========== SERVER LIFECYCLE ==========
 
   async createServer(config) {
-    const { name, port, version, maxPlayers, description, gamemode, difficulty } = config;
+    const { name, port, ipv6Port, version, maxPlayers, description, gamemode, difficulty } = config;
 
-    // Validate port
     if (port < 1 || port > 65535) {
       throw new Error('Port must be between 1 and 65535');
+    }
+    if (!portRanges.isIpv4GamePort(port)) {
+      throw new Error(`UDP port ${port} is not in the IPv4 game ranges`);
+    }
+    if (ipv6Port != null && ipv6Port !== '' && Number(ipv6Port) === Number(port)) {
+      throw new Error('IPv4 and IPv6 ports must be different');
     }
     if (Number(port) === BEDROCK_CONNECT_PORT && (this.getBedrockConnectServer() || this.getPendingBedrockConnect())) {
       throw new Error('UDP port 19132 is reserved for Bedrock Connect');
     }
 
-    // Check port availability
-    const existing = db.prepare('SELECT * FROM servers WHERE port = ? OR name = ?').get(port, name);
+    const existing = db.prepare('SELECT * FROM servers WHERE port = ? OR ipv6_port = ? OR name = ?').get(port, port, name);
     if (existing) {
       throw new Error('Port or server name already in use');
     }
-    const pendingTaken = db.prepare('SELECT name FROM servers WHERE pending_port = ?').get(port);
+    const pendingTaken = db.prepare('SELECT name FROM servers WHERE pending_port = ? OR pending_ipv6_port = ?').get(port, port);
     if (pendingTaken) {
       throw new Error(`Port ${port} is already reserved for ${pendingTaken.name}`);
     }
@@ -386,96 +692,159 @@ class ServerManager {
       throw new Error(`UDP port ${port} is already in use by another process`);
     }
 
-    // Download and extract the server
+    const assignedIpv6 = await this.allocateIpv6Port(port, { requested: ipv6Port });
+    if (assignedIpv6 === Number(port)) {
+      throw new Error('IPv4 and IPv6 ports must be different');
+    }
+
     const serverPath = path.join(BASE_DIR, name);
     fs.mkdirSync(serverPath, { recursive: true });
 
-    // Download Minecraft Bedrock server
-    await this.downloadServer(serverPath, version || 'latest');
-
-    // Create server directory structure
-    fs.mkdirSync(path.join(serverPath, 'behavior_packs'), { recursive: true });
-    fs.mkdirSync(path.join(serverPath, 'texture_packs'), { recursive: true });
-    fs.mkdirSync(path.join(serverPath, 'worlds'), { recursive: true });
-    fs.mkdirSync(path.join(serverPath, 'resource_packs'), { recursive: true });
-
-    // Create initial server.properties
-    const props = {
-      'level-name': name,
-      'server-port': String(port),
-      'server-portv6': String(port),
-      'max-players': String(maxPlayers || 10),
-      'allow-list': 'false',
-      difficulty: difficulty || 'peaceful',
-      gamemode: gamemode || 'survival',
-      'default-player-permission': 'member',
-      'server-authoritative': 'true',
-      'enable-cheats': 'true',
-      'server-description': description || 'Minecraft Bedrock Server',
-      'texturepack-name': '',
-      'texturepacks-required': 'false',
-      'content-log-file-enable': 'false',
-      'compression-threshold-kb': '1',
-    };
-
-    this.writeServerProperties(path.join(serverPath, 'server.properties'), props);
-    fs.writeFileSync(path.join(serverPath, 'allowlist.json'), '[]\n');
-    fs.writeFileSync(path.join(serverPath, 'permissions.json'), '[]\n');
-
-    // Insert into database
     const insert = db.prepare(`
-      INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode, 
-        server_description, server_motd, status, data_path)
-      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'stopped', ?)
+      INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
+        server_description, server_motd, status, data_path, lan_broadcast, ipv6_port)
+      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'creating', ?, 1, ?)
     `);
     const result = insert.run(
-      name, version || 'latest', port, maxPlayers || 10, 
+      name, version || 'latest', port, maxPlayers || 10,
       difficulty || 'peaceful', gamemode || 'survival',
       description || 'Minecraft Bedrock Server',
       description || 'Minecraft Bedrock Server',
-      serverPath
+      serverPath,
+      assignedIpv6
     );
-
     const serverId = result.lastInsertRowid;
+    this.registerPort(serverId, port, 'udp', 'ipv4');
+    this.registerPort(serverId, assignedIpv6, 'udp', 'ipv6');
+    this.invalidateServerCache(serverId);
+    this.broadcastServerStatus(serverId);
 
-    // Register port
-    this.registerPort(serverId, port, 'udp');
+    const job = this.finishCreateServer(serverId, {
+      name,
+      port,
+      ipv6Port: assignedIpv6,
+      maxPlayers: maxPlayers || 10,
+      description: description || 'Minecraft Bedrock Server',
+      gamemode: gamemode || 'survival',
+      difficulty: difficulty || 'peaceful',
+      version: version || 'latest',
+      serverPath,
+    }).finally(() => this.provisionJobs.delete(Number(serverId)));
+    this.provisionJobs.set(Number(serverId), job);
 
-    logger.info(`Created server: ${name} on port ${port}`);
-    return { id: serverId, name, port, dataPath: serverPath };
+    logger.info(`Queued server create: ${name} on IPv4 ${port} / IPv6 ${assignedIpv6}`);
+    return { id: serverId, name, port, ipv6Port: assignedIpv6, status: 'creating', dataPath: serverPath };
+  }
+
+  async finishCreateServer(serverId, config) {
+    const { name, port, ipv6Port, maxPlayers, description, gamemode, difficulty, version, serverPath } = config;
+    try {
+      await this.downloadServer(serverPath, version);
+      if (!this.getServer(serverId)) return;
+
+      fs.mkdirSync(path.join(serverPath, 'behavior_packs'), { recursive: true });
+      fs.mkdirSync(path.join(serverPath, 'texture_packs'), { recursive: true });
+      fs.mkdirSync(path.join(serverPath, 'worlds'), { recursive: true });
+      fs.mkdirSync(path.join(serverPath, 'resource_packs'), { recursive: true });
+
+      const propsPath = path.join(serverPath, 'server.properties');
+      this.writeServerProperties(
+        propsPath,
+        this.bedrockRuntimeProperties({
+          name,
+          port,
+          ipv6_port: ipv6Port,
+          max_players: maxPlayers,
+          difficulty,
+          gamemode,
+          server_description: description,
+          data_path: serverPath,
+        }, this.readServerProperties(propsPath))
+      );
+      fs.writeFileSync(path.join(serverPath, 'allowlist.json'), '[]\n');
+      fs.writeFileSync(path.join(serverPath, 'permissions.json'), '[]\n');
+
+      db.prepare('UPDATE servers SET status = ?, pending_restart_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('stopped', serverId);
+      this.invalidateServerCache(serverId);
+      this.broadcastServerStatus(serverId);
+      logger.info(`Created server: ${name} on port ${port}`);
+    } catch (err) {
+      logger.error(`Failed to finish creating ${name}: ${err.message}`);
+      if (!this.getServer(serverId)) return;
+      db.prepare('UPDATE servers SET status = ?, pending_restart = 0, pending_restart_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('stopped', `Create failed: ${err.message}`, serverId);
+      this.invalidateServerCache(serverId);
+      this.broadcastServerStatus(serverId);
+    }
+  }
+
+  async resolveBedrockDownloadUrl(version) {
+    const axios = require('axios');
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      Accept: 'text/html,application/xhtml+xml,application/json',
+    };
+    try {
+      const api = await axios.get('https://net-secondary.web.minecraft-services.net/api/v1.0/download/links', {
+        headers: { ...headers, Accept: 'application/json' },
+        timeout: 20000,
+      });
+      const links = api.data?.result?.links || api.data?.links || [];
+      const linux = links.find(item =>
+        /serverBedrockLinux/i.test(item.downloadType || '')
+        || /bin-linux/i.test(item.downloadUrl || item.url || '')
+      );
+      const url = linux?.downloadUrl || linux?.url;
+      if (url) return url;
+    } catch (err) {
+      logger.warn(`Bedrock download API lookup failed: ${err.message}`);
+    }
+
+    const page = await axios.get('https://www.minecraft.net/en-us/download/server/bedrock', {
+      headers,
+      timeout: 20000,
+      maxRedirects: 5,
+    });
+    const html = String(page.data || '');
+    const matches = [...html.matchAll(/https:\/\/www\.minecraft\.net\/bedrockdedicatedserver\/bin-linux\/bedrock-server-[0-9.]+\.zip/g)]
+      .map(match => match[0]);
+    if (version && version !== 'latest') {
+      const pinned = matches.find(url => url.includes(version));
+      if (pinned) return pinned;
+    }
+    if (matches[0]) return matches[0];
+    throw new Error('Could not resolve the official Bedrock Dedicated Server download URL');
   }
 
   async downloadServer(targetDir, version) {
-    const arch = await this.detectArchitecture();
-    const url = version === 'latest'
-      ? 'https://minecraft.net/bedrock-installers'
-      : `https://minecraft.net/bedrock-installers?version=${version}`;
-
     logger.info(`Downloading Minecraft Bedrock server to ${targetDir}`);
-
-    // Try to download the official server
+    const zipPath = path.join(targetDir, 'bedrock_server.zip');
     try {
-      const downloadUrl = `https://www.minecraft.net/download/server/bedrock/`;
-      
-      // Use wget/curl to download
-      const downloadPath = path.join(targetDir, 'bedrock_server.tgz');
-      const { stdout } = await execAsync(
-        `wget -q -O "${downloadPath}" "https://www.minecraft.net/bedrock-server/" 2>/dev/null || true`,
-        { timeout: 120000 }
+      const downloadUrl = await this.resolveBedrockDownloadUrl(version);
+      logger.info(`Fetching Bedrock Dedicated Server from ${downloadUrl}`);
+      await execAsync(
+        `curl -fsSL -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o "${zipPath}" "${downloadUrl}"`,
+        { timeout: 180000 }
       );
-
-      // If direct download fails, try alternative method
-      if (!fs.existsSync(downloadPath) || fs.statSync(downloadPath).size < 1000) {
+      if (!fs.existsSync(zipPath) || fs.statSync(zipPath).size < 1000000) {
         throw new Error('Download failed or file too small');
       }
-
-      // Extract
-      await execAsync(`tar -xzf "${downloadPath}" -C "${targetDir}"`, { timeout: 120000 });
-      fs.unlinkSync(downloadPath);
+      await execAsync(`unzip -o -q "${zipPath}" -d "${targetDir}"`, { timeout: 120000 });
+      try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+      const serverBin = path.join(targetDir, 'bedrock_server');
+      if (!fs.existsSync(serverBin)) {
+        throw new Error('Archive did not contain bedrock_server');
+      }
+      fs.chmodSync(serverBin, '755');
     } catch (err) {
-      logger.warn(`Direct download failed: ${err.message}. Creating stub server files.`);
-      // Create stub files so the manager can still work
-      await this.createStubServer(targetDir);
+      logger.warn(`Direct download failed: ${err.message}`);
+      try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+      if (String(process.env.ALLOW_STUB_SERVER || '') === '1') {
+        await this.createStubServer(targetDir);
+        return;
+      }
+      throw err;
     }
   }
 
@@ -511,7 +880,17 @@ done
     logger.info(`Created stub server at ${targetDir}`);
   }
 
+  isStubBedrockBinary(filePath) {
+    try {
+      const header = fs.readFileSync(filePath).subarray(0, 120).toString('utf8');
+      return header.startsWith('#!') || /placeholder|Bedrock Server Stub/i.test(header);
+    } catch {
+      return true;
+    }
+  }
+
   async startBedrockConnect(server) {
+    await this.releaseDiscoveryPortsForBedrockConnect();
     const bedrockConnect = require('./bedrockConnect');
     await bedrockConnect.assertJavaAvailable();
     const installed = bedrockConnect.installedJar(server.data_path)
@@ -560,6 +939,7 @@ done
       db.prepare('UPDATE servers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run('stopped', server.id);
       this.invalidateServerCache(server.id);
+      await this.restoreLanBroadcasts();
       throw new Error(`Failed to start Bedrock Connect: ${err.message}`);
     }
   }
@@ -569,10 +949,15 @@ done
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
     if (server.status === 'running') throw new Error('Server already running');
+    if (server.status === 'creating') throw new Error('Server is still being built');
 
     if (server.pending_port) {
       await this.commitPortChange(serverId, server.pending_port);
     }
+    if (this.getServer(serverId)?.pending_ipv6_port) {
+      await this.commitIpv6PortChange(serverId, this.getServer(serverId).pending_ipv6_port);
+    }
+    await this.ensureIpv6PortAssigned(serverId);
     const current = this.getServer(serverId);
     const serverPath = current.data_path;
 
@@ -588,34 +973,55 @@ done
     if (!fs.existsSync(serverBin)) {
       throw new Error(`Server binary not found at ${serverBin}. Please install the server first.`);
     }
+    if (this.isStubBedrockBinary(serverBin)) {
+      throw new Error('This instance has a placeholder binary, not Minecraft Bedrock Dedicated Server. Delete it and create the server again, or unzip the official files into this server directory.');
+    }
 
     try {
-      // Make executable
+      this.writeRuntimeServerProperties(current);
+      const packInstaller = require('./packInstaller');
+      await packInstaller.activateServerPacks(current);
       fs.chmodSync(serverBin, '755');
 
-      // Start the server process with PTY for terminal access
-      const { spawn: spawnPty } = require('node-pty');
-      const pty = spawnPty('bash', [
-        '-c', 
-        `cd "${serverPath}" && PORT=${server.port} ./bedrock_server`
-      ], {
-        name: 'xterm-color',
-        cols: 120,
-        rows: 30,
-        cwd: serverPath,
-        env: { ...process.env, PORT: String(server.port) }
-      });
+      const lanBroadcast = require('./lanBroadcast');
+      const nativeLan = Number(current.port) === lanBroadcast.DISCOVERY_PORT;
+      // Keep 19132/19133 occupied while BDS starts so LAN visibility cannot
+      // advertise this server. Phantom later binds those ports only if the
+      // LAN toggle is on.
+      const discoveryGuards = nativeLan ? [] : await lanBroadcast.occupyDiscoveryPorts();
+      try {
+        const { spawn: spawnPty } = require('node-pty');
+        const pty = spawnPty(serverBin, [], {
+          name: 'xterm-color',
+          cols: 120,
+          rows: 30,
+          cwd: serverPath,
+          env: {
+            ...process.env,
+            LD_LIBRARY_PATH: `${serverPath}:.`,
+            PORT: String(current.port),
+          },
+        });
 
-      this.ptySessions.set(sessionKey, pty);
+        this.ptySessions.set(sessionKey, pty);
 
-      // Connect PTY output to Socket.IO for real-time terminal streaming
-      this.setupPtyOutputBroadcast(serverId, pty);
+        // Connect PTY output to Socket.IO for real-time terminal streaming
+        this.setupPtyOutputBroadcast(serverId, pty);
 
-      // Update status
-      db.prepare('UPDATE servers SET status = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-        .run('starting', serverId);
-      this.invalidateServerCache(serverId);
-      this.broadcastServerStatus(serverId);
+        // Update status
+        db.prepare('UPDATE servers SET status = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run('starting', serverId);
+        this.invalidateServerCache(serverId);
+        this.broadcastServerStatus(serverId);
+
+        if (!nativeLan) {
+          await this.waitUntilUdpPortBusy(current.port);
+          // Give BDS time to fail its 19132/19133 LAN bind while we still hold them.
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      } finally {
+        lanBroadcast.releaseDiscoveryPorts(discoveryGuards);
+      }
 
       // Wait a moment then mark as running
       setTimeout(() => {
@@ -636,6 +1042,14 @@ done
       }, 3000);
 
       await this.completePendingBedrockConnectIfNeeded(serverId);
+      await this.completePendingLanBroadcastIfNeeded(serverId);
+      if (Number(this.getServer(serverId)?.lan_broadcast) === 1) {
+        try {
+          await this.syncLanBroadcast(serverId);
+        } catch (err) {
+          logger.warn(`LAN broadcast did not start with ${current.name}: ${err.message}`);
+        }
+      }
       return { success: true, message: 'Server starting...' };
     } catch (err) {
       logger.error(`Failed to start server ${server.name}: ${err.message}`);
@@ -652,6 +1066,9 @@ done
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
     this.cancelWarnedRestart(serverId, { broadcast: false });
+    if (server.status === 'creating') {
+      throw new Error('Server is still being built');
+    }
     if (server.status === 'stopped') throw new Error('Server already stopped');
 
     const pty = this.ptySessions.get(sessionKey);
@@ -688,6 +1105,11 @@ done
 
     logger.info(`Server ${server.name} stopped`);
     this.broadcastServerStatus(serverId);
+    if (this.isBedrockConnect(server)) {
+      await this.waitForUdpPort(portRanges.DISCOVERY_IPV4, 'ipv4');
+      await this.waitForUdpPort(portRanges.DISCOVERY_IPV6, 'ipv6');
+      await this.restoreLanBroadcasts();
+    }
     return { success: true, message: 'Server stopped' };
   }
 
@@ -719,10 +1141,8 @@ done
 
     const announce = (minutes) => {
       if (!this.ptySessions.has(key)) return;
-      this.sendCommand(
-        serverId,
-        `say [Server Manager] Server restart in ${minutes} minute${minutes === 1 ? '' : 's'}. Please prepare to disconnect.`
-      );
+      const message = `Server Manager: restart in ${minutes} minute${minutes === 1 ? '' : 's'}. Please prepare to disconnect.`;
+      this.sendCommand(serverId, `say ${this.quoteCommandArgument(message)}`);
     };
 
     announce(5);
@@ -750,9 +1170,14 @@ done
   async deleteServer(serverId) {
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+    const wasBedrockConnect = this.isBedrockConnect(server);
+    require('./lanBroadcast').stop(serverId);
 
-    // Stop if running
-    if (server.status !== 'stopped') {
+    if (server.status === 'creating') {
+      const job = this.provisionJobs.get(Number(serverId));
+      this.provisionJobs.delete(Number(serverId));
+      if (job && typeof job.catch === 'function') job.catch(() => {});
+    } else if (server.status !== 'stopped') {
       await this.stopServer(serverId);
     }
 
@@ -769,12 +1194,22 @@ done
     if (pending && (Number(pending.occupantId) === Number(serverId) || this.isBedrockConnect(server))) {
       this.setPendingBedrockConnect(null);
     }
+    const pendingLan = this.getPendingLanBroadcast();
+    if (pendingLan && (
+      Number(pendingLan.occupantId) === Number(serverId)
+      || (pendingLan.enableIds || []).some(id => Number(id) === Number(serverId))
+    )) {
+      this.setPendingLanBroadcast(null);
+    }
 
     // Remove from database
     db.prepare('DELETE FROM servers WHERE id = ?').run(serverId);
     
     this.invalidateServerCache(serverId);
     logger.info(`Deleted server: ${server.name}`);
+    if (wasBedrockConnect) {
+      await this.restoreLanBroadcasts();
+    }
     return { success: true, message: 'Server deleted' };
   }
 
@@ -805,8 +1240,11 @@ done
     }
 
     const requestedPort = settings.port;
+    const requestedIpv6Port = settings.ipv6Port ?? settings.ipv6_port;
     const rest = { ...settings };
     delete rest.port;
+    delete rest.ipv6Port;
+    delete rest.ipv6_port;
 
     const propsPath = path.join(server.data_path, 'server.properties');
     const currentProps = this.readServerProperties(propsPath);
@@ -817,12 +1255,11 @@ done
       difficulty: 'difficulty',
       gamemode: 'gamemode',
       whitelist_mode: 'allow-list',
-      server_description: 'server-description',
-      server_motd: 'server-description',
-      texture_pack_required: 'texturepacks-required',
-      enable_cheats: 'enable-cheats',
-      server_authoritative: 'server-authoritative',
-      default_1st_person: 'default-player-permission',
+      server_description: 'server-name',
+      server_motd: 'server-name',
+      texture_pack_required: 'texturepack-required',
+      enable_cheats: 'allow-cheats',
+      default_1st_person: 'default-player-permission-level',
       view_distance: 'view-distance',
       tick_distance: 'tick-distance',
       player_idle_timeout: 'player-idle-timeout',
@@ -833,7 +1270,7 @@ done
       server_authoritative_inventory: 'server-authoritative-vanilla-inventory',
       enable_player_data_initialization: 'enable-player-data-initialization',
       level_seed: 'level-seed',
-      default_player_permission: 'default-player-permission',
+      default_player_permission: 'default-player-permission-level',
       auto_ice: 'auto-ice',
       natural_regeneration: 'natural-regeneration',
       remote_discovery: 'remote-discovery',
@@ -899,7 +1336,16 @@ done
     }
 
     if (requestedPort != null && requestedPort !== '' && Number(requestedPort) !== Number(server.port)) {
-      return this.queuePortChange(serverId, requestedPort);
+      await this.queuePortChange(serverId, requestedPort);
+    }
+    const latest = this.getServer(serverId);
+    if (
+      requestedIpv6Port != null
+      && requestedIpv6Port !== ''
+      && Number(requestedIpv6Port) !== Number(server.ipv6_port)
+      && Number(requestedIpv6Port) !== Number(latest.ipv6_port)
+    ) {
+      return this.queueIpv6PortChange(serverId, requestedIpv6Port);
     }
     return { success: true };
   }
@@ -922,6 +1368,58 @@ done
     return props;
   }
 
+  ipv6PortFor(port) {
+    return this.preferredOrFallbackIpv6(port);
+  }
+
+  preferredOrFallbackIpv6(ipv4Port) {
+    return portRanges.preferredIpv6Port(ipv4Port) || portRanges.ipv6Candidates()[0];
+  }
+
+  isTruthySetting(value) {
+    return value === true || value === 1 || value === '1' || value === 'true';
+  }
+
+  bedrockRuntimeProperties(server, existing = {}) {
+    const v4 = Number(server.port);
+    const props = { ...existing };
+    delete props['enable-cheats'];
+    delete props['default-player-permission'];
+    delete props['server-authoritative'];
+    delete props['server-description'];
+    delete props['texturepack-name'];
+    delete props['texturepacks-required'];
+    delete props['content-log-file-enable'];
+    delete props['compression-threshold-kb'];
+    delete props['white-list'];
+    return {
+      ...props,
+      'server-name': server.name,
+      'level-name': existing['level-name'] || server.name,
+      'server-port': String(v4),
+      'server-portv6': String(server.ipv6_port || this.preferredOrFallbackIpv6(v4)),
+      // BDS 1.26.30+ sends empty 33-byte RakNet pongs unless LAN visibility is on,
+      // which is the silverfish / cannot-join failure. This also binds UDP 19132/19133.
+      'enable-lan-visibility': 'true',
+      'max-players': String(server.max_players || existing['max-players'] || 10),
+      'allow-list': this.isTruthySetting(server.whitelist_mode) ? 'true' : 'false',
+      difficulty: server.difficulty || existing.difficulty || 'peaceful',
+      gamemode: server.gamemode || existing.gamemode || 'survival',
+      'allow-cheats': existing['allow-cheats'] || 'true',
+      'default-player-permission-level': existing['default-player-permission-level'] || 'member',
+      'online-mode': existing['online-mode'] || 'true',
+      'texturepack-required': existing['texturepack-required'] || 'false',
+      'content-log-file-enabled': existing['content-log-file-enabled'] || 'false',
+      'compression-threshold': existing['compression-threshold'] || '1',
+    };
+  }
+
+  writeRuntimeServerProperties(server) {
+    const propsPath = path.join(server.data_path, 'server.properties');
+    const current = this.readServerProperties(propsPath);
+    this.writeServerProperties(propsPath, this.bedrockRuntimeProperties(server, current));
+  }
+
   writeServerProperties(filePath, props) {
     const lines = [];
     lines.push('# Server Properties');
@@ -940,13 +1438,19 @@ done
   async updateServer(serverId, targetVersion) {
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+    if (server.status === 'creating') throw new Error('Server is still being built');
 
-    if (this.isBedrockConnect(server)) {
-      const bedrockConnect = require('./bedrockConnect');
-      if (!targetVersion || targetVersion === 'latest') {
-        await bedrockConnect.ensureJarAvailable();
-      }
-      const installed = bedrockConnect.installJarInto(server.data_path, targetVersion || 'latest');
+      if (this.isBedrockConnect(server)) {
+        const bedrockConnect = require('./bedrockConnect');
+        if (!targetVersion || targetVersion === 'latest') {
+          try {
+            await bedrockConnect.syncLatest({ download: true });
+          } catch (err) {
+            logger.warn(`Bedrock Connect latest check failed, using stored JAR: ${err.message}`);
+          }
+          await bedrockConnect.ensureJarAvailable();
+        }
+        const installed = bedrockConnect.installJarInto(server.data_path, targetVersion || 'latest');
       const fromVersion = server.version;
       db.prepare('UPDATE servers SET version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run(installed.tag, serverId);
@@ -1055,80 +1559,325 @@ done
 
   // ========== PLAYER MANAGEMENT ==========
 
-  async getOnlinePlayers(serverId) {
+  readOnlinePlayers(serverId) {
+    return db.prepare(`
+      SELECT p.*, sp.joined_at
+      FROM players p
+      JOIN server_players sp ON p.id = sp.player_id
+      WHERE sp.server_id = ? AND sp.is_online = 1
+      ORDER BY p.username COLLATE NOCASE
+    `).all(serverId);
+  }
+
+  ensurePlayer(username, xuid = null) {
+    const name = playerPresence.normalizeUsername(username);
+    if (!name) throw new Error('Username required');
+    const xuidValue = xuid ? String(xuid) : null;
+
+    if (xuidValue) {
+      const byXuid = db.prepare('SELECT * FROM players WHERE xuid = ?').get(xuidValue);
+      if (byXuid) {
+        const renamed = byXuid.username.toLowerCase() !== name.toLowerCase();
+        if (renamed) {
+          db.prepare('UPDATE players SET username = ? WHERE id = ?').run(name, byXuid.id);
+        }
+        return {
+          ...db.prepare('SELECT * FROM players WHERE id = ?').get(byXuid.id),
+          created: false,
+          xuidUpdated: false,
+          renamed,
+        };
+      }
+    }
+
+    const existing = db.prepare('SELECT * FROM players WHERE username = ? COLLATE NOCASE').get(name);
+    if (existing) {
+      const xuidUpdated = Boolean(xuidValue && !existing.xuid);
+      if (xuidUpdated) {
+        db.prepare('UPDATE players SET xuid = ? WHERE id = ?').run(xuidValue, existing.id);
+      }
+      return {
+        ...db.prepare('SELECT * FROM players WHERE id = ?').get(existing.id),
+        created: false,
+        xuidUpdated,
+        renamed: false,
+      };
+    }
+
+    const inserted = db.prepare('INSERT INTO players (username, xuid) VALUES (?, ?)').run(name, xuidValue);
+    return {
+      id: inserted.lastInsertRowid,
+      username: name,
+      xuid: xuidValue,
+      created: true,
+      xuidUpdated: Boolean(xuidValue),
+      renamed: false,
+    };
+  }
+
+  markPlayerOnline(serverId, playerId) {
+    const current = db.prepare(`
+      SELECT is_online FROM server_players WHERE server_id = ? AND player_id = ?
+    `).get(serverId, playerId);
+    db.prepare(`
+      INSERT INTO server_players (server_id, player_id, is_online)
+      VALUES (?, ?, 1)
+      ON CONFLICT(server_id, player_id) DO UPDATE SET
+        is_online = 1,
+        joined_at = CASE WHEN server_players.is_online = 0 THEN CURRENT_TIMESTAMP ELSE server_players.joined_at END
+    `).run(serverId, playerId);
+    db.prepare('UPDATE players SET last_seen = CURRENT_TIMESTAMP WHERE id = ?').run(playerId);
+    return !current?.is_online;
+  }
+
+  markPlayerOffline(serverId, playerId) {
+    const result = db.prepare(`
+      UPDATE server_players
+      SET is_online = 0
+      WHERE server_id = ? AND player_id = ? AND is_online = 1
+    `).run(serverId, playerId);
+    return result.changes > 0;
+  }
+
+  markAllPlayersOffline(serverId) {
+    db.prepare('UPDATE server_players SET is_online = 0 WHERE server_id = ?').run(serverId);
+  }
+
+  setExactOnlinePlayers(serverId, players) {
+    const onlineIds = [];
+    for (const entry of players) {
+      const username = typeof entry === 'string' ? entry : entry.username;
+      const xuid = typeof entry === 'string' ? null : entry.xuid;
+      const player = this.ensurePlayer(username, xuid);
+      this.markPlayerOnline(serverId, player.id);
+      onlineIds.push(player.id);
+    }
+    if (onlineIds.length === 0) {
+      this.markAllPlayersOffline(serverId);
+      return;
+    }
+    const placeholders = onlineIds.map(() => '?').join(', ');
+    db.prepare(`
+      UPDATE server_players
+      SET is_online = 0
+      WHERE server_id = ? AND player_id NOT IN (${placeholders})
+    `).run(serverId, ...onlineIds);
+  }
+
+  kickIfBanned(serverId, username) {
+    const banned = db.prepare(`
+      SELECT a.ban_reason FROM server_player_access a
+      JOIN players p ON p.id = a.player_id
+      WHERE a.server_id = ? AND a.is_banned = 1 AND p.username = ? COLLATE NOCASE
+    `).get(serverId, username);
+    const sessionKey = this.sessionKey(serverId);
+    if (!banned || !this.ptySessions.has(sessionKey)) return;
+    const reason = banned.ban_reason || 'Banned by server administrator';
+    this.ptySessions.get(sessionKey).write(
+      `kick ${this.quoteCommandArgument(username)} ${this.quoteCommandArgument(reason)}\n`
+    );
+  }
+
+  appendConsoleBuffer(serverId, text) {
+    const key = this.sessionKey(serverId);
+    const next = `${this.consoleBuffers.get(key) || ''}${text}`.slice(-65536);
+    this.consoleBuffers.set(key, next);
+    const waiters = this.ptyCaptures.get(key) || [];
+    for (const waiter of waiters) waiter.onData(text);
+    return next;
+  }
+
+  capturePtyCommand(serverId, command, { timeoutMs = 1800, ready } = {}) {
+    const key = this.sessionKey(serverId);
+    const pty = this.ptySessions.get(key);
+    if (!pty) {
+      this.markServerStopped(serverId);
+      throw new Error('Server process is not running. Its status has been corrected to Offline.');
+    }
+
+    return new Promise((resolve) => {
+      const waiter = {
+        buffer: '',
+        timer: null,
+        settleTimer: null,
+        done: false,
+        onData(chunk) {
+          waiter.buffer += String(chunk);
+          if (!ready || !ready(waiter.buffer)) return;
+          clearTimeout(waiter.settleTimer);
+          waiter.settleTimer = setTimeout(() => waiter.finish(waiter.buffer), 250);
+        },
+        finish: (value) => {
+          if (waiter.done) return;
+          waiter.done = true;
+          clearTimeout(waiter.timer);
+          clearTimeout(waiter.settleTimer);
+          const remaining = (this.ptyCaptures.get(key) || []).filter((item) => item !== waiter);
+          if (remaining.length) this.ptyCaptures.set(key, remaining);
+          else this.ptyCaptures.delete(key);
+          resolve(value);
+        },
+      };
+      const waiters = this.ptyCaptures.get(key) || [];
+      waiters.push(waiter);
+      this.ptyCaptures.set(key, waiters);
+      waiter.timer = setTimeout(() => waiter.finish(waiter.buffer), timeoutMs);
+      pty.write(`${command}\n`);
+    });
+  }
+
+  async refreshOnlinePlayersFromList(serverId, { force = false, timeoutMs = 1800 } = {}) {
+    const server = this.getServer(serverId);
+    if (!server || this.isBedrockConnect(server) || server.status !== 'running') {
+      return this.readOnlinePlayers(serverId);
+    }
+
+    const key = this.sessionKey(serverId);
+    if (!force && this.onlineListAt.get(key) && Date.now() - this.onlineListAt.get(key) < 2000) {
+      return this.readOnlinePlayers(serverId);
+    }
+    if (this.onlineRefreshInFlight.has(key)) {
+      return this.onlineRefreshInFlight.get(key);
+    }
+
+    const pending = (async () => {
+      try {
+        const output = await this.capturePtyCommand(serverId, 'list', {
+          timeoutMs,
+          ready: playerPresence.hasListResult,
+        });
+        if (playerPresence.hasListResult(output)) {
+          this.setExactOnlinePlayers(serverId, playerPresence.parseListOutput(output));
+          this.onlineListAt.set(key, Date.now());
+        }
+      } catch (err) {
+        logger.warn(`Could not refresh online players for server ${serverId}: ${err.message}`);
+      }
+      return this.readOnlinePlayers(serverId);
+    })().finally(() => {
+      this.onlineRefreshInFlight.delete(key);
+    });
+
+    this.onlineRefreshInFlight.set(key, pending);
+    return pending;
+  }
+
+  async refreshRunningOnlinePlayers() {
+    const running = this.getAllServers().filter((server) => (
+      server.status === 'running'
+      && !this.isBedrockConnect(server)
+      && this.ptySessions.has(this.sessionKey(server.id))
+    ));
+    await Promise.all(running.map((server) => (
+      this.refreshOnlinePlayersFromList(server.id).catch((err) => {
+        logger.warn(`Online player refresh failed for ${server.name}: ${err.message}`);
+      })
+    )));
+  }
+
+  async getOnlinePlayers(serverId, { refresh = true } = {}) {
     const server = this.getServer(serverId);
     if (!server) return [];
-    if (server.status !== 'running') return [];
+    if (server.status !== 'running' || this.isBedrockConnect(server)) return [];
 
     try {
-      // Send list command and capture output
-      const pty = this.ptySessions.get(this.sessionKey(serverId));
-      if (!pty) return [];
-
-      // Read current players from database
-      const players = db.prepare(`
-        SELECT p.*, sp.joined_at 
-        FROM players p
-        JOIN server_players sp ON p.id = sp.player_id
-        WHERE sp.server_id = ? AND sp.is_online = 1
-      `).all(serverId);
-
-      return players;
+      if (refresh && this.ptySessions.has(this.sessionKey(serverId))) {
+        return await this.refreshOnlinePlayersFromList(serverId);
+      }
+      return this.readOnlinePlayers(serverId);
     } catch (err) {
       logger.error(`Error getting online players: ${err.message}`);
-      return [];
+      return this.readOnlinePlayers(serverId);
     }
+  }
+
+  discoverPlayersFromFiles(server) {
+    const discovered = [];
+    const allowlistPath = path.join(server.data_path, 'allowlist.json');
+    if (fs.existsSync(allowlistPath)) {
+      try {
+        const allowlist = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'));
+        if (Array.isArray(allowlist)) {
+          for (const entry of allowlist) {
+            if (entry?.name) discovered.push({ username: entry.name, xuid: entry.xuid || null });
+          }
+        }
+      } catch { /* ignore invalid allowlist */ }
+    }
+
+    const userDataPath = path.join(server.data_path, 'user_data');
+    if (fs.existsSync(userDataPath)) {
+      for (const file of fs.readdirSync(userDataPath)) {
+        const filePath = path.join(userDataPath, file);
+        if (!fs.statSync(filePath).isFile()) continue;
+        try {
+          const content = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          if (content.name || content.xuid) {
+            discovered.push({
+              username: content.name || file,
+              xuid: content.xuid || null,
+            });
+          }
+        } catch { /* skip invalid files */ }
+      }
+    }
+    return discovered;
   }
 
   async scanPlayers(serverId) {
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+    if (this.isBedrockConnect(server)) {
+      return { scanned: 0, added: 0, message: 'Bedrock Connect does not have players to scan' };
+    }
 
     try {
-      // Try to get player list from server command
-      const pty = this.ptySessions.get(this.sessionKey(serverId));
-      if (!pty) {
-        return { scanned: 0, message: 'Server not running, cannot scan players' };
+      const discovered = this.discoverPlayersFromFiles(server);
+      const buffer = this.consoleBuffers.get(this.sessionKey(serverId)) || '';
+      for (const event of playerPresence.parsePresenceEvents(buffer)) {
+        discovered.push({ username: event.username, xuid: event.xuid });
       }
 
-      // Read user_data to find known players
-      const userDataPath = path.join(server.data_path, 'user_data');
-      const discovered = [];
-
-      if (fs.existsSync(userDataPath)) {
-        const files = fs.readdirSync(userDataPath);
-        for (const file of files) {
-          const filePath = path.join(userDataPath, file);
-          if (fs.statSync(filePath).isFile()) {
-            try {
-              const content = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              if (content.name || content.xuid) {
-                discovered.push({
-                  username: content.name || file,
-                  xuid: content.xuid || null
-                });
-              }
-            } catch { /* skip invalid files */ }
+      let onlineNames = [];
+      const pty = this.ptySessions.get(this.sessionKey(serverId));
+      if (pty && server.status === 'running') {
+        const output = await this.capturePtyCommand(serverId, 'list', {
+          timeoutMs: 2000,
+          ready: playerPresence.hasListResult,
+        });
+        if (playerPresence.hasListResult(output)) {
+          onlineNames = playerPresence.parseListOutput(output);
+          this.onlineListAt.set(this.sessionKey(serverId), Date.now());
+          this.setExactOnlinePlayers(serverId, onlineNames.map((username) => ({ username })));
+        } else {
+          onlineNames = playerPresence.inferOnlineFromBuffer(`${buffer}\n${output}`)
+            .map((event) => event.username);
+          if (onlineNames.length) {
+            this.setExactOnlinePlayers(serverId, onlineNames.map((username) => ({ username })));
           }
         }
+        for (const username of onlineNames) discovered.push({ username });
       }
 
-      // Add to database
+      const seen = new Set();
       let added = 0;
+      let scanned = 0;
       for (const player of discovered) {
-        try {
-          const insert = db.prepare(`
-            INSERT OR IGNORE INTO players (username, xuid) VALUES (?, ?)
-          `).run(player.username, player.xuid);
-          if (insert.changes > 0) added++;
-        } catch { /* duplicate */ }
+        const name = playerPresence.normalizeUsername(player.username);
+        if (!name) continue;
+        const key = name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        scanned += 1;
+        const saved = this.ensurePlayer(name, player.xuid);
+        if (saved.created) added += 1;
       }
 
-      logger.info(`Scanned ${discovered.length} players, added ${added} new`);
-      return { scanned: discovered.length, added };
+      logger.info(`Scanned ${scanned} players on ${server.name}, added ${added} new`);
+      return { scanned, added, online: onlineNames.length };
     } catch (err) {
       logger.error(`Player scan failed: ${err.message}`);
-      return { scanned: 0, error: err.message };
+      return { scanned: 0, added: 0, error: err.message };
     }
   }
 
@@ -1256,42 +2005,45 @@ done
     return `"${String(value ?? '').replace(/["\\\r\n]/g, '')}"`;
   }
 
-  enforceBansFromOutput(serverId, data) {
+  observePlayerTraffic(serverId, data) {
     const text = String(data);
-    const patterns = [
-      /Player connected:\s*([^,\r\n]+)(?:,\s*xuid:\s*(\d+))?/gi,
-    ];
-    const seen = new Set();
-    for (const pattern of patterns) {
-      let match;
-      while ((match = pattern.exec(text)) !== null) {
-        const username = match[1].trim();
-        if (!username || seen.has(username.toLowerCase())) continue;
-        seen.add(username.toLowerCase());
-        if (match[2]) {
-          const updated = db.prepare('UPDATE players SET xuid = COALESCE(xuid, ?) WHERE username = ? COLLATE NOCASE')
-            .run(match[2], username);
-          if (updated.changes) this.syncPlayerAccessFiles(serverId);
-        }
-        const banned = db.prepare(`
-          SELECT a.ban_reason FROM server_player_access a
-          JOIN players p ON p.id = a.player_id
-          WHERE a.server_id = ? AND a.is_banned = 1 AND p.username = ? COLLATE NOCASE
-        `).get(serverId, username);
-        const sessionKey = this.sessionKey(serverId);
-        if (banned && this.ptySessions.has(sessionKey)) {
-          const reason = banned.ban_reason || 'Banned by server administrator';
-          this.ptySessions.get(sessionKey).write(`kick ${this.quoteCommandArgument(username)} ${this.quoteCommandArgument(reason)}\n`);
+    this.appendConsoleBuffer(serverId, text);
+
+    let changed = false;
+    for (const event of playerPresence.parsePresenceEvents(text)) {
+      const player = this.ensurePlayer(event.username, event.xuid);
+      if (player.xuidUpdated || player.renamed) {
+        try { this.syncPlayerAccessFiles(serverId); } catch (err) {
+          logger.warn(`Could not sync player files after join: ${err.message}`);
         }
       }
+      if (event.type === 'join') {
+        if (this.markPlayerOnline(serverId, player.id)) changed = true;
+        this.kickIfBanned(serverId, event.username);
+      } else if (this.markPlayerOffline(serverId, player.id)) {
+        changed = true;
+      }
     }
+    if (changed) this.broadcastServerStatus(serverId);
+  }
+
+  enforceBansFromOutput(serverId, data) {
+    this.observePlayerTraffic(serverId, data);
   }
 
   // ========== PORT MANAGEMENT ==========
 
   isUdpPortAvailable(port) {
+    return this.bindProbe(port, 'udp4', '0.0.0.0');
+  }
+
+  isUdp6PortAvailable(port) {
+    return this.bindProbe(port, 'udp6', '::');
+  }
+
+  bindProbe(port, type, address) {
     return new Promise((resolve) => {
-      const socket = dgram.createSocket('udp4');
+      const socket = dgram.createSocket(type);
       let settled = false;
       const finish = (available) => {
         if (settled) return;
@@ -1301,86 +2053,241 @@ done
       };
 
       socket.once('error', () => finish(false));
-      socket.bind(port, '0.0.0.0', () => finish(true));
+      socket.bind(port, address, () => finish(true));
     });
   }
 
-  registerPort(serverId, port, protocol = 'udp') {
+  async waitForUdpPort(port, family = 'ipv4', { attempts = 10, delayMs = 200 } = {}) {
+    for (let i = 0; i < attempts; i += 1) {
+      const free = family === 'ipv6'
+        ? await this.isUdp6PortAvailable(port)
+        : await this.isUdpPortAvailable(port);
+      if (free) return true;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    return false;
+  }
+
+  async waitUntilUdpPortBusy(port, family = 'ipv4', { attempts = 25, delayMs = 200 } = {}) {
+    for (let i = 0; i < attempts; i += 1) {
+      const free = family === 'ipv6'
+        ? await this.isUdp6PortAvailable(port)
+        : await this.isUdpPortAvailable(port);
+      if (!free) return true;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    return false;
+  }
+
+  async releaseDiscoveryPortsForBedrockConnect() {
+    this.stopLanBroadcastsForBedrockConnect();
+    const v4Free = await this.waitForUdpPort(portRanges.DISCOVERY_IPV4, 'ipv4');
+    const v6Free = await this.waitForUdpPort(portRanges.DISCOVERY_IPV6, 'ipv6');
+    if (!v4Free || !v6Free) {
+      logger.warn('UDP 19132/19133 were still busy after stopping LAN proxies');
+    }
+  }
+
+  registerPort(serverId, port, protocol = 'udp', family = 'ipv4') {
     db.prepare(`
-      INSERT OR REPLACE INTO port_usage (port, server_id, protocol, in_use)
-      VALUES (?, ?, ?, 1)
-    `).run(port, serverId, protocol);
+      INSERT OR REPLACE INTO port_usage (port, server_id, protocol, family, in_use)
+      VALUES (?, ?, ?, ?, 1)
+    `).run(port, serverId, protocol, family);
   }
 
   unregisterPorts(serverId) {
     db.prepare('DELETE FROM port_usage WHERE server_id = ?').run(serverId);
   }
 
+  assignedPortRows(excludeServerId = null) {
+    const rows = db.prepare(`
+      SELECT id, name, port, ipv6_port, pending_port, pending_ipv6_port
+      FROM servers
+    `).all();
+    const used = [];
+    for (const row of rows) {
+      if (excludeServerId != null && Number(row.id) === Number(excludeServerId)) continue;
+      if (row.port) used.push({ port: Number(row.port), family: 'ipv4', server_name: row.name });
+      if (row.ipv6_port) used.push({ port: Number(row.ipv6_port), family: 'ipv6', server_name: row.name });
+      if (row.pending_port) used.push({ port: Number(row.pending_port), family: 'ipv4', server_name: `${row.name} (pending)` });
+      if (row.pending_ipv6_port) used.push({ port: Number(row.pending_ipv6_port), family: 'ipv6', server_name: `${row.name} (pending IPv6)` });
+    }
+    return used;
+  }
+
+  isPortNumberTaken(port, { excludeServerId = null } = {}) {
+    const value = Number(port);
+    return this.assignedPortRows(excludeServerId).some((row) => row.port === value);
+  }
+
+  async allocateIpv6Port(ipv4Port, { requested, excludeServerId = null } = {}) {
+    const taken = new Set(this.assignedPortRows(excludeServerId).map((row) => row.port));
+    taken.add(Number(ipv4Port));
+    taken.add(portRanges.DISCOVERY_IPV4);
+    taken.add(portRanges.DISCOVERY_IPV6);
+
+    const preferred = requested
+      ? Number(requested)
+      : portRanges.preferredIpv6Port(ipv4Port);
+    const tryPort = async (port) => {
+      if (!portRanges.isIpv6GamePort(port) || taken.has(Number(port))) return null;
+      if (!(await this.isUdp6PortAvailable(port))) return null;
+      return Number(port);
+    };
+
+    if (preferred) {
+      const ok = await tryPort(preferred);
+      if (ok) return ok;
+      if (requested) {
+        throw new Error(`IPv6 UDP port ${requested} is not available`);
+      }
+    }
+
+    for (const port of portRanges.ipv6Candidates()) {
+      const ok = await tryPort(port);
+      if (ok) return ok;
+    }
+    throw new Error('No available UDP ports are left in the IPv6 manager ranges');
+  }
+
+  async ensureIpv6PortAssigned(serverId) {
+    const server = this.getServer(serverId);
+    if (!server || this.isBedrockConnect(server)) return server?.ipv6_port || null;
+    if (server.ipv6_port) return server.ipv6_port;
+    const ipv6Port = await this.allocateIpv6Port(server.port, { excludeServerId: serverId });
+    db.prepare('UPDATE servers SET ipv6_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(ipv6Port, serverId);
+    this.registerPort(serverId, server.port, 'udp', 'ipv4');
+    this.registerPort(serverId, ipv6Port, 'udp', 'ipv6');
+    this.invalidateServerCache(serverId);
+    return ipv6Port;
+  }
+
+  async queueIpv6PortChange(serverId, newPort, { restartRequired = false } = {}) {
+    const server = this.getServer(serverId);
+    if (!server) throw new Error('Server not found');
+    if (this.isBedrockConnect(server)) {
+      throw new Error('Bedrock Connect must stay on UDP ports 19132/19133');
+    }
+    const port = parseInt(newPort, 10);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('Port must be between 1 and 65535');
+    }
+    if (port === Number(server.ipv6_port) && !server.pending_ipv6_port) {
+      return { success: true, ipv6Port: port };
+    }
+    if (!portRanges.isIpv6GamePort(port)) {
+      throw new Error(`UDP port ${port} is not in the IPv6 game ranges`);
+    }
+    if (port === Number(server.port) || port === Number(server.pending_port)) {
+      throw new Error('IPv4 and IPv6 ports must be different');
+    }
+    if (this.isPortNumberTaken(port, { excludeServerId: serverId })) {
+      throw new Error(`Port ${port} is already assigned`);
+    }
+    if (port !== Number(server.ipv6_port) && !(await this.isUdp6PortAvailable(port))) {
+      throw new Error(`UDP port ${port} is already in use by another process`);
+    }
+
+    if (restartRequired || server.status === 'running') {
+      db.prepare(`
+        UPDATE servers SET pending_ipv6_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+      `).run(port, serverId);
+      this.invalidateServerCache(serverId);
+      this.markRestartRequired(serverId, `IPv6 port will change to ${port}`);
+      return { success: true, ipv6Port: port, pending: true };
+    }
+
+    await this.commitIpv6PortChange(serverId, port);
+    return { success: true, ipv6Port: port, pending: false };
+  }
+
+  async commitIpv6PortChange(serverId, newPort) {
+    const server = this.getServer(serverId);
+    if (!server) throw new Error('Server not found');
+    const port = parseInt(newPort, 10);
+    if (port === Number(server.port)) {
+      throw new Error('IPv4 and IPv6 ports must be different');
+    }
+    this.writeRuntimeServerProperties({ ...server, ipv6_port: port });
+    db.prepare(`
+      UPDATE servers
+      SET ipv6_port = ?, pending_ipv6_port = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(port, serverId);
+    this.unregisterPorts(serverId);
+    this.registerPort(serverId, server.port, 'udp', 'ipv4');
+    this.registerPort(serverId, port, 'udp', 'ipv6');
+    this.invalidateServerCache(serverId);
+    logger.info(`Server ${server.name} is now on IPv6 port ${port}`);
+    return { success: true, ipv6Port: port };
+  }
+
   async getAllPorts() {
-    // Get ports 1-65535 conceptually, but we'll track commonly used ranges
-    // Return known used ports and OS-level available ports in common ranges.
     const usedPorts = db.prepare(`
-      SELECT p.port, p.protocol, p.in_use, s.name as server_name
+      SELECT p.port, p.protocol, p.family, p.in_use, s.name as server_name
       FROM port_usage p
       LEFT JOIN servers s ON p.server_id = s.id
       ORDER BY p.port
-    `).all();
+    `).all().map((row) => ({
+      ...row,
+      family: row.family || portRanges.classifyFamily(row.port),
+    }));
 
-    const usedPortSet = new Set(usedPorts.map(p => p.port));
-    const pendingRows = db.prepare(`
-      SELECT pending_port AS port, name AS server_name
+    const usedPortSet = new Set(usedPorts.map((p) => p.port));
+    const addUsed = (port, family, server_name) => {
+      if (usedPortSet.has(port)) return;
+      usedPortSet.add(port);
+      usedPorts.push({ port, protocol: 'udp', family, in_use: 1, server_name });
+    };
+
+    for (const row of this.assignedPortRows()) {
+      addUsed(row.port, row.family, row.server_name);
+    }
+    if (this.getBedrockConnectServer() || this.getPendingBedrockConnect()) {
+      addUsed(portRanges.DISCOVERY_IPV4, 'ipv4', 'Bedrock Connect');
+      addUsed(portRanges.DISCOVERY_IPV6, 'ipv6', 'Bedrock Connect');
+    }
+    const lanBroadcast = require('./lanBroadcast');
+    for (const port of lanBroadcast.usedProxyPorts()) {
+      addUsed(port, 'ipv4', 'LAN proxy');
+    }
+    const proxyRows = db.prepare(`
+      SELECT lan_proxy_port AS port, name AS server_name
       FROM servers
-      WHERE pending_port IS NOT NULL
+      WHERE lan_proxy_port IS NOT NULL
     `).all();
-    for (const row of pendingRows) {
-      if (usedPortSet.has(row.port)) continue;
-      usedPortSet.add(row.port);
-      usedPorts.push({
-        port: row.port,
-        protocol: 'udp',
-        in_use: 1,
-        server_name: `${row.server_name} (pending)`,
-      });
+    for (const row of proxyRows) {
+      addUsed(row.port, 'ipv4', `${row.server_name} (LAN proxy)`);
     }
-    if ((this.getBedrockConnectServer() || this.getPendingBedrockConnect()) && !usedPortSet.has(BEDROCK_CONNECT_PORT)) {
-      usedPortSet.add(BEDROCK_CONNECT_PORT);
-      usedPorts.push({
-        port: BEDROCK_CONNECT_PORT,
-        protocol: 'udp',
-        in_use: 1,
-        server_name: 'Bedrock Connect',
-      });
+    if (lanBroadcast.hasAnyActive() && !this.getBedrockConnectServer()) {
+      addUsed(lanBroadcast.DISCOVERY_PORT, 'ipv4', 'Console LAN discovery');
+      addUsed(portRanges.DISCOVERY_IPV6, 'ipv6', 'Console LAN discovery');
     }
+    for (let port = lanBroadcast.PROXY_PORT_START; port <= lanBroadcast.PROXY_PORT_END; port += 1) {
+      usedPortSet.add(port);
+    }
+    addUsed(portRanges.DISCOVERY_IPV6, 'ipv6', 'Reserved IPv6 discovery');
 
-    // Generate available ports (common Minecraft ranges)
-    const candidatePorts = [];
-    
-    // Check ranges: 1-1024 (system), 1025-49151 (registered), 49152-65535 (dynamic)
-    for (let port = 19132; port <= 19199; port++) {
-      if (!usedPortSet.has(port)) {
-        candidatePorts.push(port);
-      }
-    }
-    for (let port = 25565; port <= 25665; port++) {
-      if (!usedPortSet.has(port)) {
-        candidatePorts.push(port);
-      }
-    }
-    for (let port = 30000; port <= 30100; port++) {
-      if (!usedPortSet.has(port)) {
-        candidatePorts.push(port);
-      }
-    }
-
-    const availability = await Promise.all(
-      candidatePorts.map(async port => ({
+    const ipv4Candidates = portRanges.ipv4Candidates().filter((port) => !usedPortSet.has(port));
+    const ipv6Candidates = portRanges.ipv6Candidates().filter((port) => !usedPortSet.has(port));
+    const ipv4Availability = await Promise.all(
+      ipv4Candidates.map(async (port) => ({
         port,
+        family: 'ipv4',
         available: await this.isUdpPortAvailable(port),
       }))
     );
-    const availablePorts = availability
-      .filter(result => result.available)
-      .map(({ port }) => ({ port, protocol: 'udp', in_use: 0, server_name: null }));
+    const ipv6Availability = await Promise.all(
+      ipv6Candidates.map(async (port) => ({
+        port,
+        family: 'ipv6',
+        available: await this.isUdp6PortAvailable(port),
+      }))
+    );
+    const availablePorts = [...ipv4Availability, ...ipv6Availability]
+      .filter((result) => result.available)
+      .map(({ port, family }) => ({ port, protocol: 'udp', family, in_use: 0, server_name: null }));
 
     return { used: usedPorts, available: availablePorts };
   }
@@ -1388,23 +2295,14 @@ done
   // ========== DATA ACCESS ==========
 
   getServer(serverId) {
-    const key = this.sessionKey(serverId);
-    if (this.servers.has(key)) return this.servers.get(key);
-    
-    const row = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
-    if (row) {
-      this.servers.set(key, row);
-    }
-    return row;
+    return db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
   }
 
   getAllServers() {
-    const rows = db.prepare(`
+    return db.prepare(`
       SELECT * FROM servers
       ORDER BY CASE WHEN kind = 'bedrock_connect' THEN 0 ELSE 1 END, name COLLATE NOCASE
     `).all();
-    rows.forEach(r => this.servers.set(this.sessionKey(r.id), r));
-    return rows;
   }
 
   async getServerStats(serverId) {
@@ -1424,12 +2322,12 @@ done
       ? this.calculateUptime(server.started_at) 
       : '0m';
 
-    return {
+    return this.attachLanStatus({
       ...server,
       onlinePlayers: onlinePlayers?.count || 0,
       installedMods: installedMods?.count || 0,
       uptime
-    };
+    });
   }
 
   calculateUptime(startTime) {
@@ -1463,7 +2361,7 @@ done
     existing.forEach(listener => pty.removeListener('data', listener));
 
     pty.on('data', (data) => {
-      this.enforceBansFromOutput(serverId, data);
+      this.observePlayerTraffic(serverId, data);
       if (global.io) {
         global.io.to(`server-${serverId}`).emit('server-output', {
           serverId,
@@ -1509,6 +2407,7 @@ done
     }
     this.ptySessions.clear();
     this.servers.clear();
+    try { require('./lanBroadcast').stopAll(); } catch { /* ignore */ }
   }
 }
 

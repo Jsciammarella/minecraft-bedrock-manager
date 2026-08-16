@@ -4,8 +4,9 @@ A self-hosted web console for creating and operating multiple Minecraft Bedrock 
 
 ## What it provides
 
-- Server creation with an available-port selector
-- Bedrock Connect for consoles (Xbox, PlayStation, Nintendo Switch) on UDP `19132`
+- Server creation with separate IPv4 and IPv6 available-port selectors
+- Bedrock Connect for consoles (Xbox, PlayStation, Nintendo Switch) on UDP `19132` / `19133`
+- Per-server console LAN listing (Xbox, PlayStation, Windows, iOS, Android)
 - Start, stop, immediate restart, and five-minute warned restart controls
 - A server-specific live console with per-server command history
 - Per-server allowlists, player permissions, and ban lists
@@ -26,7 +27,7 @@ The recommended installation uses Docker:
 - Docker Engine 24 or newer with Docker Compose v2
 - At least 2 GB RAM, plus memory required by each Bedrock server
 - TCP access to the management port (default `3000`)
-- Host firewall access to the Bedrock UDP ranges used by the port selector (`19132-19199`, `25565-25665`, and `30000-30100`)
+- Host firewall access to the IPv4 game ranges (`19132-19199`, `25565-25665`, `30000-30100`), the matching IPv6 ranges 1000 ports lower (`18132-18199`, `24565-24665`, `29000-29100`), and the LAN proxy range (`19200-19299`)
 
 The production image already includes Git, Git LFS, and a Java runtime for Bedrock Connect.
 
@@ -64,13 +65,13 @@ For a native installation:
 
    | Setting | When to change it |
    | --- | --- |
-   | `TZ` | Host timezone, for example `America/Denver` |
+   | `TZ` | Leave unset to use the host timezone. Set only to override it, for example `America/Denver` |
    | `PORT` | Web UI port if `3000` is already in use |
-   | `CONNECT_HOST` | LAN IP or DNS name players should use. Leave empty on Linux host networking to auto-detect. Set it on Docker Desktop / bridge networks so tiles do not show a container IP |
+   | `CONNECT_HOST` | Optional IPv4 override for tiles and Bedrock Connect. Leave empty to use this host's LAN IP. Hostnames are ignored because consoles resolve them unreliably |
    | `CURSEFORGE_API_KEY` | Optional. You can also paste this later in **Mod Catalog → Settings** |
    | `GIT_CATALOG_*` | Optional. Preferred configuration is **Mod Catalog → Settings** |
 
-3. Configure the Ubuntu host firewall for the web interface and all ports offered by the server-creation dropdown:
+3. Configure the Ubuntu host firewall for the web interface, the IPv4 and IPv6 ports offered by the server-creation dropdowns, and the console LAN proxy range (`19200-19299`):
 
    ```bash
    sudo ./scripts/configure-ubuntu-firewall.sh
@@ -103,27 +104,56 @@ Application data is stored in the `mc-data` Docker volume and survives container
 
 The production Compose file uses Linux host networking. Each Bedrock process therefore binds its selected UDP port directly on the host as soon as the server starts; adding a server does not require editing Compose or recreating the manager container. Host networking is intentional and is supported by the documented Linux deployment target. Firewall rules, not Docker port mappings, control external access.
 
-Dashboard tiles show `version • IP:port` using, in order: `CONNECT_HOST`, the hostname from the browser request (when it is not localhost), then a detected LAN IPv4. Docker bridge addresses such as `172.17.0.2` are not advertised. On Linux host networking and on a native install, auto-detection normally finds the host LAN IP. Docker Desktop and other bridge-network setups should set `CONNECT_HOST` to the host's LAN IP or DNS name.
+The Docker image runs as root. Game UDP ports are unprivileged (above 1024), but the manager must write the `mc-data` volume, copy Phantom into it, and spawn Bedrock, Java, and Phantom children on the host network. A non-root image user caused permission failures on a clean Docker install. Native Ubuntu installs still run as `mcmanager`.
+
+Dashboard tiles show `version • IP:port` using this host's LAN IPv4 so Bedrock Connect and consoles do not depend on home DNS. `CONNECT_HOST` is used only when it is an IPv4; hostnames are ignored. Docker bridge addresses such as `172.17.0.2` are not advertised. On Linux host networking and on a native install, auto-detection normally finds the host LAN IP. Docker Desktop and other bridge-network setups should set `CONNECT_HOST` to the host's LAN IPv4. The sidebar shows the machine hostname under **MC Manager**.
 
 When upgrading an older bridge-network deployment, run `docker compose down` followed by `docker compose up -d --build` after adding the firewall rules. This recreates only the manager container; the named data volume is retained.
 
 ### Bedrock Dedicated Server binary
 
-Minecraft Bedrock Dedicated Server is licensed and distributed separately by Mojang/Microsoft, so it is not included in this repository or image. Server creation attempts to provision it; if the official download cannot be resolved, the manager creates a development stub so the UI can still be tested.
+Minecraft Bedrock Dedicated Server is licensed and distributed separately by Mojang/Microsoft, so it is not included in this repository or image. Creating a server inserts a **Building Server** tile immediately, then downloads the official Linux zip in the background. Start and LAN stay locked until that finishes. If the download cannot be resolved, the tile stays offline with an error instead of a fake binary. Set `ALLOW_STUB_SERVER=1` only if you need the old development placeholder.
 
-For a real server, download the current Linux Bedrock Dedicated Server from the [official Minecraft server download page](https://www.minecraft.net/en-us/download/server/bedrock), stop the instance, and place the extracted files in that instance's data directory. The executable must be named `bedrock_server`, be executable, and be owned by the account running the manager. In Docker, the instance directories are inside the `mc-data` volume at `/app/data/servers/<server-name>`.
+For a real server, the manager uses a browser User-Agent to resolve the official zip from the [Minecraft Bedrock server download page](https://www.minecraft.net/en-us/download/server/bedrock), then `unzip`s it and starts `bedrock_server` with `LD_LIBRARY_PATH=.`. You can also place extracted files in that instance's data directory yourself. The executable must be named `bedrock_server` and be executable. In Docker, the instance directories are inside the `mc-data` volume at `/app/data/servers/<server-name>`.
 
 ### Bedrock Connect (consoles)
 
 Consoles cannot add custom Bedrock servers themselves. [Bedrock Connect](https://github.com/Pugmatt/BedrockConnect) is a Java service that presents a server list when a console is sent to this host on UDP `19132`. The manager can create one Bedrock Connect instance; the dashboard button turns grey after it exists, and that tile stays first.
 
-Bedrock Connect always uses UDP `19132`. If another managed server already occupies that port, the manager asks you to accept moving that server to the next free port. You can restart that server immediately or use the five-minute warned restart. After the port is free, Bedrock Connect is created.
+Bedrock Connect always uses UDP `19132` (IPv4) and `19133` (IPv6) for discovery. If another managed server already occupies `19132`, the manager asks you to accept moving that server to the next free IPv4 port. You can restart that server immediately or use the five-minute warned restart. After the port is free, Bedrock Connect is created.
 
 DNS rewrites on your network (for example pointing the console's featured-server lookups at this host) remain your responsibility. The manager only runs the JAR (`java -jar BedrockConnect-1.0-SNAPSHOT.jar nodb=true port=19132 bindip=0.0.0.0`).
 
-JAR updates are separate from Bedrock Dedicated Server binaries. The manager checks GitHub releases daily and keeps up to 10 downloaded versions under `data/bedrock-connect/releases/`. From the server page you can check for updates, install a stored version, or enable auto-update to the newest downloaded JAR.
+JAR updates are separate from Bedrock Dedicated Server binaries. The current Bedrock Connect release is shipped under `vendor/bedrock-connect/` and copied into `data/bedrock-connect/releases/` on first use, so installs do not need GitHub. The manager checks GitHub releases daily and downloads a newer JAR when one exists. The Update Server dialog lists **Latest** plus up to 10 stored versions. Older JARs are de-listed from that menu but are not deleted from disk. Auto-update can be enabled on the Properties page, the same as a normal server.
 
-You can also change a regular Bedrock server's port on its Properties page. The dropdown is the same available-port list used when creating a server. That change applies on the next restart, using the existing restart-required banner, unless Bedrock Connect creation moved the port immediately.
+You can also change a regular Bedrock server's IPv4 and IPv6 ports on its Properties page. Each dropdown is the same available-port list used when creating a server, filtered to that family. Changes apply on the next restart, using the existing restart-required banner, unless Bedrock Connect creation moved the IPv4 port immediately.
+
+Bedrock Dedicated Server needs a distinct IPv4 UDP port (`server-port`) and IPv6 UDP port (`server-portv6`). Using the same number for both, or leaving IPv6 unset, prevents the process from binding correctly. The manager keeps those numbers in separate ranges so they cannot collide:
+
+| Family | Game ranges | Notes |
+| --- | --- | --- |
+| IPv4 | `19132-19199`, `25565-25665`, `30000-30100` | UDP `19133` is not offered as an IPv4 game port |
+| IPv6 | `18132-18199`, `24565-24665`, `29000-29100` | Each IPv4 range minus 1000 |
+| LAN proxy | `19200-19299` | IPv4 only; not shown in the game-port dropdowns |
+
+New servers default to the next free IPv4 port. The IPv6 port defaults to 1000 below that IPv4 port when it is free; otherwise the lowest free IPv6 manager port is used. Port Manager can show IPv4 ports, IPv6 ports, or all. The split is a UI convention: the OS does not treat the numbers as different kinds of ports, but users must never assign the same number to both families.
+
+### Console LAN listing
+
+Consoles look for LAN games by pinging UDP `19132` (and `19133` for IPv6). Current Bedrock Dedicated Server (1.26.30+) sends empty RakNet pongs unless `enable-lan-visibility=true`, so the manager leaves that setting on. That would also let Bedrock advertise every running server on `19132`. To keep listing under the per-server LAN toggle, the manager occupies `19132`/`19133` while each dedicated server starts, then runs [Phantom](https://github.com/jhead/phantom) only for servers whose LAN toggle is on. Several Phantom processes can share UDP `19132`. Direct joins still use the tile address (`LAN-IPv4:game-port`), for example `10.0.1.142:19134`, not `19132`.
+
+A server whose game port is itself `19132` is visible on the LAN without Phantom. The LAN toggle can be turned on or off for every other server unless Bedrock Connect is running. Nintendo Switch is not supported by this method.
+
+Docker Compose uses Linux host networking, so Bedrock and Phantom bind UDP on the Ubuntu host itself. There is no docker-proxy port mapping to miss. The Xbox must be on the same LAN as the host.
+
+The manager ships Phantom (MIT license) binaries under `vendor/phantom/` (currently `v0.5.3`) and copies the matching one into `data/phantom/` on first use. Game traffic for a listed server is proxied on UDP `19200-19299` to this host's LAN IPv4 on the game port. `CONNECT_HOST` only controls the IPv4 shown on dashboard tiles.
+
+This is the easier path for Xbox, PlayStation, Windows, iOS, and Android on the same LAN. It does **not** replace Bedrock Connect:
+
+- Nintendo Switch is not supported by LAN listing. Switch players still need Bedrock Connect and DNS rewrites.
+- Bedrock Connect also binds UDP `19132` and `19133`. Starting Bedrock Connect stops every Phantom process and waits until those discovery ports are free. While Bedrock Connect is running, LAN listing stays paused. Stop or remove Bedrock Connect to start LAN listing again. A stopped Bedrock Connect instance does not block LAN listing.
+
+If another managed game server occupies UDP `19132` as its game port, the manager asks you to move it before LAN listing can start for other servers.
 
 ## Native Ubuntu installation
 
@@ -131,7 +161,7 @@ You can also change a regular Bedrock server's port on its Properties page. The 
 
    ```bash
    sudo apt update
-   sudo apt install -y ca-certificates curl python3 make g++ wget tar git git-lfs ufw default-jre-headless
+   sudo apt install -y ca-certificates curl python3 make g++ wget tar unzip git git-lfs ufw default-jre-headless
    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
    sudo apt install -y nodejs
    sudo git lfs install --system
@@ -159,7 +189,7 @@ You can also change a regular Bedrock server's port on its Properties page. The 
    sudo ./scripts/configure-ubuntu-firewall.sh
    ```
 
-   If UFW is inactive, review and allow SSH access before enabling it. If the host uses another firewall, create equivalent rules for TCP `3000` and UDP `19132:19199`, `25565:25665`, and `30000:30100`.
+   If UFW is inactive, review and allow SSH access before enabling it. If the host uses another firewall, create equivalent rules for TCP `3000` and UDP `18132:18199`, `19132:19199`, `19200:19299`, `24565:24665`, `25565:25665`, `29000:29100`, and `30000:30100`.
 
 4. Start it interactively for an initial check:
 
@@ -186,7 +216,7 @@ Later updates from `/opt/mc-manager`: `sudo ./scripts/upgrade.sh --mode native`.
 
 On a native install there is no separate publishing step: every managed Bedrock process binds its configured UDP port directly on the Ubuntu host. The firewall rules above cover every port that the manager offers. Server creation also checks that the selected UDP port is not already bound by another process.
 
-The available-port dropdown combines the manager database with a live host UDP bind check. Ports assigned to another managed server or occupied by another host process are not offered, and availability is checked again during creation to prevent races.
+The IPv4 and IPv6 available-port dropdowns combine the manager database with a live host UDP bind check. Ports assigned to another managed server or occupied by another host process are not offered, and availability is checked again during creation to prevent races.
 
 ## Configuration
 
@@ -194,9 +224,9 @@ The available-port dropdown combines the manager database with a live host UDP b
 | --- | --- | --- |
 | `NODE_ENV` | `production` | Runtime mode |
 | `PORT` | `3000` | Web interface and API port |
-| `CONNECT_HOST` | empty | Hostname or IP shown as the Minecraft connect address; auto-detected when empty |
+| `CONNECT_HOST` | empty | Optional IPv4 shown as the Minecraft connect address; hostnames are ignored and the LAN IP is used instead |
 | `LOG_LEVEL` | `info` | Application logging level |
-| `TZ` | `UTC` | Container timezone |
+| `TZ` | unset | Leave unset to follow the host timezone (`/etc/localtime`). Set only to override |
 | `AUTO_UPDATE_CHECK_INTERVAL` | `86400` | Update-check interval in seconds |
 | `CURSEFORGE_API_KEY` | empty | Optional CurseForge API credential; can also be set in Catalog Settings |
 | `GIT_CATALOG_ENABLED` | empty | Optional Git catalog enable flag when no UI value exists |
@@ -287,6 +317,8 @@ Runtime state is intentionally excluded from Git. It includes:
 - `data/git-catalog/` — cloned Git catalog repository
 - `data/uploads/` — temporary uploads
 - `data/logs/` — application logs
+- `data/bedrock-connect/` — runtime Bedrock Connect JAR archive and version index
+- `data/phantom/` — runtime copy of the bundled Phantom binary, plus any later downloaded updates
 
 Stop active servers before taking a consistent backup. Restore the entire data directory or Docker volume together. `scripts/upgrade.sh` writes an extra copy under `upgrade-backups/` unless you pass `--skip-backup`.
 
@@ -296,6 +328,7 @@ Stop active servers before taking a consistent backup. Restore the entire data d
 - The CurseForge catalog is more reliable with an API key; a Git catalog can be used instead or in addition.
 - Automatic Bedrock binary provisioning may fall back to a test stub; verify the official binary before production use.
 - Player bans are enforced by the manager when it observes a player connection; Bedrock Dedicated Server does not provide a standalone native ban-list file equivalent to Java Edition.
+- Console LAN listing uses Phantom and does not support Nintendo Switch. It cannot share UDP `19132`/`19133` with a running Bedrock Connect instance; stop or remove Bedrock Connect to start LAN listing. Current Bedrock Dedicated Server also requires LAN visibility to accept IP joins.
 
 ## Contributing and security
 

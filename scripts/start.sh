@@ -43,6 +43,7 @@ mkdir -p "${DATA_DIR}/mods"
 mkdir -p "${DATA_DIR}/mods/thumbs"
 mkdir -p "${DATA_DIR}/git-catalog"
 mkdir -p "${DATA_DIR}/bedrock-connect"
+mkdir -p "${DATA_DIR}/phantom"
 mkdir -p "${LOG_DIR}"
 mkdir -p "${DATA_DIR}/uploads"
 

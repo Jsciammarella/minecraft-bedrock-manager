@@ -99,13 +99,46 @@ function PlayerManagement() {
     }
   };
 
+  const runningGameServers = servers.filter(
+    (s) => s.status === 'running' && s.kind !== 'bedrock_connect'
+  );
+
   const handleScan = async (serverId) => {
     setScanning(true);
     setScanServerId(serverId);
     setError('');
     try {
       const res = await playerApi.scan(serverId);
-      setSuccess(`Scanned ${res.scanned} players, added ${res.added || 0} new`);
+      const scanned = res.data?.scanned ?? 0;
+      const added = res.data?.added ?? 0;
+      setSuccess(`Scanned ${scanned} players, added ${added} new`);
+      loadPlayers();
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Scan failed');
+    } finally {
+      setScanning(false);
+      setScanServerId(null);
+    }
+  };
+
+  const handleScanAll = async () => {
+    if (runningGameServers.length === 0) {
+      setError('No running game servers to scan');
+      return;
+    }
+    setScanning(true);
+    setScanServerId('all');
+    setError('');
+    try {
+      let scanned = 0;
+      let added = 0;
+      for (const srv of runningGameServers) {
+        const res = await playerApi.scan(srv.id);
+        scanned += res.data?.scanned ?? 0;
+        added += res.data?.added ?? 0;
+      }
+      setSuccess(`Scanned ${scanned} players, added ${added} new`);
       loadPlayers();
       setTimeout(() => setSuccess(''), 4000);
     } catch (err) {
@@ -145,6 +178,20 @@ function PlayerManagement() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {runningGameServers.length > 0 && (
+            <button
+              onClick={handleScanAll}
+              disabled={scanning}
+              className="btn btn-secondary"
+            >
+              {scanning && scanServerId === 'all' ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Scan className="w-4 h-4" />
+              )}
+              Scan Server
+            </button>
+          )}
           <button
             onClick={() => setShowAddModal(true)}
             className="btn btn-primary"
@@ -188,14 +235,14 @@ function PlayerManagement() {
         <div className="mt-4 pt-4 border-t border-mc-surfaceLight">
           <p className="text-sm text-mc-textMuted mb-3">Scan running servers for players:</p>
           <div className="flex flex-wrap gap-2">
-            {servers.filter(s => s.status === 'running').length === 0 ? (
+            {runningGameServers.length === 0 ? (
               <p className="text-sm text-mc-textMuted">No running servers to scan</p>
             ) : (
-              servers.filter(s => s.status === 'running').map(server => (
+              runningGameServers.map(server => (
                 <button
                   key={server.id}
                   onClick={() => handleScan(server.id)}
-                  disabled={scanning && scanServerId !== server.id}
+                  disabled={scanning}
                   className="btn btn-secondary text-sm"
                 >
                   {scanning && scanServerId === server.id ? (
@@ -224,8 +271,8 @@ function PlayerManagement() {
               <button onClick={() => setShowAddModal(true)} className="btn btn-primary">
                 <Plus className="w-4 h-4" /> Add Player
               </button>
-              {servers.some(s => s.status === 'running') && (
-                <button onClick={() => handleScan(servers.find(s => s.status === 'running').id)} className="btn btn-secondary">
+              {runningGameServers.length > 0 && (
+                <button onClick={handleScanAll} disabled={scanning} className="btn btn-secondary">
                   <Scan className="w-4 h-4" /> Scan Server
                 </button>
               )}

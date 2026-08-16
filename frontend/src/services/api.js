@@ -10,7 +10,7 @@ const api = axios.create({
 export const serverApi = {
   getAll: () => api.get('/servers'),
   getById: (id) => api.get(`/servers/${id}`),
-  create: (data) => api.post('/servers', data),
+  create: (data) => api.post('/servers', data, { timeout: 60000 }),
   update: (id, data) => api.put(`/servers/${id}`, data),
   delete: (id) => api.delete(`/servers/${id}`),
   start: (id) => api.post(`/servers/${id}/start`),
@@ -19,12 +19,14 @@ export const serverApi = {
   restartWithWarning: (id) => api.post(`/servers/${id}/restart-with-warning`),
   cancelWarnedRestart: (id) => api.delete(`/servers/${id}/restart-with-warning`),
   command: (id, cmd) => api.post(`/servers/${id}/command`, { command: cmd }),
-  updateVersion: (id, version) => api.post(`/servers/${id}/update`, { version }),
+  updateVersion: (id, version) => api.post(`/servers/${id}/update`, { version }, { timeout: 120000 }),
   checkUpdates: () => api.get('/servers/check-updates'),
   previewBedrockConnect: () => api.get('/servers/bedrock-connect/preview'),
   createBedrockConnect: (data) => api.post('/servers/bedrock-connect', data, { timeout: 120000 }),
   bedrockConnectVersions: () => api.get('/servers/bedrock-connect/versions'),
   checkBedrockConnectUpdates: () => api.post('/servers/bedrock-connect/check-updates', {}, { timeout: 120000 }),
+  previewLanBroadcast: (id) => api.get(`/servers/${id}/lan-broadcast`),
+  setLanBroadcast: (id, data) => api.put(`/servers/${id}/lan-broadcast`, data, { timeout: 120000 }),
   
   // Auto-update management
   getAutoUpdate: (id) => api.get(`/servers/${id}/auto-update`),
@@ -103,7 +105,7 @@ export const portApi = {
 export const publicApi = {
   overview: () => api.get('/v1/overview'),
   serverStatus: (id) => api.get(`/v1/server/${id}`),
-  health: () => api.get('/v1/health'),
+  health: () => api.get('/health'),
 };
 
 export default api;

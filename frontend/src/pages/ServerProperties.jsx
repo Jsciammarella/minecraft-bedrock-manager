@@ -21,6 +21,7 @@ function ServerProperties() {
 
   const [formData, setFormData] = useState({
     port: '',
+    ipv6_port: '',
     max_players: '10',
     difficulty: 'peaceful',
     gamemode: 'survival',
@@ -62,6 +63,7 @@ function ServerProperties() {
       setFormData(prev => ({
         ...prev,
         port: String(res.data.port || ''),
+        ipv6_port: String(res.data.ipv6_port || ''),
         max_players: String(res.data.max_players || 10),
         difficulty: res.data.difficulty || 'peaceful',
         gamemode: res.data.gamemode || 'survival',
@@ -102,7 +104,6 @@ function ServerProperties() {
   };
 
   const handleAutoUpdateToggle = async () => {
-    if (server?.kind === 'bedrock_connect') return;
     setAutoUpdating(true);
     setError('');
     setSuccess('');
@@ -146,11 +147,28 @@ function ServerProperties() {
     setSuccess('');
 
     try {
-      if (server?.kind === 'bedrock_connect') return;
-      await serverApi.update(id, {
+      if (server?.kind === 'bedrock_connect') {
+        if (autoUpdateEnabled) {
+          await serverApi.enableAutoUpdate(id, autoUpdateInterval);
+        }
+        navigate(`/servers/${id}`, {
+          replace: true,
+          state: { message: 'Auto-update settings saved successfully.' },
+        });
+        return;
+      }
+      const payload = {
         ...formData,
         port: formData.port === '' ? undefined : parseInt(formData.port, 10),
-      });
+      };
+      delete payload.ipv6_port;
+      if (
+        formData.ipv6_port !== ''
+        && Number(formData.ipv6_port) !== Number(server.ipv6_port)
+      ) {
+        payload.ipv6Port = parseInt(formData.ipv6_port, 10);
+      }
+      await serverApi.update(id, payload);
       navigate(`/servers/${id}`, {
         replace: true,
         state: { message: 'Server properties saved successfully.' },
@@ -174,13 +192,23 @@ function ServerProperties() {
   }
 
   const isBC = server?.kind === 'bedrock_connect';
+  const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
+  const ipv6Available = (ports.available || []).filter((item) => item.family === 'ipv6');
   const portOptions = [];
   if (server?.port) portOptions.push(Number(server.port));
   if (server?.pending_port && !portOptions.includes(Number(server.pending_port))) {
     portOptions.push(Number(server.pending_port));
   }
-  for (const item of ports.available || []) {
+  for (const item of ipv4Available) {
     if (!portOptions.includes(item.port)) portOptions.push(item.port);
+  }
+  const ipv6Options = [];
+  if (server?.ipv6_port) ipv6Options.push(Number(server.ipv6_port));
+  if (server?.pending_ipv6_port && !ipv6Options.includes(Number(server.pending_ipv6_port))) {
+    ipv6Options.push(Number(server.pending_ipv6_port));
+  }
+  for (const item of ipv6Available) {
+    if (!ipv6Options.includes(item.port)) ipv6Options.push(item.port);
   }
 
   return (
@@ -198,7 +226,7 @@ function ServerProperties() {
 
       {isBC && (
         <div className="mb-6 p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
-          Bedrock Connect only supports start, stop, and restart. These settings do not apply and cannot be changed.
+          Bedrock Connect port and gameplay settings cannot be changed. Auto-update works the same as a normal server.
         </div>
       )}
 
@@ -220,7 +248,7 @@ function ServerProperties() {
         <Section title="General Settings">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-mc-text mb-2">Server Port</label>
+              <label className="block text-sm font-medium text-mc-text mb-2">IPv4 Port</label>
               <select
                 name="port"
                 value={formData.port}
@@ -236,11 +264,37 @@ function ServerProperties() {
               <p className="mt-2 text-xs text-mc-textMuted">
                 {isBC
                   ? 'Bedrock Connect must stay on UDP 19132 so consoles can reach it.'
-                  : 'Only the current port and other open manager ports are shown. A new port applies after restart if the server is running.'}
+                  : 'Only the current IPv4 port and other open IPv4 manager ports are shown. A new port applies after restart if the server is running.'}
               </p>
               {server?.pending_port && Number(server.pending_port) !== Number(server.port) && (
                 <p className="mt-1 text-xs text-amber-300">
-                  Port {server.pending_port} is queued and will apply on the next restart.
+                  IPv4 port {server.pending_port} is queued and will apply on the next restart.
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-mc-text mb-2">IPv6 Port</label>
+              <select
+                name="ipv6_port"
+                value={formData.ipv6_port}
+                onChange={handleChange}
+                className="input"
+                disabled={isBC}
+                required={!isBC}
+              >
+                {isBC && !formData.ipv6_port && <option value="">19133</option>}
+                {ipv6Options.map((port) => (
+                  <option key={port} value={port}>{port}</option>
+                ))}
+              </select>
+              <p className="mt-2 text-xs text-mc-textMuted">
+                {isBC
+                  ? 'Bedrock Connect uses UDP 19133 for IPv6 discovery.'
+                  : 'Must be a different number from the IPv4 port. Defaults to 1000 below IPv4 when that port is free. A new port applies after restart if the server is running.'}
+              </p>
+              {server?.pending_ipv6_port && Number(server.pending_ipv6_port) !== Number(server.ipv6_port) && (
+                <p className="mt-1 text-xs text-amber-300">
+                  IPv6 port {server.pending_ipv6_port} is queued and will apply on the next restart.
                 </p>
               )}
             </div>
@@ -312,7 +366,9 @@ function ServerProperties() {
           <div className="space-y-4">
             <div className="p-4 bg-mc-darker rounded-lg">
               <p className="text-sm text-mc-textMuted mb-3">
-                Automatically check for and install server updates. Updates will only be applied when the server is stopped, and addons/worlds will be preserved.
+                {isBC
+                  ? 'Automatically check for and install Bedrock Connect JAR updates. Updates apply when Bedrock Connect is stopped.'
+                  : 'Automatically check for and install server updates. Updates will only be applied when the server is stopped, and addons/worlds will be preserved.'}
               </p>
               <div className="flex items-center justify-between">
                 <div>
@@ -322,8 +378,8 @@ function ServerProperties() {
                 <button
                   type="button"
                   onClick={handleAutoUpdateToggle}
-                  disabled={autoUpdating || isBC}
-                  className={`toggle ${autoUpdateEnabled ? 'toggle-active' : 'toggle-inactive'} ${isBC ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  disabled={autoUpdating}
+                  className={`toggle ${autoUpdateEnabled ? 'toggle-active' : 'toggle-inactive'}`}
                 >
                   <span className={`toggle-thumb ${autoUpdateEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
                 </button>
@@ -336,7 +392,6 @@ function ServerProperties() {
                   value={autoUpdateInterval}
                   onChange={(e) => setAutoUpdateInterval(parseInt(e.target.value))}
                   className="input"
-                  disabled={isBC}
                 >
                   <option value={1}>Every hour</option>
                   <option value={4}>Every 4 hours</option>
@@ -353,7 +408,7 @@ function ServerProperties() {
 
         {/* Submit */}
         <div className="flex items-center gap-3 pt-4 border-t border-mc-surfaceLight">
-          <button type="submit" disabled={saving || isBC} className="btn btn-primary flex-1">
+          <button type="submit" disabled={saving} className="btn btn-primary flex-1">
             {saving ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />

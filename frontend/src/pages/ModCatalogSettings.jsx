@@ -257,6 +257,7 @@ function ModCatalogSettings() {
             </button>
           </div>
 
+          <div className={!gitEnabled ? 'opacity-50' : ''}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="md:col-span-2">
               <label className="block text-sm font-medium text-mc-text mb-2">Repository URL</label>
@@ -266,6 +267,7 @@ function ModCatalogSettings() {
                 onChange={(e) => setGitUrl(e.target.value)}
                 className="input"
                 placeholder="https://gitlab.example.com/group/bedrock-mod-catalog.git"
+                disabled={!gitEnabled}
               />
             </div>
             <div>
@@ -276,6 +278,7 @@ function ModCatalogSettings() {
                 onChange={(e) => setGitBranch(e.target.value)}
                 className="input"
                 placeholder="main"
+                disabled={!gitEnabled}
               />
             </div>
             <div>
@@ -286,6 +289,7 @@ function ModCatalogSettings() {
                 onChange={(e) => setGitSubdir(e.target.value)}
                 className="input"
                 placeholder="Optional, e.g. mods"
+                disabled={!gitEnabled}
               />
             </div>
             <div>
@@ -297,6 +301,7 @@ function ModCatalogSettings() {
                 className="input"
                 placeholder="Optional. GitLab can use oauth2"
                 autoComplete="off"
+                disabled={!gitEnabled}
               />
             </div>
             <div>
@@ -312,12 +317,14 @@ function ModCatalogSettings() {
                   className="input pr-12"
                   placeholder={gitTokenSet ? 'Leave blank to keep the current token' : 'Personal access token'}
                   autoComplete="off"
+                  disabled={!gitEnabled}
                 />
                 <button
                   type="button"
                   onClick={() => setShowGitToken(value => !value)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-mc-textMuted hover:text-mc-text"
                   title={showGitToken ? 'Hide token' : 'Show token'}
+                  disabled={!gitEnabled}
                 >
                   {showGitToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -331,6 +338,7 @@ function ModCatalogSettings() {
                     setGitTokenSet(false);
                   }}
                   className="mt-2 text-xs text-mc-danger hover:underline"
+                  disabled={!gitEnabled}
                 >
                   Remove stored token
                 </button>
@@ -345,7 +353,7 @@ function ModCatalogSettings() {
                 ? `${gitModCount} mods • last sync ${new Date(gitLastSync).toLocaleString()}`
                 : 'Not synced yet'}
             </p>
-            <button type="button" onClick={handleTest} disabled={testing || !gitUrl} className="btn btn-secondary text-sm">
+            <button type="button" onClick={handleTest} disabled={!gitEnabled || testing || !gitUrl} className="btn btn-secondary text-sm">
               {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
               Test Connection
             </button>
@@ -353,6 +361,7 @@ function ModCatalogSettings() {
               {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
               Sync Now
             </button>
+          </div>
           </div>
         </Section>
 

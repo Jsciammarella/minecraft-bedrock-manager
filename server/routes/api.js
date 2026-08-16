@@ -87,6 +87,8 @@ router.get('/health', (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
+    hostname: connectHost.managerHostname(),
+    lanIp: connectHost.detectLanIPv4() || null,
   });
 });
 

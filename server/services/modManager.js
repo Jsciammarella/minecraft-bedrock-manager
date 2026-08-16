@@ -5,6 +5,8 @@ const { promisify } = require('util');
 const db = require('../db/connection');
 const logger = require('./logger');
 const serverManager = require('./serverManager');
+const packInstaller = require('./packInstaller');
+const packFiles = require('./packFiles');
 const execAsync = promisify(exec);
 
 const MODS_DIR = path.join(__dirname, '../../data/mods');
@@ -20,10 +22,8 @@ class ModManager {
 
   async uploadMod(file, metadata = {}) {
     const ext = path.extname(file.originalname).toLowerCase();
-    const validExts = ['.mcpack', '.mcaddon', '.mcworld', '.zip', '.mctemplate'];
-    
-    if (!validExts.includes(ext)) {
-      throw new Error(`Invalid file type: ${ext}. Allowed: ${validExts.join(', ')}`);
+    if (!packFiles.isImportExt(ext)) {
+      throw new Error(packFiles.unsupportedMessage(ext));
     }
 
     const safeName = this.getAvailableFilename(this.sanitizeFilename(file.originalname));
@@ -47,11 +47,8 @@ class ModManager {
     const fileSize = fs.statSync(filePath).size;
 
     // Determine type from extension
-    let type = 'addon';
-    if (ext === '.mcworld') type = 'world';
-    else if (ext === '.mcpack') type = 'resource_pack';
-    else if (ext === '.mctemplate') type = 'template';
-    else if (metadata.type) type = metadata.type;
+    let type = packFiles.typeFromExt(file.originalname, 'addon');
+    if (metadata.type) type = metadata.type;
 
     // Insert into database
     const insert = db.prepare(`
@@ -93,14 +90,17 @@ class ModManager {
     const existing = db.prepare('SELECT * FROM server_mods WHERE server_id = ? AND mod_id = ?').get(serverId, modId);
     if (existing) throw new Error('Mod already installed on this server');
 
-    // Copy mod to server directory
     const destDir = this.getModDestDir(server.data_path, mod.type);
     fs.mkdirSync(destDir, { recursive: true });
-    const destPath = path.join(destDir, path.basename(mod.file_path));
-    fs.copyFileSync(mod.file_path, destPath);
 
-    // Record installation
-    db.prepare('INSERT INTO server_mods (server_id, mod_id) VALUES (?, ?)').run(serverId, modId);
+    let installManifest = [];
+    installManifest = await packInstaller.installModToServer(server, mod);
+
+    db.prepare(`
+      INSERT INTO server_mods (server_id, mod_id, install_manifest)
+      VALUES (?, ?, ?)
+    `).run(serverId, modId, JSON.stringify(installManifest));
+    packInstaller.syncWorldPackLists(server);
     serverManager.markRestartRequired(serverId, 'Mods installed');
 
     logger.info(`Installed mod ${mod.name} to server ${server.name}`);
@@ -117,15 +117,12 @@ class ModManager {
     const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
     if (!mod) throw new Error('Mod not found');
 
-    // Remove from server directory
-    const destDir = this.getModDestDir(server.data_path, mod.type);
-    const destPath = path.join(destDir, path.basename(mod.file_path));
-    if (fs.existsSync(destPath)) {
-      fs.unlinkSync(destPath);
-    }
-
-    // Remove from database
+    const installation = db.prepare(
+      'SELECT install_manifest FROM server_mods WHERE server_id = ? AND mod_id = ?'
+    ).get(serverId, modId);
     db.prepare('DELETE FROM server_mods WHERE server_id = ? AND mod_id = ?').run(serverId, modId);
+    packInstaller.uninstallModFromServer(server, mod, installation?.install_manifest);
+    packInstaller.syncWorldPackLists(server);
     serverManager.markRestartRequired(serverId, 'Mods removed');
 
     logger.info(`Uninstalled mod ${mod.name} from server ${server.name}`);
@@ -273,12 +270,14 @@ class ModManager {
         return path.join(serverPath, 'behavior_packs');
       case 'resource_pack':
       case 'texture_pack':
-        return path.join(serverPath, 'texture_packs');
+        return path.join(serverPath, 'resource_packs');
       case 'world':
       case 'map':
         return path.join(serverPath, 'worlds');
       case 'template':
-        return path.join(serverPath, 'resource_packs');
+        return path.join(serverPath, 'worlds');
+      case 'structure':
+        return path.join(serverPath, 'worlds');
       default:
         return path.join(serverPath, 'behavior_packs');
     }

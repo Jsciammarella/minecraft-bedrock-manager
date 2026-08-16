@@ -5,6 +5,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
 const logger = require('./services/logger');
+const connectHost = require('./services/connectHost');
 const serverManager = require('./services/serverManager');
 const autoUpdateScheduler = require('./services/autoUpdateScheduler');
 const gitCatalogScheduler = require('./services/gitCatalogScheduler');
@@ -57,7 +58,12 @@ app.use('/api/v1', apiRoutes); // Public API
 
 // Health endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    hostname: connectHost.managerHostname(),
+    lanIp: connectHost.detectLanIPv4() || null,
+  });
 });
 
 // Let client-side routes such as /servers/:id load directly or after refresh.
@@ -166,6 +172,10 @@ server.listen(PORT, '0.0.0.0', () => {
   // Start auto-update scheduler
   autoUpdateScheduler.start();
   gitCatalogScheduler.start();
+
+  serverManager.restoreLanBroadcasts().catch((err) => {
+    logger.warn(`LAN broadcast restore failed: ${err.message}`);
+  });
 });
 
 // Graceful shutdown

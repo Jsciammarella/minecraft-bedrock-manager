@@ -10,6 +10,7 @@ const KEYS = {
   GIT_SUBDIR: 'git_catalog_subdir',
   GIT_LAST_SYNC: 'git_catalog_last_sync',
   BEDROCK_CONNECT_PENDING: 'bedrock_connect_pending',
+  LAN_BROADCAST_PENDING: 'lan_broadcast_pending',
 };
 
 const SECRET_KEYS = new Set([KEYS.CURSEFORGE_API_KEY, KEYS.GIT_TOKEN]);
