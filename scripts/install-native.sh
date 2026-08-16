@@ -133,6 +133,9 @@ systemctl enable --now mc-manager
 systemctl --no-pager --full status mc-manager || true
 
 log "Install complete."
-echo "Open http://<this-host>:${PORT}"
+# shellcheck source=manager-urls.sh
+source "${SCRIPT_DIR}/manager-urls.sh"
+print_manager_connect_urls "${PORT:-3000}"
+echo
 echo "Service: systemctl status mc-manager"
 echo "Later updates from ${APP_DIR}: sudo ./scripts/upgrade.sh --yes"

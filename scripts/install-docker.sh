@@ -95,6 +95,9 @@ log "Building and starting the manager..."
 docker compose up -d --build
 
 log "Install complete."
-echo "Open http://<this-host>:${PORT}"
+# shellcheck source=manager-urls.sh
+source "${SCRIPT_DIR}/manager-urls.sh"
+print_manager_connect_urls "${PORT:-3000}"
+echo
 echo "Data is stored in Docker volumes mc-data and mc-logs. Never run docker compose down -v."
 echo "Later updates from this checkout: sudo ./scripts/upgrade.sh --yes"

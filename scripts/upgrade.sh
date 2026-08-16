@@ -16,6 +16,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(dirname "$SCRIPT_DIR")"
+# shellcheck source=manager-urls.sh
+source "${SCRIPT_DIR}/manager-urls.sh"
 BACKUP_ROOT="${APP_DIR}/upgrade-backups"
 ASSUME_YES=0
 SKIP_BACKUP=0
@@ -308,6 +310,8 @@ wait_for_health || true
 
 echo
 log "Upgrade finished."
+print_manager_connect_urls "$(manager_port)"
+echo
 echo "Start Bedrock servers from the dashboard if they were running before the upgrade."
 if (( ! SKIP_BACKUP )); then
     echo "Backup kept at: $BACKUP_DIR"
