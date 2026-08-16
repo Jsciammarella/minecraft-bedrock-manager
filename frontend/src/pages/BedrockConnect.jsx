@@ -323,6 +323,9 @@ function BedrockConnectPage() {
           <p className="text-sm text-mc-textMuted mt-1 mb-4">
             Accept DNS on this host, answer overrides locally, and forward everything else upstream. Keep UDP/TCP 53 on the LAN only; this proxy is a recursive resolver for anyone who can reach it.
           </p>
+          <div className="mb-4 p-3 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm font-bold leading-relaxed">
+            If you use this server as a DNS proxy, it MUST remain online for your systems to connect to the internet properly, or you must revert those systems back to their automatic DNS settings. If you fail to do this, your systems WILL NOT connect to the internet if this server is taken offline.
+          </div>
           <div className="flex items-center justify-between p-3 bg-mc-darker rounded-lg mb-4">
             <div>
               <p className="text-sm font-medium text-white">Enable DNS proxy</p>
