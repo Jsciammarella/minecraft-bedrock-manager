@@ -536,6 +536,7 @@ class ServerManager {
     this.invalidateServerCache(serverId);
     this.setPendingBedrockConnect(null);
     logger.info(`Created Bedrock Connect on port ${BEDROCK_CONNECT_PORT} (${installed.tag})`);
+    require('./bedrockConnectList').writeList();
     require('./dnsProxy').sync().catch((err) => {
       logger.warn(`DNS proxy sync after Bedrock Connect create failed: ${err.message}`);
     });
@@ -645,6 +646,7 @@ class ServerManager {
     if (ipv6Port) this.registerPort(serverId, ipv6Port, 'udp', 'ipv6');
     this.invalidateServerCache(serverId);
     logger.info(`Server ${server.name} is now on port ${port}`);
+    require('./bedrockConnectList').scheduleSync();
     try {
       if (Number(this.getServer(serverId)?.lan_broadcast) === 1) {
         await this.syncLanBroadcast(serverId);
@@ -727,6 +729,7 @@ class ServerManager {
     this.provisionJobs.set(Number(serverId), job);
 
     logger.info(`Queued server create: ${name} on IPv4 ${port} / IPv6 ${assignedIpv6}`);
+    require('./bedrockConnectList').scheduleSync();
     return { id: serverId, name, port, ipv6Port: assignedIpv6, status: 'creating', dataPath: serverPath };
   }
 
@@ -763,6 +766,7 @@ class ServerManager {
       this.invalidateServerCache(serverId);
       this.broadcastServerStatus(serverId);
       logger.info(`Created server: ${name} on port ${port}`);
+      require('./bedrockConnectList').scheduleSync();
     } catch (err) {
       logger.error(`Failed to finish creating ${name}: ${err.message}`);
       if (!this.getServer(serverId)) return;
@@ -889,14 +893,14 @@ done
     await bedrockConnect.assertJavaAvailable();
     const installed = bedrockConnect.installedJar(server.data_path)
       || bedrockConnect.installJarInto(server.data_path, server.version);
+    const list = require('./bedrockConnectList');
+    list.writeList();
     const sessionKey = this.sessionKey(server.id);
     try {
       const { spawn: spawnPty } = require('node-pty');
       const pty = spawnPty('java', [
         '-jar', installed.jarPath,
-        'nodb=true',
-        `port=${BEDROCK_CONNECT_PORT}`,
-        'bindip=0.0.0.0',
+        ...list.spawnArgs(server.data_path),
       ], {
         name: 'xterm-color',
         cols: 120,
@@ -1201,6 +1205,7 @@ done
     
     this.invalidateServerCache(serverId);
     logger.info(`Deleted server: ${server.name}`);
+    require('./bedrockConnectList').scheduleSync();
     if (wasBedrockConnect) {
       await this.restoreLanBroadcasts();
       await require('./dnsProxy').sync();

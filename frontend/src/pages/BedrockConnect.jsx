@@ -310,6 +310,12 @@ function BedrockConnectPage() {
           <p className="text-sm text-red-400">{error}</p>
         </div>
       )}
+      <div className="card mb-6">
+        <h2 className="text-lg font-semibold text-white mb-1">In-game server list</h2>
+        <p className="text-sm text-mc-textMuted">
+          Bedrock Connect shows every dedicated server from this manager, using this host's LAN IPv4 and that server's game port. Featured servers are hidden. The list updates when you create, delete, or move a server; Bedrock Connect restarts if it is already running so consoles pick up the change.
+        </p>
+      </div>
       {success && (
         <div className="mb-4 p-3 bg-green-500/10 border border-green-500/30 rounded-lg flex items-center gap-2">
           <Check className="w-4 h-4 text-green-400 flex-shrink-0" />
