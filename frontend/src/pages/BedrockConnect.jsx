@@ -23,13 +23,12 @@ function InstructionList({ items }) {
   );
 }
 
-function DnsInstructions({ listenIp, secondaryDns }) {
+function DnsInstructions({ listenIp }) {
   const [platform, setPlatform] = useState('switch');
   const primary = listenIp || 'this host\'s LAN IPv4';
-  const secondary = secondaryDns || '8.8.8.8';
 
   const sharedClose = [
-    `Set the primary DNS to ${primary} and the secondary DNS to ${secondary}.`,
+    `Set the primary DNS to ${primary} and leave the secondary DNS empty.`,
     'Save, reconnect to the network if the console asks you to, then open Minecraft.',
     'Open the Servers tab and join a redirect-compatible featured server (Mineville, Lifeboat, Enchanted, Galaxite, or The Hive) to open Bedrock Connect.',
   ];
@@ -82,7 +81,7 @@ function DnsInstructions({ listenIp, secondaryDns }) {
               'Choose your connection type, then Custom.',
               'Use Automatic for IP address settings and Do Not Specify for DHCP host name.',
               'On DNS Settings choose Manual.',
-              `Enter ${primary} as primary DNS and ${secondary} as secondary DNS.`,
+              `Enter ${primary} as the primary DNS and leave the secondary DNS empty.`,
               'Use Automatic for MTU, Do Not Use for proxy, then test the connection.',
               'Open Minecraft, go to Servers, and join a redirect-compatible featured server.',
             ]} />
@@ -115,7 +114,7 @@ function DnsInstructions({ listenIp, secondaryDns }) {
               'Open Settings → Network & internet and select Wi-Fi or Ethernet.',
               'Open the active connection, then DNS server assignment → Edit.',
               'Choose Manual, enable IPv4, and set the preferred DNS to this host.',
-              `Preferred DNS: ${primary}. Alternate DNS: ${secondary}.`,
+              `Preferred DNS: ${primary}. Leave the alternate DNS empty.`,
               'Save, then either add this host as a Bedrock server or join a featured server if you are using overrides.',
             ]} />
           </div>
@@ -134,7 +133,7 @@ function DnsInstructions({ listenIp, secondaryDns }) {
     <div className="card">
       <h2 className="text-lg font-semibold text-white mb-1">Console DNS setup</h2>
       <p className="text-sm text-mc-textMuted mb-4">
-        Point each console at this manager's IPv4 as its DNS server. Leave a public resolver as secondary so the device still has internet if this host is down.
+        Point each console at this manager's IPv4 as its only DNS server. Leave the secondary DNS empty so the device does not fall back to another resolver.
       </p>
       <div className="flex flex-wrap gap-2 mb-4">
         {PLATFORMS.map((item) => (
@@ -152,7 +151,7 @@ function DnsInstructions({ listenIp, secondaryDns }) {
         <p className="text-xs text-mc-textMuted mb-3">
           Primary DNS: <span className="font-mono text-mc-accent">{primary}</span>
           {' · '}
-          Secondary DNS: <span className="font-mono text-mc-accent">{secondary}</span>
+          Secondary DNS: leave empty
         </p>
         {content[platform]}
       </div>
@@ -320,22 +319,23 @@ function BedrockConnectPage() {
 
       <form onSubmit={handleSave} className="space-y-6">
         <div className="card">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
+          <h2 className="text-lg font-semibold text-white">Local DNS proxy</h2>
+          <p className="text-sm text-mc-textMuted mt-1 mb-4">
+            Accept DNS on this host, answer overrides locally, and forward everything else upstream. Keep UDP/TCP 53 on the LAN only; this proxy is a recursive resolver for anyone who can reach it.
+          </p>
+          <div className="flex items-center justify-between p-3 bg-mc-darker rounded-lg mb-4">
             <div>
-              <h2 className="text-lg font-semibold text-white">Local DNS proxy</h2>
-              <p className="text-sm text-mc-textMuted mt-1">
-                Accept DNS on this host, answer overrides locally, and forward everything else upstream. Keep UDP/TCP 53 on the LAN only; this proxy is a recursive resolver for anyone who can reach it.
-              </p>
+              <p className="text-sm font-medium text-white">Enable DNS proxy</p>
+              <p className="text-xs text-mc-textMuted">Answer overrides on this host and forward everything else upstream</p>
             </div>
-            <label className="flex items-center gap-2 text-sm text-mc-text cursor-pointer">
-              <input
-                type="checkbox"
-                checked={enabled}
-                onChange={(e) => setEnabled(e.target.checked)}
-                className="rounded border-mc-surfaceLight"
-              />
-              Enable DNS proxy
-            </label>
+            <button
+              type="button"
+              onClick={() => setEnabled(value => !value)}
+              className={`toggle ${enabled ? 'toggle-active' : 'toggle-inactive'}`}
+              aria-pressed={enabled}
+            >
+              <span className={`toggle-thumb ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+            </button>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
             <div className="rounded-lg bg-mc-darker p-3">
@@ -387,7 +387,7 @@ function BedrockConnectPage() {
           </div>
         </div>
 
-        <DnsInstructions listenIp={dns?.listenIp} secondaryDns={dns?.secondaryDns} />
+        <DnsInstructions listenIp={dns?.listenIp} />
 
         <div className="card">
           <h2 className="text-lg font-semibold text-white mb-1">Known featured servers</h2>

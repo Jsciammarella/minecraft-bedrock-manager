@@ -223,7 +223,6 @@ function publicConfig() {
     listenIp: listen,
     hostNameservers: host,
     resolvedUpstreams,
-    secondaryDns: resolvedUpstreams[0] || host[0] || '8.8.8.8',
     knownServers: KNOWN_SERVERS,
     knownServersNote: 'These hostnames and example addresses come from the Bedrock Connect documentation. They are not live lookups. Public IPs change, some names use DNSSEC, and CubeCraft is intentionally omitted. Verify current records before relying on a redirect.',
     ...config,
