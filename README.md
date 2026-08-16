@@ -6,7 +6,7 @@ A self-hosted web console for creating and operating multiple Minecraft Bedrock 
 
 - Server creation with separate IPv4 and IPv6 available-port selectors
 - Bedrock Connect for consoles (Xbox, PlayStation, Nintendo Switch) on UDP `19132` / `19133`
-- Per-server console LAN listing (Xbox, PlayStation, Windows, iOS, Android) via [Phantom](https://github.com/jhead/phantom)
+- Per-server console LAN listing (Xbox, PlayStation, Windows, iOS, Android)
 - Start, stop, immediate restart, and five-minute warned restart controls
 - A server-specific live console with per-server command history
 - Per-server allowlists, player permissions, and ban lists
@@ -140,18 +140,18 @@ New servers default to the next free IPv4 port. The IPv6 port defaults to 1000 b
 
 ### Console LAN listing
 
-Consoles look for LAN games by pinging UDP `19132`. A dedicated server that already uses that port is visible on the LAN by itself (`enable-lan-visibility=true`). Current Bedrock Dedicated Server also tries to bind `19132`/`19133` for LAN when that setting is left at its default, which fights with extra servers and with Phantom. The manager therefore turns LAN visibility off except for a native `19132` instance, uses a distinct IPv6 port, and advertises other servers with Phantom. New servers enable the LAN toggle by default so Xbox can see them under Friends → LAN Games.
+Consoles look for LAN games by pinging UDP `19132` (and `19133` for IPv6). Current Bedrock Dedicated Server (1.26.30+) sends empty RakNet pongs unless `enable-lan-visibility=true`, which is why IP joins fail with the silverfish error and why Xbox sees no LAN game. The manager therefore leaves LAN visibility on so the dedicated server advertises itself and accepts connections. That also binds `19132`/`19133`, so Phantom is not started for that instance. New servers enable the LAN toggle by default.
 
-Docker Compose uses Linux host networking, so Bedrock and Phantom bind UDP on the Ubuntu host itself. There is no docker-proxy port mapping to miss. The Xbox must be on the same LAN as the host.
+Docker Compose uses Linux host networking, so Bedrock binds UDP on the Ubuntu host itself. There is no docker-proxy port mapping to miss. The Xbox must be on the same LAN as the host. Direct joins use the tile address (`LAN-IPv4:game-port`), for example `10.0.1.142:19134`, not UDP `19132`.
 
-The manager ships [Phantom](https://github.com/jhead/phantom) (MIT license) binaries under `vendor/phantom/` (currently `v0.5.3`) and copies the matching one into `data/phantom/` on first use. It does not need GitHub to start. The daily auto-update check looks for a newer Phantom release and downloads it only if GitHub is reachable. Each enabled server gets its own Phantom process: consoles still discover games on UDP `19132` (Phantom uses `SO_REUSEPORT` so several listings can share that port), and game traffic is proxied on UDP `19200-19299` to this host's auto-detected LAN IPv4 on the game port (loopback only if no LAN address is found). `CONNECT_HOST` is not used for that target; it only controls the address shown on dashboard tiles. While a server is proxied, the dashboard shows **Phantom Proxy** instead of `IP:port`.
+The manager still ships [Phantom](https://github.com/jhead/phantom) (MIT license) binaries under `vendor/phantom/` (currently `v0.5.3`) for older Bedrock builds and for a possible later multi-server proxy path. It copies the matching binary into `data/phantom/` on first use. `CONNECT_HOST` only controls the IPv4 shown on dashboard tiles.
 
 This is the easier path for Xbox, PlayStation, Windows, iOS, and Android on the same LAN. It does **not** replace Bedrock Connect:
 
-- Nintendo Switch is not supported by Phantom. Switch players still need Bedrock Connect and DNS rewrites.
-- Bedrock Connect also binds UDP `19132` and `19133`. Starting Bedrock Connect stops every Phantom process and waits until those discovery ports are free. While Bedrock Connect is running, LAN proxies stay paused. Stop or remove Bedrock Connect to start LAN proxy again. A stopped Bedrock Connect instance does not block LAN listing.
+- Nintendo Switch is not supported by LAN listing. Switch players still need Bedrock Connect and DNS rewrites.
+- Bedrock Connect also binds UDP `19132` and `19133`. Starting Bedrock Connect stops LAN advertising for dedicated servers that need those discovery ports. Stop or remove Bedrock Connect to restore LAN listing. A stopped Bedrock Connect instance does not block LAN listing.
 
-If another managed game server occupies UDP `19132`, the manager asks you to move it (immediate restart or the five-minute warned restart) and then enables LAN listing for both that server and the one you toggled, so the moved server does not disappear from consoles.
+If another managed game server occupies UDP `19132` as its game port, move it so discovery and the game port stay distinct.
 
 ## Native Ubuntu installation
 
@@ -326,7 +326,7 @@ Stop active servers before taking a consistent backup. Restore the entire data d
 - The CurseForge catalog is more reliable with an API key; a Git catalog can be used instead or in addition.
 - Automatic Bedrock binary provisioning may fall back to a test stub; verify the official binary before production use.
 - Player bans are enforced by the manager when it observes a player connection; Bedrock Dedicated Server does not provide a standalone native ban-list file equivalent to Java Edition.
-- Console LAN listing uses Phantom and does not support Nintendo Switch. It cannot share UDP `19132`/`19133` with a running Bedrock Connect instance; stop or remove Bedrock Connect to start LAN proxy.
+- Console LAN listing does not support Nintendo Switch. It cannot share UDP `19132`/`19133` with a running Bedrock Connect instance; stop or remove Bedrock Connect to restore LAN listing. Current Bedrock Dedicated Server also requires LAN visibility to accept IP joins.
 
 ## Contributing and security
 

@@ -199,6 +199,7 @@ function start(server, { proxyPort } = {}) {
     '-bind', '0.0.0.0',
     '-bind_port', String(port),
     '-timeout', '60',
+    '-6',
   ], {
     cwd: BIN_DIR,
     windowsHide: true,
@@ -261,10 +262,11 @@ async function startAndWait(server, options = {}) {
 
 function statusFor(server) {
   const id = Number(server.id);
-  const native = Number(server.port) === DISCOVERY_PORT && server.kind !== 'bedrock_connect';
+  const native = server.kind !== 'bedrock_connect';
+  const running = server.status === 'running' || server.status === 'starting';
   return {
     enabled: Number(server.lan_broadcast) === 1,
-    active: native || isActive(id),
+    active: native && running,
     native,
     proxyPort: server.lan_proxy_port || getProxyPort(id),
     error: getError(id),

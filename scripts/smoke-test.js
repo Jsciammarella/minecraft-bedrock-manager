@@ -201,8 +201,8 @@ async function run() {
     false
   );
   assert.equal(
-    connectHost.attach({ port: 19140, lan: { enabled: true, active: true, native: false } }, { headers: { host: '10.0.0.8:3000' } }).connectAddress,
-    'Phantom Proxy'
+    connectHost.attach({ port: 19140, lan: { enabled: true, active: true, native: false } }, { headers: { host: '10.0.0.8:3000' } }).connectAddress.endsWith(':19140'),
+    true
   );
 
   const packPath = path.join(testRoot, 'library-mod.mcaddon');
@@ -281,10 +281,9 @@ async function run() {
   assert.equal(nativeLan.native, true);
   const nativeEnabled = await serverManager.setLanBroadcast(occupant.lastInsertRowid, true);
   assert.equal(nativeEnabled.native, true);
-  const lanConflictPreview = await serverManager.previewLanBroadcast(portServer.lastInsertRowid);
-  assert.equal(lanConflictPreview.allowed, true);
-  assert(lanConflictPreview.conflict, 'LAN preview should report a 19132 conflict');
-  assert.equal(lanConflictPreview.conflict.serverId, occupant.lastInsertRowid);
+  const extraLanPreview = await serverManager.previewLanBroadcast(portServer.lastInsertRowid);
+  assert.equal(extraLanPreview.allowed, true);
+  assert.equal(extraLanPreview.native, true);
 
   db.prepare('DELETE FROM servers WHERE id = ?').run(occupant.lastInsertRowid);
   const bcPath = path.join(testRoot, 'bedrock-connect');

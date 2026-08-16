@@ -211,55 +211,21 @@ class ServerManager {
         lan: lanBroadcast.statusFor(server),
       };
     }
-    if (Number(server.port) === lanBroadcast.DISCOVERY_PORT) {
-      return {
-        allowed: true,
-        native: true,
-        conflict: null,
-        message: 'This server already uses UDP 19132, so consoles on the same LAN can see it without a proxy.',
-        lan: lanBroadcast.statusFor({ ...server, lan_broadcast: 1 }),
-      };
-    }
     if (this.isBedrockConnectActive()) {
       return {
         allowed: false,
         reason: 'bedrock_connect_occupies',
-        message: 'Bedrock Connect is running on UDP 19132. Stop or remove Bedrock Connect to start LAN proxy.',
+        message: 'Bedrock Connect is running on UDP 19132. Stop or remove Bedrock Connect to start LAN listing.',
         lan: lanBroadcast.statusFor(server),
       };
     }
-    if (lanBroadcast.isActive(serverId) || [...this.getAllServers()].some(item => lanBroadcast.isActive(item.id))) {
-      return { allowed: true, native: false, conflict: null, lan: lanBroadcast.statusFor(server) };
-    }
-    const occupant = db.prepare('SELECT * FROM servers WHERE port = ? AND id != ?').get(lanBroadcast.DISCOVERY_PORT, serverId);
-    if (occupant && !this.isBedrockConnect(occupant)) {
-      const nextPort = await this.nextAvailablePort({
-        exclude: [lanBroadcast.DISCOVERY_PORT, occupant.port, server.port],
-      });
-      return {
-        allowed: true,
-        native: false,
-        conflict: {
-          serverId: occupant.id,
-          serverName: occupant.name,
-          status: occupant.status,
-          currentPort: occupant.port,
-          nextPort,
-        },
-        message: `${occupant.name} is using UDP 19132. Consoles look for LAN games on that port, so it must be moved before LAN listing can start.`,
-        lan: lanBroadcast.statusFor(server),
-      };
-    }
-    const free = await this.isUdpPortAvailable(lanBroadcast.DISCOVERY_PORT);
-    if (!free) {
-      return {
-        allowed: false,
-        reason: 'port_blocked',
-        message: 'UDP 19132 is in use by another process. Free it before enabling LAN listing.',
-        lan: lanBroadcast.statusFor(server),
-      };
-    }
-    return { allowed: true, native: false, conflict: null, lan: lanBroadcast.statusFor(server) };
+    return {
+      allowed: true,
+      native: true,
+      conflict: null,
+      message: 'This Bedrock server advertises itself on UDP 19132/19133. Phantom is not used, because current Bedrock needs LAN visibility on to accept connections.',
+      lan: lanBroadcast.statusFor({ ...server, lan_broadcast: 1 }),
+    };
   }
 
   async setLanBroadcast(serverId, enabled, { acceptConflict = false, restartMode = 'immediate' } = {}) {
@@ -344,18 +310,10 @@ class ServerManager {
       lanBroadcast.stop(serverId);
       return lanBroadcast.statusFor(server);
     }
-    if (Number(server.port) === lanBroadcast.DISCOVERY_PORT) return lanBroadcast.statusFor(server);
-    if (server.status === 'creating') {
-      lanBroadcast.stop(serverId);
-      return lanBroadcast.statusFor(server);
-    }
-    if (lanBroadcast.isActive(serverId)) return lanBroadcast.statusFor(server);
+    // BDS 1.26.30+ needs enable-lan-visibility=true to send a valid MOTD pong.
+    // That binds UDP 19132/19133 natively, so Phantom must not also bind them.
     lanBroadcast.stop(serverId);
-    const session = await lanBroadcast.startAndWait(server);
-    db.prepare('UPDATE servers SET lan_proxy_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-      .run(session.proxyPort, serverId);
-    this.invalidateServerCache(serverId);
-    return lanBroadcast.statusFor(this.getServer(serverId));
+    return lanBroadcast.statusFor(server);
   }
 
   async restoreLanBroadcasts() {
@@ -735,8 +693,9 @@ class ServerManager {
       fs.mkdirSync(path.join(serverPath, 'worlds'), { recursive: true });
       fs.mkdirSync(path.join(serverPath, 'resource_packs'), { recursive: true });
 
+      const propsPath = path.join(serverPath, 'server.properties');
       this.writeServerProperties(
-        path.join(serverPath, 'server.properties'),
+        propsPath,
         this.bedrockRuntimeProperties({
           name,
           port,
@@ -746,7 +705,7 @@ class ServerManager {
           gamemode,
           server_description: description,
           data_path: serverPath,
-        })
+        }, this.readServerProperties(propsPath))
       );
       fs.writeFileSync(path.join(serverPath, 'allowlist.json'), '[]\n');
       fs.writeFileSync(path.join(serverPath, 'permissions.json'), '[]\n');
@@ -966,6 +925,9 @@ done
 
     try {
       this.writeRuntimeServerProperties(current);
+      // BDS LAN visibility binds 19132/19133. Free those before spawn so Phantom
+      // cannot hold them and so Xbox can see the native LAN advertisement.
+      require('./lanBroadcast').stopAll();
       fs.chmodSync(serverBin, '755');
 
       const { spawn: spawnPty } = require('node-pty');
@@ -1349,7 +1311,6 @@ done
 
   bedrockRuntimeProperties(server, existing = {}) {
     const v4 = Number(server.port);
-    const nativeLan = v4 === BEDROCK_CONNECT_PORT;
     const props = { ...existing };
     delete props['enable-cheats'];
     delete props['default-player-permission'];
@@ -1365,7 +1326,9 @@ done
       'level-name': existing['level-name'] || server.name,
       'server-port': String(v4),
       'server-portv6': String(server.ipv6_port || this.preferredOrFallbackIpv6(v4)),
-      'enable-lan-visibility': nativeLan ? 'true' : 'false',
+      // BDS 1.26.30+ sends empty 33-byte RakNet pongs unless LAN visibility is on,
+      // which is the silverfish / cannot-join failure. This also binds UDP 19132/19133.
+      'enable-lan-visibility': 'true',
       'max-players': String(server.max_players || existing['max-players'] || 10),
       'allow-list': existing['allow-list'] || 'false',
       difficulty: server.difficulty || existing.difficulty || 'peaceful',

@@ -114,9 +114,7 @@ function attach(server, req) {
     connectHost,
     lanIp: connectHost,
     managerHostname: managerHostname(),
-    connectAddress: isPhantomProxied(server)
-      ? 'Phantom Proxy'
-      : formatAddress(connectHost, server.port),
+    connectAddress: formatAddress(connectHost, server.port),
   };
 }
 
