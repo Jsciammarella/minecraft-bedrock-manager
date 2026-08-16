@@ -66,6 +66,8 @@ USER root
 
 # Expose port
 EXPOSE ${PORT}
+EXPOSE 53/udp
+EXPOSE 53/tcp
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

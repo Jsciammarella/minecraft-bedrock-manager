@@ -16,6 +16,8 @@ const modRoutes = require('./routes/mods');
 const playerRoutes = require('./routes/players');
 const portRoutes = require('./routes/ports');
 const apiRoutes = require('./routes/api');
+const bedrockConnectRoutes = require('./routes/bedrockConnect');
+const dnsProxy = require('./services/dnsProxy');
 
 const app = express();
 const server = http.createServer(app);
@@ -54,6 +56,7 @@ app.use('/api/servers', serverRoutes);
 app.use('/api/mods', modRoutes);
 app.use('/api/players', playerRoutes);
 app.use('/api/ports', portRoutes);
+app.use('/api/bedrock-connect', bedrockConnectRoutes);
 app.use('/api/v1', apiRoutes); // Public API
 
 // Health endpoint
@@ -176,6 +179,9 @@ server.listen(PORT, '0.0.0.0', () => {
   serverManager.restoreLanBroadcasts().catch((err) => {
     logger.warn(`LAN broadcast restore failed: ${err.message}`);
   });
+  dnsProxy.sync().catch((err) => {
+    logger.warn(`DNS proxy restore failed: ${err.message}`);
+  });
 });
 
 // Graceful shutdown
@@ -183,6 +189,7 @@ const gracefulShutdown = (signal) => {
   logger.info(`${signal} received, shutting down...`);
   autoUpdateScheduler.stop();
   gitCatalogScheduler.stop();
+  dnsProxy.stop().catch(() => {});
   serverManager.shutdown();
   server.close(() => {
     logger.info('Server closed');

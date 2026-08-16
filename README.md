@@ -6,6 +6,7 @@ A self-hosted web console for creating and operating multiple Minecraft Bedrock 
 
 - Server creation with separate IPv4 and IPv6 available-port selectors
 - Bedrock Connect for consoles (Xbox, PlayStation, Nintendo Switch) on UDP `19132` / `19133`
+- Optional LAN DNS proxy so consoles can reach that Bedrock Connect list through featured-server redirects
 - Per-server console LAN listing (Xbox, PlayStation, Windows, iOS, Android)
 - Start, stop, immediate restart, and five-minute warned restart controls
 - A server-specific live console with per-server command history
@@ -27,7 +28,7 @@ The recommended installation uses Docker:
 - Docker Engine 24 or newer with Docker Compose v2
 - At least 2 GB RAM, plus memory required by each Bedrock server
 - TCP access to the management port (default `3000`)
-- Host firewall access to the IPv4 game ranges (`19132-19199`, `25565-25665`, `30000-30100`), the matching IPv6 ranges 1000 ports lower (`18132-18199`, `24565-24665`, `29000-29100`), and the LAN proxy range (`19200-19299`)
+- Host firewall access to the IPv4 game ranges (`19132-19199`, `25565-25665`, `30000-30100`), the matching IPv6 ranges 1000 ports lower (`18132-18199`, `24565-24665`, `29000-29100`), the LAN proxy range (`19200-19299`), and DNS (`UDP/TCP 53`) if you enable Bedrock Connect DNS
 
 The production image already includes Git, Git LFS, and a Java runtime for Bedrock Connect.
 
@@ -71,7 +72,7 @@ For a native installation:
    | `CURSEFORGE_API_KEY` | Optional. You can also paste this later in **Mod Catalog → Settings** |
    | `GIT_CATALOG_*` | Optional. Preferred configuration is **Mod Catalog → Settings** |
 
-3. Configure the Ubuntu host firewall for the web interface, the IPv4 and IPv6 ports offered by the server-creation dropdowns, and the console LAN proxy range (`19200-19299`):
+3. Configure the Ubuntu host firewall for the web interface, the IPv4 and IPv6 ports offered by the server-creation dropdowns, the console LAN proxy range (`19200-19299`), and DNS port `53` for Bedrock Connect redirects:
 
    ```bash
    sudo ./scripts/configure-ubuntu-firewall.sh
@@ -97,6 +98,7 @@ For a native installation:
 6. First-run checks in the UI:
 
    - Create a Bedrock server from the dashboard
+   - Open **BedrockConnect** after creating a Bedrock Connect server if you want console DNS redirects
    - Open **Mod Catalog → Settings** if you want CurseForge or a Git catalog
    - Confirm each server tile shows the address players should use (`version • IP:port`)
 
@@ -122,7 +124,7 @@ Consoles cannot add custom Bedrock servers themselves. [Bedrock Connect](https:/
 
 Bedrock Connect always uses UDP `19132` (IPv4) and `19133` (IPv6) for discovery. If another managed server already occupies `19132`, the manager asks you to accept moving that server to the next free IPv4 port. You can restart that server immediately or use the five-minute warned restart. After the port is free, Bedrock Connect is created.
 
-DNS rewrites on your network (for example pointing the console's featured-server lookups at this host) remain your responsibility. The manager only runs the JAR (`java -jar BedrockConnect-1.0-SNAPSHOT.jar nodb=true port=19132 bindip=0.0.0.0`).
+DNS rewrites are optional and live on the **BedrockConnect** page after a Bedrock Connect server exists. Enable the local DNS proxy to accept queries on this host's LAN IPv4 port `53`, answer up to 20 hostname overrides (typically featured-server names pointing at this host), and forward every other lookup to the host resolver or up to three upstream DNS servers you choose. Set each console's primary DNS to that LAN IPv4. Keep UDP/TCP `53` on the LAN; do not publish it to the internet. The page includes Switch, Switch 2, PlayStation, Xbox, and PC steps, plus a link to the [Bedrock Connect](https://github.com/Pugmatt/BedrockConnect) repository. Featured-server hostnames are listed as currently documented by that project; public IPs change, so verify them before relying on a redirect. The manager still runs the JAR as `java -jar BedrockConnect-1.0-SNAPSHOT.jar nodb=true port=19132 bindip=0.0.0.0`.
 
 JAR updates are separate from Bedrock Dedicated Server binaries. The current Bedrock Connect release is shipped under `vendor/bedrock-connect/` and copied into `data/bedrock-connect/releases/` on first use, so installs do not need GitHub. The manager checks GitHub releases daily and downloads a newer JAR when one exists. The Update Server dialog lists **Latest** plus up to 10 stored versions. Older JARs are de-listed from that menu but are not deleted from disk. Auto-update can be enabled on the Properties page, the same as a normal server.
 
@@ -189,7 +191,7 @@ If another managed game server occupies UDP `19132` as its game port, the manage
    sudo ./scripts/configure-ubuntu-firewall.sh
    ```
 
-   If UFW is inactive, review and allow SSH access before enabling it. If the host uses another firewall, create equivalent rules for TCP `3000` and UDP `18132:18199`, `19132:19199`, `19200:19299`, `24565:24665`, `25565:25665`, `29000:29100`, and `30000:30100`.
+   If UFW is inactive, review and allow SSH access before enabling it. If the host uses another firewall, create equivalent rules for TCP `3000`, TCP/UDP `53`, and UDP `18132:18199`, `19132:19199`, `19200:19299`, `24565:24665`, `25565:25665`, `29000:29100`, and `30000:30100`.
 
 4. Start it interactively for an initial check:
 
@@ -210,7 +212,7 @@ If another managed game server occupies UDP `19132` as its game port, the manage
    sudo systemctl status mc-manager
    ```
 
-   Review `scripts/mc-manager.service` before copying it if your install path, Node binary, or user differs. The unit loads `/opt/mc-manager/.env`, so that file must exist.
+   Review `scripts/mc-manager.service` before copying it if your install path, Node binary, or user differs. The unit loads `/opt/mc-manager/.env`, so that file must exist. It also grants `CAP_NET_BIND_SERVICE` so the optional Bedrock Connect DNS proxy can listen on port `53` as `mcmanager`.
 
 Later updates from `/opt/mc-manager`: `sudo ./scripts/upgrade.sh --mode native`.
 
