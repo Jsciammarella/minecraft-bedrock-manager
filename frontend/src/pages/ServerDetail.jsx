@@ -7,7 +7,7 @@ import {
   ArrowLeft, Play, Square, RotateCcw, Terminal, Send, Users,
   Settings, ArrowUpRight, Clock, Package, ChevronDown, ChevronUp,
   Copy, Trash2, Download, AlertCircle, AlertTriangle, Check, Loader2,
-  Shield, ShieldOff, Ban, UserPlus, Radio
+  Shield, ShieldOff, Ban, UserPlus, Radio, Plus, X, Search
 } from 'lucide-react';
 
 function PlayerCombobox({ value, onChange, options, disabled, placeholder, onEnter }) {
@@ -89,6 +89,11 @@ function ServerDetail() {
   const [accessBusy, setAccessBusy] = useState(false);
   const [removingModId, setRemovingModId] = useState(null);
   const [modMessage, setModMessage] = useState(null);
+  const [showManageMods, setShowManageMods] = useState(false);
+  const [libraryMods, setLibraryMods] = useState([]);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [librarySearch, setLibrarySearch] = useState('');
+  const [busyModId, setBusyModId] = useState(null);
   const [restartScheduling, setRestartScheduling] = useState(false);
   const [updateError, setUpdateError] = useState('');
   const [lanBusy, setLanBusy] = useState(false);
@@ -348,6 +353,7 @@ function ServerDetail() {
   const handleRemoveMod = async (mod) => {
     if (!confirm(`Remove "${mod.name}" from ${server.name}? It will remain in the manager's mod library.`)) return;
     setRemovingModId(mod.id);
+    setBusyModId(mod.id);
     setModMessage(null);
     try {
       await modApi.uninstall(mod.id, id);
@@ -358,6 +364,38 @@ function ServerDetail() {
       setModMessage({ type: 'error', text: err.response?.data?.error || err.message });
     } finally {
       setRemovingModId(null);
+      setBusyModId(null);
+    }
+  };
+
+  const openManageMods = async () => {
+    setShowManageMods(true);
+    setLibrarySearch('');
+    setModMessage(null);
+    setLibraryLoading(true);
+    try {
+      const res = await modApi.getAll();
+      setLibraryMods(res.data || []);
+    } catch (err) {
+      setModMessage({ type: 'error', text: err.response?.data?.error || err.message || 'Failed to load mods' });
+    } finally {
+      setLibraryLoading(false);
+    }
+  };
+
+  const handleInstallMod = async (mod) => {
+    if (busyModId) return;
+    setBusyModId(mod.id);
+    setModMessage(null);
+    try {
+      await modApi.install(mod.id, id);
+      await loadServer();
+      await refresh();
+      setModMessage({ type: 'success', text: `${mod.name} was installed on this server.` });
+    } catch (err) {
+      setModMessage({ type: 'error', text: err.response?.data?.error || err.message });
+    } finally {
+      setBusyModId(null);
     }
   };
 
@@ -570,6 +608,16 @@ function ServerDetail() {
             <Download className="w-4 h-4" />
             Update
           </button>
+          {!isBC && (
+            <button
+              onClick={() => navigate(`/servers/${id}/users`)}
+              className="btn btn-secondary text-sm"
+              title="Manage player permissions for this server"
+            >
+              <Users className="w-4 h-4" />
+              Users
+            </button>
+          )}
           <button
             onClick={() => navigate(`/servers/${id}/properties`)}
             className="btn btn-secondary text-sm"
@@ -817,7 +865,9 @@ function ServerDetail() {
               Allow List & Player Permissions
             </h2>
             <p className="text-xs text-mc-textMuted mb-4">
-              These settings apply only to {server.name}. Permission changes are saved to this server's permissions file.
+              These settings apply only to {server.name}. Changing a player&apos;s permission here also
+              updates the Users list. Players without a custom permission use the default from Properties.
+              Being on this allow list is separate from the Users permission list.
             </p>
             {accessMessage && (
               <div className={`mb-4 p-3 rounded-lg border text-sm ${accessMessage.type === 'error'
@@ -854,7 +904,7 @@ function ServerDetail() {
                   </div>
                   <select
                     value={player.permission}
-                    onChange={(e) => updatePlayerAccess(player.id, { permission: e.target.value }, `${player.username}'s permission updated.`)}
+                    onChange={(e) => updatePlayerAccess(player.id, { permission: e.target.value, hasCustomPermission: true }, `${player.username}'s permission updated.`)}
                     disabled={isBC || accessBusy}
                     className="input sm:w-36 text-sm"
                     aria-label={`Permission for ${player.username}`}
@@ -907,12 +957,19 @@ function ServerDetail() {
                 <div key={player.id} className="flex items-center gap-3 p-3 bg-mc-darker rounded-lg">
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-white truncate">{player.username}</p>
-                    <p className="text-xs text-mc-textMuted truncate">{player.ban_reason || 'Banned by server administrator'}</p>
+                    <p className="text-xs text-mc-textMuted truncate">
+                      {player.is_globally_banned
+                        ? 'Banned on all servers'
+                        : (player.ban_reason || 'Banned by server administrator')}
+                    </p>
                   </div>
                   <button
                     onClick={() => updatePlayerAccess(player.id, { isBanned: false }, `${player.username} unbanned from this server.`)}
-                    disabled={isBC || accessBusy}
+                    disabled={isBC || accessBusy || player.is_globally_banned}
                     className="btn btn-secondary text-sm"
+                    title={player.is_globally_banned
+                      ? 'This player is banned on all servers. Remove the global ban from Player Management.'
+                      : 'Unban from this server'}
                   >
                     Unban
                   </button>
@@ -988,10 +1045,16 @@ function ServerDetail() {
                 {server.installedMods?.length === 0 ? (
                   <p className="text-sm text-mc-textMuted text-center py-4">No mods installed</p>
                 ) : (
-                  server.installedMods.map(mod => (
+                  server.installedMods.map(mod => {
+                    const thumb = modThumbnailSrc(mod);
+                    return (
                     <div key={mod.id} className="flex items-center gap-3 p-2 bg-mc-darker rounded-lg">
-                      <div className="w-8 h-8 bg-mc-surfaceLight rounded flex items-center justify-center flex-shrink-0">
-                        <PackageIcon className="w-4 h-4 text-mc-textMuted" />
+                      <div className="w-8 h-8 bg-mc-surfaceLight rounded flex items-center justify-center flex-shrink-0 overflow-hidden">
+                        {thumb ? (
+                          <img src={thumb} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          <PackageIcon className="w-4 h-4 text-mc-textMuted" />
+                        )}
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-white truncate">{mod.name}</p>
@@ -999,7 +1062,7 @@ function ServerDetail() {
                       </div>
                       <button
                         onClick={() => handleRemoveMod(mod)}
-                        disabled={isBC || removingModId === mod.id}
+                        disabled={isBC || removingModId === mod.id || Boolean(busyModId)}
                         className="p-2 text-mc-textMuted hover:text-red-400 hover:bg-red-500/10 rounded transition-colors disabled:opacity-50"
                         title="Remove from this server only"
                         aria-label={`Remove ${mod.name} from this server`}
@@ -1009,10 +1072,11 @@ function ServerDetail() {
                           : <Trash2 className="w-4 h-4" />}
                       </button>
                     </div>
-                  ))
+                    );
+                  })
                 )}
                 <button
-                  onClick={() => navigate('/mods')}
+                  onClick={openManageMods}
                   disabled={isBC}
                   className="w-full btn btn-secondary text-sm mt-2"
                 >
@@ -1083,6 +1147,112 @@ function ServerDetail() {
               >
                 Cancel
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showManageMods && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4">
+          <div className="card max-w-lg w-full max-h-[85vh] flex flex-col animate-slide-up">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">Manage Mods</h3>
+              <button
+                onClick={() => setShowManageMods(false)}
+                className="p-1 hover:bg-mc-surfaceLight rounded"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-sm text-mc-textMuted mb-3">
+              Install or remove library packs on <strong className="text-white">{server.name}</strong>.
+            </p>
+
+            {modMessage && (
+              <div className={`mb-3 p-2 rounded border text-xs ${modMessage.type === 'error'
+                ? 'bg-red-500/10 border-red-500/30 text-red-400'
+                : 'bg-green-500/10 border-green-500/30 text-green-400'}`}>
+                {modMessage.text}
+              </div>
+            )}
+
+            <div className="relative mb-3">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-mc-textMuted" />
+              <input
+                type="text"
+                value={librarySearch}
+                onChange={(e) => setLibrarySearch(e.target.value)}
+                className="input pl-10"
+                placeholder="Search library..."
+              />
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2 min-h-[12rem]">
+              {libraryLoading ? (
+                <div className="flex items-center justify-center py-10">
+                  <Loader2 className="w-6 h-6 text-mc-accent animate-spin" />
+                </div>
+              ) : libraryMods.length === 0 ? (
+                <p className="text-sm text-mc-textMuted text-center py-8">No mods in the library yet.</p>
+              ) : (
+                libraryMods
+                  .filter((mod) => !librarySearch || mod.name.toLowerCase().includes(librarySearch.toLowerCase()))
+                  .map((mod) => {
+                    const installed = Boolean(server.installedMods?.some((row) => row.id === mod.id));
+                    const thumb = modThumbnailSrc(mod);
+                    const busy = busyModId === mod.id;
+                    const removing = busy && removingModId === mod.id;
+                    return (
+                      <div
+                        key={mod.id}
+                        className="flex items-center gap-3 p-2 bg-mc-darker rounded-lg"
+                      >
+                        <div className="w-10 h-10 bg-mc-surfaceLight rounded flex items-center justify-center flex-shrink-0 overflow-hidden">
+                          {thumb ? (
+                            <img src={thumb} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            <PackageIcon className="w-4 h-4 text-mc-textMuted" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-white truncate">{mod.name}</p>
+                          <p className="text-xs text-mc-textMuted capitalize">
+                            {(mod.type || 'addon').replace('_', ' ')}
+                          </p>
+                        </div>
+                        {busy ? (
+                          <button
+                            type="button"
+                            disabled
+                            className="btn text-xs px-3 py-1.5 bg-yellow-500 hover:bg-yellow-500 text-yellow-950 cursor-not-allowed disabled:opacity-100"
+                          >
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            {removing ? 'Removing' : 'Installing'}
+                          </button>
+                        ) : installed ? (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveMod(mod)}
+                            disabled={Boolean(busyModId)}
+                            className="btn btn-danger text-xs px-3 py-1.5"
+                          >
+                            Remove
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleInstallMod(mod)}
+                            disabled={Boolean(busyModId)}
+                            className="btn text-xs px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            Install
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })
+              )}
             </div>
           </div>
         </div>
@@ -1160,6 +1330,15 @@ function ServerDetail() {
       )}
     </div>
   );
+}
+
+function modThumbnailSrc(mod) {
+  if (!mod?.thumbnail) return '';
+  const value = String(mod.thumbnail);
+  if (value.startsWith('http://') || value.startsWith('https://') || value.startsWith('/api/')) {
+    return value;
+  }
+  return `/api/mods/${mod.id}/thumbnail?v=${encodeURIComponent(mod.downloaded_at || mod.id)}`;
 }
 
 function InfoRow({ label, value }) {

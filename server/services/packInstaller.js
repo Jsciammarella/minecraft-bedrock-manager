@@ -57,24 +57,315 @@ function findManifestPacks(root) {
   return packs;
 }
 
+const PACK_ICON_RANK = {
+  '.png': 0,
+  '.jpeg': 1,
+  '.jpg': 2,
+  '.webp': 3,
+  '.gif': 4,
+};
+const NESTED_PACK_EXTS = new Set(['.mcaddon', '.mcpack', '.zip']);
+
+function unzipText(value) {
+  if (Buffer.isBuffer(value)) return value.toString('utf8');
+  return String(value || '');
+}
+
+function unzipDetail(err) {
+  const parts = [err?.stderr, err?.stdout, err?.message]
+    .map((value) => unzipText(value).trim())
+    .filter(Boolean);
+  return [...new Set(parts)].join('\n').trim();
+}
+
+function unzipExitCode(err) {
+  return typeof err?.code === 'number' ? err.code : null;
+}
+
+function isFilenameEncodingWarning(text) {
+  return /mismatching ["']local["'] filename|#U[0-9A-Fa-f]{4}|needs extra bytes to extract|UTF-8.*filename|Unicode pathname/i.test(String(text || ''));
+}
+
+function isIncompleteArchiveError(text) {
+  const value = String(text || '');
+  if (isFilenameEncodingWarning(value) && !/bad CRC|bad zipfile offset|unexpected end of (?:file|archive)/i.test(value)) {
+    return false;
+  }
+  return /bad CRC|bad zipfile offset|unexpected end of (?:file|archive)|missing \d+ bytes|end[- ]of[- ]central[- ]directory|not a zip|zipfile is empty|incorrect headers|failed CRC|cannot find (?:either )?zipfile|zipfile directory|file (?:is )?too short|invalid zip|lseek|extra bytes at beginning|Command failed: unzip/i.test(value);
+}
+
+function isUnzipIntegrityFailure(code, detail) {
+  if (isFilenameEncodingWarning(detail) && !isIncompleteArchiveError(detail)) return false;
+  if (isIncompleteArchiveError(detail)) return true;
+  return [2, 3, 9, 11, 12].includes(Number(code));
+}
+
+function unzipWarningOnly(code, detail) {
+  return Number(code) === 1 && !isIncompleteArchiveError(detail);
+}
+
+function extractionLooksComplete(destDir) {
+  if (!destDir || !fs.existsSync(destDir)) return false;
+  try {
+    return fs.readdirSync(destDir).some((name) => name && name !== '.' && name !== '..');
+  } catch {
+    return false;
+  }
+}
+
+function friendlyExtractError(archivePath, err) {
+  const name = path.basename(archivePath);
+  const detail = unzipDetail(err);
+  const code = unzipExitCode(err);
+  if (isUnzipIntegrityFailure(code, detail)) {
+    return `${name} looks incomplete or corrupted. Wait until the copy finishes, then upload the pack again.`;
+  }
+  if (isFilenameEncodingWarning(detail)) {
+    return `${name} has international characters in filenames. Extraction continued using the zip central directory names.`;
+  }
+  return `Could not extract ${name}: ${detail || 'unknown unzip error'}`;
+}
+
+function runUnzip(args, extra = {}) {
+  return new Promise((resolve, reject) => {
+    execFile('unzip', args, {
+      timeout: extra.timeout || 180000,
+      windowsHide: true,
+      maxBuffer: extra.maxBuffer || 10 * 1024 * 1024,
+      encoding: extra.encoding || 'utf8',
+    }, (err, stdout, stderr) => {
+      if (err && typeof err.code !== 'number') {
+        reject(err);
+        return;
+      }
+      const code = err ? unzipExitCode(err) : 0;
+      if (err) {
+        err.stdout = stdout;
+        err.stderr = stderr;
+      }
+      resolve({
+        code,
+        stdout,
+        stderr,
+        error: err || null,
+      });
+    });
+  });
+}
+
+async function verifyArchive(archivePath) {
+  if (!packFiles.isArchiveExt(path.extname(archivePath))) return;
+  const result = await runUnzip(['-t', '-q', archivePath]);
+  if (result.code === 0) return;
+  const err = result.error || {
+    stderr: result.stderr,
+    stdout: result.stdout,
+    code: result.code,
+  };
+  const detail = unzipDetail(err);
+  if ((unzipWarningOnly(result.code, detail) || isFilenameEncodingWarning(detail)) && !isIncompleteArchiveError(detail)) {
+    logger.warn(`Archive test warning for ${path.basename(archivePath)}: ${detail}`);
+    return;
+  }
+  throw new Error(friendlyExtractError(archivePath, err));
+}
+
+function parseUnzipList(stdout) {
+  const lines = String(stdout || '').split(/\r?\n/);
+  const names = [];
+  let inFiles = false;
+  for (const line of lines) {
+    if (/^-{5,}/.test(line.trim())) {
+      inFiles = !inFiles;
+      continue;
+    }
+    if (!inFiles) continue;
+    const match = line.match(/\s+\d{2}:\d{2}\s+(.+)$/);
+    if (match) names.push(match[1].replace(/\\/g, '/').trim());
+  }
+  return names.filter(Boolean);
+}
+
+async function listArchiveEntries(archivePath) {
+  try {
+    const { stdout } = await execFileAsync('unzip', ['-Z1', archivePath], {
+      timeout: 60000,
+      windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return String(stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\\/g, '/').trim())
+      .filter(Boolean);
+  } catch (err) {
+    const listed = String(err.stdout || '').trim();
+    if (listed) {
+      return listed.split(/\r?\n/).map((line) => line.replace(/\\/g, '/').trim()).filter(Boolean);
+    }
+    const { stdout } = await execFileAsync('unzip', ['-l', archivePath], {
+      timeout: 60000,
+      windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return parseUnzipList(stdout);
+  }
+}
+
+function pickPackIconPath(entries) {
+  const matches = [];
+  for (const entry of entries || []) {
+    const normalized = String(entry || '').replace(/\\/g, '/').replace(/^\.\//, '');
+    const parts = normalized.split('/').filter(Boolean);
+    if (parts.some((part) => part.toLowerCase() === '__macosx' || part === '.DS_Store')) continue;
+    const base = (parts[parts.length - 1] || '').toLowerCase();
+    const extMatch = base.match(/^pack_icon(\.png|\.jpe?g|\.webp|\.gif)$/);
+    if (!extMatch) continue;
+    matches.push({
+      entry: normalized,
+      depth: parts.length,
+      rank: PACK_ICON_RANK[extMatch[1]] ?? 9,
+    });
+  }
+  matches.sort((a, b) => a.depth - b.depth || a.rank - b.rank);
+  return matches[0]?.entry || null;
+}
+
+async function extractOneToFile(archivePath, entry, destPath) {
+  const { stdout } = await execFileAsync('unzip', ['-p', archivePath, entry], {
+    encoding: null,
+    timeout: 60000,
+    windowsHide: true,
+    maxBuffer: 6 * 1024 * 1024,
+  });
+  if (!stdout || !stdout.length) throw new Error(`No data for ${entry}`);
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  fs.writeFileSync(destPath, stdout);
+}
+
+async function findPackIconSource(archivePath) {
+  const direct = pickPackIconPath(await listArchiveEntries(archivePath));
+  if (direct) return { archivePath, entry: direct, cleanup: null };
+
+  const entries = await listArchiveEntries(archivePath);
+  for (const nestedName of entries) {
+    if (!NESTED_PACK_EXTS.has(path.extname(nestedName).toLowerCase())) continue;
+    const tmp = path.join(os.tmpdir(), `mc-icon-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    try {
+      await extractOneToFile(archivePath, nestedName, tmp);
+      const inner = pickPackIconPath(await listArchiveEntries(tmp));
+      if (inner) return { archivePath: tmp, entry: inner, cleanup: tmp };
+    } catch {
+      // try the next nested archive
+    }
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+  }
+  return null;
+}
+
+async function extractPackIconFromArchive(archivePath, destDir, destBase) {
+  if (!packFiles.isArchiveExt(path.extname(archivePath))) return null;
+  const found = await findPackIconSource(archivePath);
+  if (!found) return null;
+  const ext = path.extname(found.entry).toLowerCase() || '.png';
+  const destPath = path.join(destDir, `${destBase}${ext}`);
+  try {
+    await extractOneToFile(found.archivePath, found.entry, destPath);
+    return destPath;
+  } finally {
+    if (found.cleanup) {
+      try { fs.unlinkSync(found.cleanup); } catch { /* ignore */ }
+    }
+  }
+}
+
+const PYTHON_EXTRACT = `
+import os, sys, zipfile
+src, dest = sys.argv[1], sys.argv[2]
+dest = os.path.abspath(dest)
+os.makedirs(dest, exist_ok=True)
+try:
+    archive = zipfile.ZipFile(src, metadata_encoding="utf-8")
+except TypeError:
+    archive = zipfile.ZipFile(src)
+with archive:
+    for info in archive.infolist():
+        name = info.filename.replace("\\\\", "/")
+        parts = [part for part in name.split("/") if part and part != "."]
+        if any(part == ".." for part in parts):
+            continue
+        target = os.path.abspath(os.path.join(dest, *parts)) if parts else dest
+        if target != dest and not target.startswith(dest + os.sep):
+            continue
+        if name.endswith("/"):
+            os.makedirs(target, exist_ok=True)
+            continue
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with archive.open(info) as source, open(target, "wb") as out:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+`;
+
+async function extractWithPython(archivePath, destDir) {
+  let python = 'python3';
+  try {
+    await execFileAsync(python, ['-V'], { timeout: 5000, windowsHide: true });
+  } catch {
+    python = 'python';
+  }
+  await execFileAsync(python, ['-c', PYTHON_EXTRACT, archivePath, destDir], {
+    timeout: 180000,
+    windowsHide: true,
+  });
+}
+
 async function extractArchive(archivePath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
+  const unzipAttempts = [
+    ['-O', 'UTF-8', '-I', 'UTF-8', '-o', '-qq', archivePath, '-d', destDir],
+    ['-o', '-qq', archivePath, '-d', destDir],
+  ];
+  let lastErr = null;
+  for (const args of unzipAttempts) {
+    try {
+      const result = await runUnzip(args);
+      const detail = unzipDetail(result.error || { stderr: result.stderr, stdout: result.stdout, code: result.code });
+      if (result.code === 0) return;
+      if (unzipWarningOnly(result.code, detail) && extractionLooksComplete(destDir)) {
+        logger.warn(`Extracted ${path.basename(archivePath)} with filename warnings: ${detail}`);
+        return;
+      }
+      lastErr = result.error || new Error(detail || `unzip exited ${result.code}`);
+      if (isIncompleteArchiveError(detail)) break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
   try {
-    await execFileAsync('unzip', ['-o', '-q', archivePath, '-d', destDir], {
+    await extractWithPython(archivePath, destDir);
+    if (extractionLooksComplete(destDir)) return;
+  } catch (pyErr) {
+    lastErr = pyErr;
+  }
+
+  try {
+    await execFileAsync('tar', ['-xf', archivePath, '-C', destDir], {
       timeout: 180000,
       windowsHide: true,
     });
-    return;
-  } catch (unzipErr) {
-    try {
-      await execFileAsync('tar', ['-xf', archivePath, '-C', destDir], {
-        timeout: 180000,
-        windowsHide: true,
-      });
-    } catch (tarErr) {
-      throw new Error(`Could not extract ${path.basename(archivePath)}: ${unzipErr.stderr || unzipErr.message}`);
-    }
+    if (extractionLooksComplete(destDir)) return;
+  } catch (tarErr) {
+    lastErr = tarErr;
   }
+
+  if (extractionLooksComplete(destDir)) {
+    logger.warn(`Extracted ${path.basename(archivePath)} despite tool warnings`);
+    return;
+  }
+  throw new Error(friendlyExtractError(archivePath, lastErr || { message: 'unknown unzip error' }));
 }
 
 async function extractNestedArchives(root, depth = 0) {
@@ -449,4 +740,11 @@ module.exports = {
   activateServerPacks,
   syncWorldPackLists,
   parseManifest,
+  verifyArchive,
+  pickPackIconPath,
+  extractPackIconFromArchive,
+  isIncompleteArchiveError,
+  isFilenameEncodingWarning,
+  isUnzipIntegrityFailure,
+  friendlyExtractError,
 };

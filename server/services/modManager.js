@@ -46,6 +46,13 @@ class ModManager {
 
     const fileSize = fs.statSync(filePath).size;
 
+    try {
+      await packInstaller.verifyArchive(filePath);
+    } catch (err) {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      throw err;
+    }
+
     // Determine type from extension
     let type = packFiles.typeFromExt(file.originalname, 'addon');
     if (metadata.type) type = metadata.type;
@@ -72,6 +79,8 @@ class ModManager {
       throw err;
     }
 
+    await this.attachArchiveThumbnail(result.lastInsertRowid, filePath);
+
     logger.info(`Uploaded mod: ${safeName} (${type})`);
     return { id: result.lastInsertRowid, name: metadata.name || safeName, type, filePath };
   }
@@ -90,11 +99,19 @@ class ModManager {
     const existing = db.prepare('SELECT * FROM server_mods WHERE server_id = ? AND mod_id = ?').get(serverId, modId);
     if (existing) throw new Error('Mod already installed on this server');
 
+    if (mod.file_path && fs.existsSync(mod.file_path)) {
+      await packInstaller.verifyArchive(mod.file_path);
+    }
+
     const destDir = this.getModDestDir(server.data_path, mod.type);
     fs.mkdirSync(destDir, { recursive: true });
 
     let installManifest = [];
     installManifest = await packInstaller.installModToServer(server, mod);
+
+    if (!mod.thumbnail) {
+      await this.attachArchiveThumbnail(modId, mod.file_path);
+    }
 
     db.prepare(`
       INSERT INTO server_mods (server_id, mod_id, install_manifest)
@@ -224,6 +241,24 @@ class ModManager {
       if (fs.existsSync(value)) fs.unlinkSync(value);
     } catch {
       // ignore cleanup failures
+    }
+  }
+
+  async attachArchiveThumbnail(modId, archivePath) {
+    if (!archivePath || !fs.existsSync(archivePath)) return null;
+    try {
+      const destPath = await packInstaller.extractPackIconFromArchive(
+        archivePath,
+        THUMBS_DIR,
+        `packicon-${modId}`
+      );
+      if (!destPath) return null;
+      db.prepare('UPDATE mods SET thumbnail = ? WHERE id = ?').run(destPath, modId);
+      logger.info(`Attached pack icon for library mod ${modId}`);
+      return destPath;
+    } catch (err) {
+      logger.warn(`Could not extract pack icon for mod ${modId}: ${err.message}`);
+      return null;
     }
   }
 

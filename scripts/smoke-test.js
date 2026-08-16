@@ -109,6 +109,122 @@ async function run() {
   });
   assert.equal(JSON.parse(fs.readFileSync(path.join(serverPath, 'allowlist.json'), 'utf8')).length, 0);
 
+  serverManager.updatePlayerAccess(server.lastInsertRowid, player.lastInsertRowid, { isBanned: false });
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(serverPath, 'allowlist.json'), 'utf8')).length,
+    0,
+    'unban must not restore the allow list'
+  );
+
+  const allowOnly = db.prepare('INSERT INTO players (username, xuid) VALUES (?, ?)').run(
+    `SmokeAllow${suffix}`,
+    `a${suffix}`
+  );
+  serverManager.updatePlayerAccess(server.lastInsertRowid, allowOnly.lastInsertRowid, { isWhitelisted: true });
+  assert(
+    !JSON.parse(fs.readFileSync(path.join(serverPath, 'permissions.json'), 'utf8'))
+      .some((row) => String(row.xuid) === `a${suffix}`),
+    'allow-list-only players should not be written to permissions.json'
+  );
+  assert.equal(
+    serverManager.listPlayerSummaries().find((row) => row.id === allowOnly.lastInsertRowid).whitelist_count,
+    1,
+    'whitelist_count should be 1 for a player on one server'
+  );
+
+  const permOnly = db.prepare('INSERT INTO players (username, xuid) VALUES (?, ?)').run(
+    `SmokePerm${suffix}`,
+    `p${suffix}`
+  );
+  serverManager.updatePlayerAccess(server.lastInsertRowid, permOnly.lastInsertRowid, {
+    permission: 'operator',
+    hasCustomPermission: true,
+  });
+  assert(
+    !JSON.parse(fs.readFileSync(path.join(serverPath, 'allowlist.json'), 'utf8'))
+      .some((row) => row.name === `SmokePerm${suffix}`),
+    'custom permission must not add the player to the allow list'
+  );
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(serverPath, 'permissions.json'), 'utf8'))
+      .find((row) => String(row.xuid) === `p${suffix}`)?.permission,
+    'operator',
+    'custom permission was not written to permissions.json'
+  );
+
+  serverManager.updatePlayerAccess(server.lastInsertRowid, permOnly.lastInsertRowid, {
+    permission: 'visitor',
+  });
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(serverPath, 'permissions.json'), 'utf8'))
+      .find((row) => String(row.xuid) === `p${suffix}`)?.permission,
+    'visitor',
+    'permission changes must stay in sync in permissions.json'
+  );
+
+  const server2Path = path.join(testRoot, 'server2');
+  fs.mkdirSync(server2Path, { recursive: true });
+  fs.writeFileSync(path.join(server2Path, 'allowlist.json'), '[]\n');
+  fs.writeFileSync(path.join(server2Path, 'permissions.json'), '[]\n');
+  const server2 = db.prepare(`
+    INSERT INTO servers (name, version, port, data_path) VALUES (?, 'test', ?, ?)
+  `).run(`smoke2-${suffix}`, 41000 + (suffix % 10000), server2Path);
+
+  serverManager.setPlayerBannedEverywhere(allowOnly.lastInsertRowid, true, 'Smoke global ban');
+  assert.equal(
+    db.prepare('SELECT is_banned FROM players WHERE id = ?').get(allowOnly.lastInsertRowid).is_banned,
+    1,
+    'global ban flag was not set'
+  );
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(serverPath, 'allowlist.json'), 'utf8'))
+      .some((row) => row.name === `SmokeAllow${suffix}`),
+    false,
+    'global ban must remove the player from existing allow lists'
+  );
+  assert.equal(
+    db.prepare(
+      'SELECT is_banned FROM server_player_access WHERE server_id = ? AND player_id = ?'
+    ).get(server.lastInsertRowid, allowOnly.lastInsertRowid).is_banned,
+    1
+  );
+  assert.equal(
+    db.prepare(
+      'SELECT is_banned FROM server_player_access WHERE server_id = ? AND player_id = ?'
+    ).get(server2.lastInsertRowid, allowOnly.lastInsertRowid).is_banned,
+    1,
+    'global ban must be applied to every game server'
+  );
+
+  const server3Path = path.join(testRoot, 'server3');
+  fs.mkdirSync(server3Path, { recursive: true });
+  fs.writeFileSync(path.join(server3Path, 'allowlist.json'), '[]\n');
+  fs.writeFileSync(path.join(server3Path, 'permissions.json'), '[]\n');
+  const server3 = db.prepare(`
+    INSERT INTO servers (name, version, port, data_path) VALUES (?, 'test', ?, ?)
+  `).run(`smoke3-${suffix}`, 42000 + (suffix % 10000), server3Path);
+  serverManager.applyGlobalBansToServer(server3.lastInsertRowid);
+  assert.equal(
+    db.prepare(
+      'SELECT is_banned FROM server_player_access WHERE server_id = ? AND player_id = ?'
+    ).get(server3.lastInsertRowid, allowOnly.lastInsertRowid)?.is_banned,
+    1,
+    'new servers must inherit global bans'
+  );
+
+  serverManager.setPlayerBannedEverywhere(allowOnly.lastInsertRowid, false);
+  assert.equal(db.prepare('SELECT is_banned FROM players WHERE id = ?').get(allowOnly.lastInsertRowid).is_banned, 0);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(serverPath, 'allowlist.json'), 'utf8'))
+      .some((row) => row.name === `SmokeAllow${suffix}`),
+    false,
+    'unban must not restore allow lists'
+  );
+  assert.equal(
+    serverManager.listPlayerSummaries().find((row) => row.id === allowOnly.lastInsertRowid).whitelist_count,
+    0
+  );
+
   const catalog = process.env.CURSEFORGE_API_KEY
     ? await curseforge.searchMods('', { pageSize: 5, page: 1, sortBy: 'popularity' })
     : curseforge.parseSearchResults(`
@@ -375,6 +491,73 @@ async function run() {
   assert(fs.existsSync(structureDest), '.mcstructure was not copied into the world structures folder');
   await modManager.uninstallModFromServer(packServer.lastInsertRowid, structureMod.lastInsertRowid);
   assert.equal(fs.existsSync(structureDest), false);
+
+  assert.equal(
+    packInstaller.pickPackIconPath(['BP/pack_icon.png', 'RP/pack_icon.jpeg']),
+    'BP/pack_icon.png'
+  );
+  assert.equal(
+    packInstaller.pickPackIconPath(['deep/nested/pack_icon.png', 'pack_icon.jpg']),
+    'pack_icon.jpg'
+  );
+  assert.equal(
+    packInstaller.pickPackIconPath(['__MACOSX/pack_icon.png', 'RP/textures/pack_icon.webp']),
+    'RP/textures/pack_icon.webp'
+  );
+  assert(packInstaller.isIncompleteArchiveError(
+    'pack_icon.png bad CRC c7fed3c8 (should be d32d4633) file #492: bad zipfile offset (local header sig): 3910879'
+  ));
+  const encodingWarning = 'halocraftb/animation_controllers/pu#U00f1etazo.json: mismatching "local" filename (halocraftb/animation_controllers/pu+etazo.json), continuing with "central" filename version';
+  assert.equal(packInstaller.isIncompleteArchiveError(encodingWarning), false);
+  assert(packInstaller.isFilenameEncodingWarning(encodingWarning));
+  assert.match(
+    packInstaller.friendlyExtractError('Ranzie_Rise_and_Survive_1.2.mcaddon', {
+      stderr: 'pack_icon.png bad CRC c7fed3c8 file #492: bad zipfile offset',
+    }),
+    /incomplete or corrupted/i
+  );
+  assert.match(
+    packInstaller.friendlyExtractError('truncated.mcaddon', {
+      code: 9,
+      message: 'Command failed: unzip -t -qq truncated.mcaddon',
+    }),
+    /incomplete or corrupted/i
+  );
+
+  const tinyPng = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  );
+  const iconZip = path.join(testRoot, 'icon-addon.mcaddon');
+  fs.writeFileSync(iconZip, zipStore({
+    'BP/manifest.json': JSON.stringify(bpManifest),
+    'BP/pack_icon.png': tinyPng,
+    'RP/manifest.json': JSON.stringify(rpManifest),
+    'RP/pack_icon.png': tinyPng,
+  }));
+  const extractedIcon = await packInstaller.extractPackIconFromArchive(iconZip, testRoot, 'smoke-icon');
+  assert(extractedIcon, 'pack_icon.png should be extracted from the addon');
+  assert.equal(path.extname(extractedIcon), '.png');
+  assert(fs.existsSync(extractedIcon));
+  assert.equal(fs.readFileSync(extractedIcon).compare(tinyPng), 0);
+
+  const nestedInner = zipStore({
+    'manifest.json': JSON.stringify(rpManifest),
+    'pack_icon.png': tinyPng,
+  });
+  const nestedOuter = path.join(testRoot, 'nested-icon.mcaddon');
+  fs.writeFileSync(nestedOuter, zipStore({ 'RP.mcpack': nestedInner }));
+  const nestedIcon = await packInstaller.extractPackIconFromArchive(nestedOuter, testRoot, 'nested-icon');
+  assert(nestedIcon, 'pack_icon inside a nested mcpack should be used');
+  assert.equal(fs.readFileSync(nestedIcon).compare(tinyPng), 0);
+
+  const truncatedZip = path.join(testRoot, 'truncated.mcaddon');
+  const completeZip = zipStore({ 'BP/manifest.json': JSON.stringify(bpManifest) });
+  fs.writeFileSync(truncatedZip, completeZip.subarray(0, Math.max(32, Math.floor(completeZip.length / 3))));
+  await assert.rejects(
+    () => packInstaller.verifyArchive(truncatedZip),
+    /incomplete or corrupted/i
+  );
 
   const bedrockConnect = require('../server/services/bedrockConnect');
   assert.equal(bedrockConnect.bundledVersion(), '1.68.0');

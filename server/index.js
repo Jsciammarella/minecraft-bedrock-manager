@@ -72,6 +72,7 @@ app.get('/api/health', (req, res) => {
 // Let client-side routes such as /servers/:id load directly or after refresh.
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
+  if (path.extname(req.path)) return next();
   res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
