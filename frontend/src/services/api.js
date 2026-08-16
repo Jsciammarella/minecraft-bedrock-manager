@@ -40,12 +40,20 @@ export const serverApi = {
 export const modApi = {
   getAll: () => api.get('/mods'),
   getById: (id) => api.get(`/mods/${id}`),
-  upload: (file, metadata) => {
+  upload: (file, metadata, onProgress) => {
     const formData = new FormData();
     formData.append('file', file);
     if (metadata) Object.entries(metadata).forEach(([k, v]) => formData.append(k, v));
     return api.post('/mods/upload', formData, {
       timeout: 10 * 60 * 1000,
+      onUploadProgress: (event) => {
+        if (typeof onProgress !== 'function') return;
+        if (!event.total) {
+          onProgress(null);
+          return;
+        }
+        onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      },
     });
   },
   delete: (id) => api.delete(`/mods/${id}`),
@@ -58,8 +66,12 @@ export const modApi = {
   },
   getAvailable: (serverId) => api.get(`/mods/available/${serverId}`),
   getInstalled: (serverId) => api.get(`/mods/installed/${serverId}`),
-  install: (modId, serverId) => api.post(`/mods/${modId}/install/${serverId}`),
-  uninstall: (modId, serverId) => api.delete(`/mods/${modId}/uninstall/${serverId}`),
+  install: (modId, serverId) => api.post(`/mods/${modId}/install/${serverId}`, null, {
+    timeout: 10 * 60 * 1000,
+  }),
+  uninstall: (modId, serverId) => api.delete(`/mods/${modId}/uninstall/${serverId}`, {
+    timeout: 10 * 60 * 1000,
+  }),
   
   catalogSearch: (params) => api.get('/mods/catalog/search', { params, timeout: 90000 }),
   catalogCategories: () => api.get('/mods/catalog/categories'),
@@ -88,6 +100,9 @@ export const playerApi = {
   add: (data) => api.post('/players', data),
   whitelist: (id, serverId) => api.post(`/players/${id}/whitelist`, { serverId }),
   unwhitelist: (id, serverId) => api.post(`/players/${id}/unwhitelist`, { serverId }),
+  unwhitelistAll: (id) => api.post(`/players/${id}/unwhitelist-all`),
+  banAll: (id, reason) => api.post(`/players/${id}/ban-all`, { reason }),
+  unbanAll: (id) => api.post(`/players/${id}/unban-all`),
   updateServerAccess: (serverId, playerId, data) => api.put(`/players/server/${serverId}/${playerId}`, data),
   search: (q) => api.get('/players/search', { params: { q } }),
 };

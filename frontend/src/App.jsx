@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard';
 import ServerDetail from './pages/ServerDetail';
 import CreateServer from './pages/CreateServer';
 import ServerProperties from './pages/ServerProperties';
+import ServerUsers from './pages/ServerUsers';
 import ModCatalog from './pages/ModCatalog';
 import ModCatalogSettings from './pages/ModCatalogSettings';
 import ModLibrary from './pages/ModLibrary';
@@ -19,6 +20,7 @@ function App() {
         <Route path="servers" element={<Dashboard />} />
         <Route path="servers/new" element={<CreateServer />} />
         <Route path="servers/:id" element={<ServerDetail />} />
+        <Route path="servers/:id/users" element={<ServerUsers />} />
         <Route path="servers/:id/properties" element={<ServerProperties />} />
         <Route path="mods" element={<ModLibrary />} />
         <Route path="mods/catalog" element={<ModCatalog />} />

@@ -70,6 +70,7 @@ db.exec(`
     username TEXT NOT NULL,
     gamerpic TEXT,
     is_whitelisted INTEGER NOT NULL DEFAULT 0,
+    is_banned INTEGER NOT NULL DEFAULT 0,
     last_seen DATETIME,
     discovered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(username)
@@ -95,6 +96,7 @@ db.exec(`
     is_whitelisted INTEGER NOT NULL DEFAULT 0,
     permission TEXT NOT NULL DEFAULT 'member'
       CHECK(permission IN ('visitor', 'member', 'operator')),
+    has_custom_permission INTEGER NOT NULL DEFAULT 0,
     is_banned INTEGER NOT NULL DEFAULT 0,
     ban_reason TEXT,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -219,6 +221,17 @@ db.exec(`
 const serverModColumns = new Set(db.prepare('PRAGMA table_info(server_mods)').all().map(column => column.name));
 if (!serverModColumns.has('install_manifest')) {
   db.exec('ALTER TABLE server_mods ADD COLUMN install_manifest TEXT');
+}
+
+const playerColumns = new Set(db.prepare('PRAGMA table_info(players)').all().map(column => column.name));
+if (!playerColumns.has('is_banned')) {
+  db.exec('ALTER TABLE players ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0');
+}
+
+const accessColumns = new Set(db.prepare('PRAGMA table_info(server_player_access)').all().map(column => column.name));
+if (!accessColumns.has('has_custom_permission')) {
+  db.exec('ALTER TABLE server_player_access ADD COLUMN has_custom_permission INTEGER NOT NULL DEFAULT 0');
+  db.exec('UPDATE server_player_access SET has_custom_permission = 1');
 }
 
 module.exports = db;

@@ -760,6 +760,7 @@ class ServerManager {
       );
       fs.writeFileSync(path.join(serverPath, 'allowlist.json'), '[]\n');
       fs.writeFileSync(path.join(serverPath, 'permissions.json'), '[]\n');
+      this.applyGlobalBansToServer(serverId);
 
       db.prepare('UPDATE servers SET status = ?, pending_restart_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run('stopped', serverId);
@@ -1666,13 +1667,15 @@ done
 
   kickIfBanned(serverId, username) {
     const banned = db.prepare(`
-      SELECT a.ban_reason FROM server_player_access a
-      JOIN players p ON p.id = a.player_id
-      WHERE a.server_id = ? AND a.is_banned = 1 AND p.username = ? COLLATE NOCASE
+      SELECT COALESCE(a.ban_reason, 'Banned by administrator') AS ban_reason
+      FROM players p
+      LEFT JOIN server_player_access a ON a.player_id = p.id AND a.server_id = ?
+      WHERE p.username = ? COLLATE NOCASE
+        AND (p.is_banned = 1 OR a.is_banned = 1)
     `).get(serverId, username);
     const sessionKey = this.sessionKey(serverId);
     if (!banned || !this.ptySessions.has(sessionKey)) return;
-    const reason = banned.ban_reason || 'Banned by server administrator';
+    const reason = banned.ban_reason || 'Banned by administrator';
     this.ptySessions.get(sessionKey).write(
       `kick ${this.quoteCommandArgument(username)} ${this.quoteCommandArgument(reason)}\n`
     );
@@ -1889,12 +1892,117 @@ done
     return this.updatePlayerAccess(serverId, playerId, { isWhitelisted: false });
   }
 
+  listGameServers() {
+    return db.prepare(`
+      SELECT * FROM servers WHERE COALESCE(kind, 'bedrock') != 'bedrock_connect'
+    `).all();
+  }
+
+  listPlayerSummaries() {
+    return db.prepare(`
+      SELECT p.*,
+        COALESCE(w.whitelist_count, 0) AS whitelist_count,
+        COALESCE(p.is_banned, 0) AS is_banned
+      FROM players p
+      LEFT JOIN (
+        SELECT a.player_id, COUNT(*) AS whitelist_count
+        FROM server_player_access a
+        JOIN servers s ON s.id = a.server_id
+        WHERE a.is_whitelisted = 1
+          AND COALESCE(s.kind, 'bedrock') != 'bedrock_connect'
+        GROUP BY a.player_id
+      ) w ON w.player_id = p.id
+      ORDER BY p.username COLLATE NOCASE
+    `).all();
+  }
+
+  applyGlobalBansToServer(serverId) {
+    const server = this.getServer(serverId);
+    if (!server || this.isBedrockConnect(server)) return;
+    const banned = db.prepare('SELECT id FROM players WHERE is_banned = 1').all();
+    for (const row of banned) {
+      try {
+        this.updatePlayerAccess(serverId, row.id, {
+          isBanned: true,
+          isWhitelisted: false,
+          banReason: 'Banned by administrator',
+        });
+      } catch (err) {
+        logger.warn(`Could not apply global ban to server ${serverId}: ${err.message}`);
+      }
+    }
+  }
+
+  getDefaultPlayerPermission(server) {
+    try {
+      const props = this.readServerProperties(path.join(server.data_path, 'server.properties'));
+      const value = String(props['default-player-permission-level'] || 'member').toLowerCase();
+      if (['visitor', 'member', 'operator'].includes(value)) return value;
+    } catch { /* use fallback */ }
+    return 'member';
+  }
+
+  applyCustomPermissionOnJoin(serverId, player) {
+    const server = this.getServer(serverId);
+    if (!server || server.status !== 'running' || this.isBedrockConnect(server)) return;
+    const access = db.prepare(`
+      SELECT permission, has_custom_permission FROM server_player_access
+      WHERE server_id = ? AND player_id = ?
+    `).get(serverId, player.id);
+    if (!access?.has_custom_permission) return;
+    this.sendCommand(
+      serverId,
+      `permission set ${this.quoteCommandArgument(player.username)} ${access.permission}`
+    );
+  }
+
+  removeFromAllWhitelists(playerId) {
+    const player = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
+    if (!player) throw new Error('Player not found');
+    const rows = db.prepare(`
+      SELECT a.server_id
+      FROM server_player_access a
+      JOIN servers s ON s.id = a.server_id
+      WHERE a.player_id = ? AND a.is_whitelisted = 1
+        AND COALESCE(s.kind, 'bedrock') != 'bedrock_connect'
+    `).all(playerId);
+    for (const row of rows) {
+      this.updatePlayerAccess(row.server_id, playerId, { isWhitelisted: false });
+    }
+    this.syncGlobalWhitelistFlag(playerId);
+    return this.listPlayerSummaries().find((row) => row.id === Number(playerId)) || player;
+  }
+
+  setPlayerBannedEverywhere(playerId, banned, reason) {
+    const player = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
+    if (!player) throw new Error('Player not found');
+    db.prepare('UPDATE players SET is_banned = ? WHERE id = ?').run(banned ? 1 : 0, playerId);
+    for (const server of this.listGameServers()) {
+      try {
+        this.updatePlayerAccess(server.id, playerId, banned
+          ? { isBanned: true, isWhitelisted: false, banReason: reason || 'Banned by administrator' }
+          : { isBanned: false });
+      } catch (err) {
+        logger.warn(`Could not apply ${banned ? 'ban' : 'unban'} on ${server.name}: ${err.message}`);
+      }
+    }
+    this.syncGlobalWhitelistFlag(playerId);
+    return this.listPlayerSummaries().find((row) => row.id === Number(playerId)) || {
+      ...player,
+      is_banned: banned ? 1 : 0,
+    };
+  }
+
   getPlayerAccess(serverId) {
     if (!this.getServer(serverId)) throw new Error('Server not found');
     return db.prepare(`
-      SELECT p.*, COALESCE(a.is_whitelisted, 0) AS is_whitelisted,
+      SELECT p.*,
+        COALESCE(p.is_banned, 0) AS is_globally_banned,
+        COALESCE(a.is_whitelisted, 0) AS is_whitelisted,
         COALESCE(a.permission, 'member') AS permission,
-        COALESCE(a.is_banned, 0) AS is_banned, a.ban_reason
+        COALESCE(a.has_custom_permission, 0) AS has_custom_permission,
+        CASE WHEN COALESCE(p.is_banned, 0) = 1 OR COALESCE(a.is_banned, 0) = 1 THEN 1 ELSE 0 END AS is_banned,
+        a.ban_reason
       FROM players p
       LEFT JOIN server_player_access a
         ON a.player_id = p.id AND a.server_id = ?
@@ -1916,6 +2024,7 @@ done
     `).get(serverId, playerId) || {
       is_whitelisted: 0,
       permission: 'member',
+      has_custom_permission: 0,
       is_banned: 0,
       ban_reason: null,
     };
@@ -1923,6 +2032,13 @@ done
     const permission = changes.permission ?? current.permission;
     if (!['visitor', 'member', 'operator'].includes(permission)) {
       throw new Error('Permission must be visitor, member, or operator');
+    }
+
+    let hasCustomPermission = current.has_custom_permission;
+    if (changes.hasCustomPermission !== undefined) {
+      hasCustomPermission = Number(Boolean(changes.hasCustomPermission));
+    } else if (changes.permission !== undefined) {
+      hasCustomPermission = 1;
     }
 
     let isWhitelisted = changes.isWhitelisted === undefined
@@ -1936,15 +2052,16 @@ done
 
     db.prepare(`
       INSERT INTO server_player_access
-        (server_id, player_id, is_whitelisted, permission, is_banned, ban_reason)
-      VALUES (?, ?, ?, ?, ?, ?)
+        (server_id, player_id, is_whitelisted, permission, has_custom_permission, is_banned, ban_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(server_id, player_id) DO UPDATE SET
         is_whitelisted = excluded.is_whitelisted,
         permission = excluded.permission,
+        has_custom_permission = excluded.has_custom_permission,
         is_banned = excluded.is_banned,
         ban_reason = excluded.ban_reason,
         updated_at = CURRENT_TIMESTAMP
-    `).run(serverId, playerId, isWhitelisted, permission, isBanned, banReason);
+    `).run(serverId, playerId, isWhitelisted, permission, hasCustomPermission, isBanned, banReason);
 
     this.syncPlayerAccessFiles(serverId);
     this.syncGlobalWhitelistFlag(playerId);
@@ -1954,8 +2071,15 @@ done
       if (changes.isWhitelisted !== undefined || changes.isBanned) {
         this.sendCommand(serverId, `allowlist ${isWhitelisted ? 'add' : 'remove'} ${safeName}`);
       }
-      if (changes.permission !== undefined) {
+      const customChanged = changes.hasCustomPermission !== undefined;
+      const permissionChanged = changes.permission !== undefined;
+      if (hasCustomPermission && (permissionChanged || customChanged)) {
         this.sendCommand(serverId, `permission set ${safeName} ${permission}`);
+      } else if (customChanged && !hasCustomPermission) {
+        this.sendCommand(
+          serverId,
+          `permission set ${safeName} ${this.getDefaultPlayerPermission(server)}`
+        );
       }
       if (isBanned) {
         this.sendCommand(serverId, `kick ${safeName} ${this.quoteCommandArgument(banReason)}`);
@@ -1963,7 +2087,7 @@ done
     }
 
     return db.prepare(`
-      SELECT p.*, a.is_whitelisted, a.permission, a.is_banned, a.ban_reason
+      SELECT p.*, a.is_whitelisted, a.permission, a.has_custom_permission, a.is_banned, a.ban_reason
       FROM players p JOIN server_player_access a ON a.player_id = p.id
       WHERE a.server_id = ? AND p.id = ?
     `).get(serverId, playerId);
@@ -1981,18 +2105,18 @@ done
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
     const rows = db.prepare(`
-      SELECT p.username, p.xuid, a.is_whitelisted, a.permission
+      SELECT p.username, p.xuid, a.is_whitelisted, a.permission, a.has_custom_permission, a.is_banned
       FROM server_player_access a JOIN players p ON p.id = a.player_id
-      WHERE a.server_id = ? AND a.is_banned = 0
+      WHERE a.server_id = ?
       ORDER BY p.username COLLATE NOCASE
     `).all(serverId);
 
-    const allowlist = rows.filter(row => row.is_whitelisted).map(row => {
+    const allowlist = rows.filter(row => row.is_whitelisted && !row.is_banned).map(row => {
       const entry = { ignoresPlayerLimit: false, name: row.username };
       if (row.xuid) entry.xuid = String(row.xuid);
       return entry;
     });
-    const permissions = rows.filter(row => row.xuid).map(row => ({
+    const permissions = rows.filter(row => row.has_custom_permission && row.xuid).map(row => ({
       permission: row.permission,
       xuid: String(row.xuid),
     }));
@@ -2019,7 +2143,24 @@ done
       }
       if (event.type === 'join') {
         if (this.markPlayerOnline(serverId, player.id)) changed = true;
-        this.kickIfBanned(serverId, event.username);
+        const globallyBanned = db.prepare('SELECT is_banned FROM players WHERE id = ?').get(player.id);
+        if (globallyBanned?.is_banned) {
+          try {
+            this.updatePlayerAccess(serverId, player.id, {
+              isBanned: true,
+              isWhitelisted: false,
+              banReason: 'Banned by administrator',
+            });
+          } catch (err) {
+            logger.warn(`Could not apply global ban on join: ${err.message}`);
+            this.kickIfBanned(serverId, event.username);
+          }
+        } else {
+          this.kickIfBanned(serverId, event.username);
+        }
+        try { this.applyCustomPermissionOnJoin(serverId, player); } catch (err) {
+          logger.warn(`Could not apply custom permission on join: ${err.message}`);
+        }
       } else if (this.markPlayerOffline(serverId, player.id)) {
         changed = true;
       }

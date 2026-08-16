@@ -26,7 +26,9 @@ function ModLibrary() {
 
   // Upload state
   const [uploading, setUploading] = useState(false);
-  const [uploadFile, setUploadFile] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [uploadFiles, setUploadFiles] = useState([]);
+  const [uploadIndex, setUploadIndex] = useState(0);
   const [uploadName, setUploadName] = useState('');
   const [uploadDesc, setUploadDesc] = useState('');
   const [uploadType, setUploadType] = useState('addon');
@@ -35,6 +37,8 @@ function ModLibrary() {
   // Install state
   const [installModal, setInstallModal] = useState(null);
   const [installing, setInstalling] = useState(false);
+  const [installingServerId, setInstallingServerId] = useState(null);
+  const [installError, setInstallError] = useState('');
 
   const [settingsModal, setSettingsModal] = useState(null);
   const [settingsDesc, setSettingsDesc] = useState('');
@@ -60,44 +64,57 @@ function ModLibrary() {
   };
 
   const handleFileSelect = (e) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setUploadFile(file);
-      setUploadName(file.name.replace(/\.[^/.]+$/, ''));
-      const name = file.name.toLowerCase();
-      if (name.endsWith('.mcworld')) setUploadType('world');
-      else if (name.endsWith('.mctemplate')) setUploadType('template');
-      else if (name.endsWith('.mcstructure')) setUploadType('structure');
-      else if (name.endsWith('.mcpack')) setUploadType('texture_pack');
-      else setUploadType('addon');
+    const files = Array.from(e.target.files || []);
+    setUploadFiles(files);
+    if (files.length === 1) {
+      setUploadName(files[0].name.replace(/\.[^/.]+$/, ''));
+      setUploadType(typeFromFileName(files[0].name));
+    } else {
+      setUploadName('');
     }
   };
 
   const handleUpload = async () => {
-    if (!uploadFile) {
+    if (!uploadFiles.length) {
       setError('Please select a file');
       return;
     }
 
     setUploading(true);
+    setUploadProgress(0);
+    setUploadIndex(0);
     setError('');
+    const failures = [];
     try {
-      await modApi.upload(uploadFile, {
-        name: uploadName,
-        description: uploadDesc,
-        type: uploadType,
-      });
-      setSuccess('Mod uploaded successfully!');
+      for (let i = 0; i < uploadFiles.length; i += 1) {
+        const file = uploadFiles[i];
+        setUploadIndex(i);
+        setUploadProgress(0);
+        try {
+          await modApi.upload(file, {
+            name: uploadFiles.length === 1 ? (uploadName || file.name.replace(/\.[^/.]+$/, '')) : file.name.replace(/\.[^/.]+$/, ''),
+            description: uploadDesc,
+            type: uploadFiles.length === 1 ? uploadType : typeFromFileName(file.name),
+          }, (percent) => setUploadProgress(percent));
+        } catch (err) {
+          failures.push(`${file.name}: ${err.response?.data?.error || err.message || 'Upload failed'}`);
+        }
+      }
+      loadMods();
+      if (failures.length) {
+        setError(failures.join(' '));
+        return;
+      }
+      setSuccess(uploadFiles.length === 1 ? 'Mod uploaded successfully!' : `${uploadFiles.length} mods uploaded successfully!`);
       setShowUploadModal(false);
-      setUploadFile(null);
+      setUploadFiles([]);
       setUploadName('');
       setUploadDesc('');
-      loadMods();
+      setUploadProgress(null);
       setTimeout(() => setSuccess(''), 3000);
-    } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Upload failed');
     } finally {
       setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -114,8 +131,17 @@ function ModLibrary() {
     }
   };
 
+  const openInstallModal = (mod) => {
+    setInstallError('');
+    setInstallingServerId(null);
+    setInstallModal(mod);
+  };
+
   const handleInstall = async (modId, serverId) => {
+    if (installing) return;
     setInstalling(true);
+    setInstallingServerId(serverId);
+    setInstallError('');
     try {
       await modApi.install(modId, serverId);
       await refresh();
@@ -123,9 +149,10 @@ function ModLibrary() {
       setInstallModal(null);
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
-      setError(err.response?.data?.error || err.message);
+      setInstallError(err.response?.data?.error || err.message);
     } finally {
       setInstalling(false);
+      setInstallingServerId(null);
     }
   };
 
@@ -247,7 +274,10 @@ function ModLibrary() {
           </div>
         </div>
         <button
-          onClick={() => setShowUploadModal(true)}
+          onClick={() => {
+            setUploadProgress(null);
+            setShowUploadModal(true);
+          }}
           className="btn btn-primary"
         >
           <Upload className="w-4 h-4" />
@@ -311,7 +341,13 @@ function ModLibrary() {
           <h3 className="text-lg font-semibold text-white mb-2">No mods in library</h3>
           <p className="text-mc-textMuted mb-6">Upload mods or download them from the catalog</p>
           <div className="flex items-center justify-center gap-3">
-            <button onClick={() => setShowUploadModal(true)} className="btn btn-primary">
+            <button
+              onClick={() => {
+                setUploadProgress(null);
+                setShowUploadModal(true);
+              }}
+              className="btn btn-primary"
+            >
               <Upload className="w-4 h-4" /> Upload Mod
             </button>
             <button onClick={() => navigate('/mods/catalog')} className="btn btn-secondary">
@@ -327,7 +363,7 @@ function ModLibrary() {
                 key={mod.id}
                 mod={mod}
                 onOpen={() => setExpandedMod(mod)}
-                onInstall={() => setInstallModal(mod)}
+                onInstall={() => openInstallModal(mod)}
                 getTypeBadge={getTypeBadge}
                 getSourceBadge={getSourceBadge}
               />
@@ -353,7 +389,7 @@ function ModLibrary() {
             mod={expandedMod}
             expanded
             onClose={() => setExpandedMod(null)}
-            onInstall={() => setInstallModal(expandedMod)}
+            onInstall={() => openInstallModal(expandedMod)}
             onSettings={() => openSettings(expandedMod)}
             onDelete={() => handleDelete(expandedMod.id)}
             getTypeBadge={getTypeBadge}
@@ -368,60 +404,90 @@ function ModLibrary() {
           <div className="card max-w-md w-full animate-slide-up">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-white">Upload Mod</h3>
-              <button onClick={() => setShowUploadModal(false)} className="p-1 hover:bg-mc-surfaceLight rounded">
+              <button
+                onClick={() => setShowUploadModal(false)}
+                disabled={uploading}
+                className="p-1 hover:bg-mc-surfaceLight rounded disabled:opacity-30"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
+            {error && (
+              <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+                <p className="text-sm text-red-400">{error}</p>
+              </div>
+            )}
+
             <div className="space-y-4">
               {/* File Drop */}
               <div
-                className="border-2 border-dashed border-mc-surfaceLight rounded-lg p-8 text-center 
-                  hover:border-mc-accent/50 transition-colors cursor-pointer"
-                onClick={() => fileInputRef.current?.click()}
+                className={`border-2 border-dashed border-mc-surfaceLight rounded-lg p-8 text-center 
+                  hover:border-mc-accent/50 transition-colors ${uploading ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}
+                onClick={() => { if (!uploading) fileInputRef.current?.click(); }}
               >
                 <Upload className="w-8 h-8 text-mc-textMuted mx-auto mb-2" />
-                {uploadFile ? (
-                  <p className="text-sm text-mc-accent">{uploadFile.name}</p>
+                {uploadFiles.length === 1 ? (
+                  <p className="text-sm text-mc-accent">{uploadFiles[0].name}</p>
+                ) : uploadFiles.length > 1 ? (
+                  <p className="text-sm text-mc-accent">{uploadFiles.length} files selected</p>
                 ) : (
-                  <p className="text-sm text-mc-textMuted">Click to select a file</p>
+                  <p className="text-sm text-mc-textMuted">Click to select one or more files</p>
                 )}
                 <p className="text-xs text-mc-textMuted mt-1">.mcpack, .mcaddon, .mcworld, .mctemplate, .mcstructure, .zip</p>
                 <input
                   ref={fileInputRef}
                   type="file"
+                  multiple
                   accept=".mcpack,.mcaddon,.mcworld,.zip,.mctemplate,.mcstructure"
                   onChange={handleFileSelect}
                   className="hidden"
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-mc-text mb-2">Name</label>
-                <input
-                  type="text"
-                  value={uploadName}
-                  onChange={(e) => setUploadName(e.target.value)}
-                  className="input"
-                  placeholder="Mod name"
-                />
-              </div>
+              {uploadFiles.length > 1 && (
+                <ul className="max-h-28 overflow-y-auto text-xs text-mc-textMuted space-y-1">
+                  {uploadFiles.map((file, index) => (
+                    <li key={`${file.name}-${index}`} className={uploading && index === uploadIndex ? 'text-mc-accent' : ''}>
+                      {file.name}
+                    </li>
+                  ))}
+                </ul>
+              )}
 
-              <div>
-                <label className="block text-sm font-medium text-mc-text mb-2">Type</label>
-                <select
-                  value={uploadType}
-                  onChange={(e) => setUploadType(e.target.value)}
-                  className="input"
-                >
-                  <option value="addon">Addon</option>
-                  <option value="texture_pack">Texture Pack</option>
-                  <option value="world">World/Map</option>
-                  <option value="template">Template</option>
-                  <option value="structure">Structure</option>
-                  <option value="skin">Skin</option>
-                </select>
-              </div>
+              {uploadFiles.length <= 1 && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-mc-text mb-2">Name</label>
+                    <input
+                      type="text"
+                      value={uploadName}
+                      onChange={(e) => setUploadName(e.target.value)}
+                      disabled={uploading}
+                      className="input"
+                      placeholder="Mod name"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-mc-text mb-2">Type</label>
+                    <select
+                      value={uploadType}
+                      onChange={(e) => setUploadType(e.target.value)}
+                      disabled={uploading}
+                      className="input"
+                    >
+                      <option value="addon">Addon</option>
+                      <option value="texture_pack">Texture Pack</option>
+                      <option value="world">World/Map</option>
+                      <option value="template">Template</option>
+                      <option value="structure">Structure</option>
+                      <option value="skin">Skin</option>
+                    </select>
+                  </div>
+                </>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-mc-text mb-2">Description</label>
@@ -431,19 +497,46 @@ function ModLibrary() {
                   className="input resize-none"
                   rows="2"
                   placeholder="Optional description..."
+                  disabled={uploading}
                 />
               </div>
+
+              {uploading && (
+                <div>
+                  <div className="h-2 bg-mc-darker rounded-full overflow-hidden">
+                    <div
+                      className={`h-full bg-mc-accent transition-all duration-200 ${
+                        uploadProgress == null ? 'w-1/3 animate-pulse' : ''
+                      }`}
+                      style={uploadProgress == null ? undefined : { width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-mc-textMuted mt-2">
+                    {uploadFiles.length > 1
+                      ? `Uploading ${uploadIndex + 1} of ${uploadFiles.length}${uploadProgress == null ? '' : uploadProgress < 100 ? ` — ${uploadProgress}%` : ' — saving'}`
+                      : uploadProgress == null
+                        ? 'Uploading…'
+                        : uploadProgress < 100
+                          ? `Uploading ${uploadProgress}%`
+                          : 'Saving to the library…'}
+                  </p>
+                </div>
+              )}
 
               <div className="flex items-center gap-3 pt-2">
                 <button
                   onClick={handleUpload}
-                  disabled={uploading || !uploadFile}
+                  disabled={uploading || uploadFiles.length === 0}
                   className="btn btn-primary flex-1"
                 >
                   {uploading ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      Uploading...
+                      {uploadProgress != null && uploadProgress < 100
+                        ? `Uploading ${uploadProgress}%`
+                        : uploadFiles.length > 1
+                          ? `Uploading ${uploadIndex + 1} of ${uploadFiles.length}`
+                          : 'Uploading...'}
                     </>
                   ) : (
                     <>
@@ -454,7 +547,8 @@ function ModLibrary() {
                 </button>
                 <button
                   onClick={() => setShowUploadModal(false)}
-                  className="btn btn-secondary"
+                  disabled={uploading}
+                  className="btn btn-secondary disabled:opacity-30"
                 >
                   Cancel
                 </button>
@@ -470,7 +564,11 @@ function ModLibrary() {
           <div className="card max-w-md w-full animate-slide-up">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-white">Install to Server</h3>
-              <button onClick={() => setInstallModal(null)} className="p-1 hover:bg-mc-surfaceLight rounded">
+              <button
+                onClick={() => setInstallModal(null)}
+                disabled={installing}
+                className="p-1 hover:bg-mc-surfaceLight rounded disabled:opacity-30"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -479,32 +577,66 @@ function ModLibrary() {
               Install <strong className="text-white">{installModal.name}</strong> to a server:
             </p>
 
-            <div className="space-y-2 mb-4 max-h-64 overflow-y-auto">
+            {installing && (
+              <div className="mb-4 p-2.5 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-yellow-300 text-sm flex items-start gap-2">
+                <Loader2 className="w-4 h-4 flex-shrink-0 mt-0.5 animate-spin" />
+                <div>
+                  <p className="font-medium">Installing</p>
+                  <p className="text-xs text-yellow-200/80 mt-1">
+                    Copying this pack onto the selected server. This window closes when it finishes.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {installError && (
+              <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+                <p className="text-sm text-red-400">{installError}</p>
+              </div>
+            )}
+
+            <div className={`space-y-2 mb-4 max-h-64 overflow-y-auto ${installing ? 'pointer-events-none' : ''}`}>
               {servers.length === 0 ? (
                 <p className="text-sm text-mc-textMuted text-center py-4">No servers available</p>
               ) : (
-                servers.map(server => (
-                  <button
-                    key={server.id}
-                    onClick={() => handleInstall(installModal.id, server.id)}
-                    disabled={installing}
-                    className="w-full flex items-center gap-3 p-3 bg-mc-darker rounded-lg 
-                      hover:bg-mc-surfaceLight transition-colors text-left"
-                  >
-                    <Server className="w-4 h-4 text-mc-textMuted" />
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-white">{server.name}</p>
-                      <p className="text-xs text-mc-textMuted">Port {server.port} • {server.status}</p>
-                    </div>
-                    <Plus className="w-4 h-4 text-mc-accent" />
-                  </button>
-                ))
+                servers.map(server => {
+                  const isTarget = installing && installingServerId === server.id;
+                  return (
+                    <button
+                      key={server.id}
+                      onClick={() => handleInstall(installModal.id, server.id)}
+                      disabled={installing}
+                      className={`w-full flex items-center gap-3 p-3 bg-mc-darker rounded-lg text-left transition-colors ${
+                        installing && !isTarget
+                          ? 'opacity-40 cursor-not-allowed'
+                          : installing
+                            ? 'border border-yellow-500/40 cursor-not-allowed'
+                            : 'hover:bg-mc-surfaceLight'
+                      }`}
+                    >
+                      <Server className="w-4 h-4 text-mc-textMuted" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-white">{server.name}</p>
+                        <p className="text-xs text-mc-textMuted">
+                          {isTarget ? 'Installing…' : `Port ${server.port} • ${server.status}`}
+                        </p>
+                      </div>
+                      {isTarget ? (
+                        <Loader2 className="w-4 h-4 text-yellow-300 animate-spin" />
+                      ) : (
+                        <Plus className="w-4 h-4 text-mc-accent" />
+                      )}
+                    </button>
+                  );
+                })
               )}
             </div>
 
             <button
               onClick={() => setInstallModal(null)}
-              className="btn btn-secondary w-full"
+              disabled={installing}
+              className="btn btn-secondary w-full disabled:opacity-30"
             >
               Cancel
             </button>
@@ -611,6 +743,15 @@ function ModLibrary() {
       )}
     </div>
   );
+}
+
+function typeFromFileName(name) {
+  const lower = String(name || '').toLowerCase();
+  if (lower.endsWith('.mcworld')) return 'world';
+  if (lower.endsWith('.mctemplate')) return 'template';
+  if (lower.endsWith('.mcstructure')) return 'structure';
+  if (lower.endsWith('.mcpack')) return 'texture_pack';
+  return 'addon';
 }
 
 function libraryThumbnailSrc(mod) {

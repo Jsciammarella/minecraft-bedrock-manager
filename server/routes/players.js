@@ -6,10 +6,7 @@ const serverManager = require('../services/serverManager');
 // Get all known players
 router.get('/', async (req, res) => {
   try {
-    const players = db.prepare(`
-      SELECT * FROM players ORDER BY username
-    `).all();
-    res.json(players);
+    res.json(serverManager.listPlayerSummaries());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -96,6 +93,37 @@ router.post('/:id/unwhitelist', async (req, res) => {
     if (!req.body.serverId) return res.status(400).json({ error: 'serverId required' });
     await serverManager.removeFromWhitelist(req.body.serverId, req.params.id);
     res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/:id/unwhitelist-all', async (req, res) => {
+  try {
+    const player = serverManager.removeFromAllWhitelists(req.params.id);
+    res.json(player);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/:id/ban-all', async (req, res) => {
+  try {
+    const player = serverManager.setPlayerBannedEverywhere(
+      req.params.id,
+      true,
+      req.body?.reason || 'Banned by administrator'
+    );
+    res.json(player);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/:id/unban-all', async (req, res) => {
+  try {
+    const player = serverManager.setPlayerBannedEverywhere(req.params.id, false);
+    res.json(player);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

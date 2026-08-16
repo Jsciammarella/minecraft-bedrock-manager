@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { playerApi, serverApi } from '../services/api';
+import { playerApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import {
-  ArrowLeft, Users, Search, Plus, Shield, ShieldOff,
-  AlertCircle, Check, Loader2, Scan, RefreshCw, Trash2, X
+  ArrowLeft, Users, Search, Plus, Shield, ShieldOff, Ban,
+  AlertCircle, AlertTriangle, Check, Loader2, Scan, X
 } from 'lucide-react';
 
 function PlayerManagement() {
@@ -15,7 +15,9 @@ function PlayerManagement() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [notice, setNotice] = useState('');
   const [search, setSearch] = useState('');
+  const [busyPlayerId, setBusyPlayerId] = useState(null);
 
   // Add player modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -62,40 +64,45 @@ function PlayerManagement() {
     }
   };
 
-  const handleWhitelist = async (playerId) => {
-    // If there are running servers, whitelist for all of them
-    const runningServers = servers.filter(s => s.status === 'running');
-    if (runningServers.length === 0) {
-      setError('No running servers to whitelist for. Start a server first.');
-      return;
-    }
+  const whitelistCount = (player) => Number(player.whitelist_count || 0);
+
+  const handleUnwhitelistAll = async (player) => {
+    setBusyPlayerId(player.id);
+    setError('');
+    setNotice('');
     try {
-      for (const srv of runningServers) {
-        await playerApi.whitelist(playerId, srv.id);
-      }
-      setSuccess(`${players.find(p => p.id === playerId)?.username} whitelisted on ${runningServers.length} server(s)!`);
+      await playerApi.unwhitelistAll(player.id);
+      setSuccess(`${player.username} removed from all allow lists`);
       loadPlayers();
-      setTimeout(() => setSuccess(''), 3000);
+      setTimeout(() => setSuccess(''), 4000);
     } catch (err) {
       setError(err.response?.data?.error || err.message);
+    } finally {
+      setBusyPlayerId(null);
     }
   };
 
-  const handleUnwhitelist = async (playerId) => {
+  const handleToggleBan = async (player) => {
+    setBusyPlayerId(player.id);
+    setError('');
+    setSuccess('');
+    setNotice('');
     try {
-      const runningServers = servers.filter(s => s.status === 'running');
-      if (runningServers.length === 0) {
-        setError('No running servers to update. Manage this player from a server details page.');
-        return;
+      if (player.is_banned) {
+        await playerApi.unbanAll(player.id);
+        setNotice(
+          `${player.username} is no longer banned, but they are no longer on ANY allow lists and will need to be added manually.`
+        );
+      } else {
+        await playerApi.banAll(player.id, 'Banned by administrator');
+        setSuccess(`${player.username} is banned from all servers, including servers created later.`);
+        setTimeout(() => setSuccess(''), 4000);
       }
-      for (const srv of runningServers) {
-        await playerApi.unwhitelist(playerId, srv.id);
-      }
-      setSuccess(`${players.find(p => p.id === playerId)?.username} removed from ${runningServers.length} running server whitelist(s)`);
       loadPlayers();
-      setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
       setError(err.response?.data?.error || err.message);
+    } finally {
+      setBusyPlayerId(null);
     }
   };
 
@@ -174,7 +181,7 @@ function PlayerManagement() {
           </button>
           <div>
             <h1 className="text-2xl font-bold text-white">Player Management</h1>
-            <p className="text-mc-textMuted mt-1">Manage known players and whitelist</p>
+            <p className="text-mc-textMuted mt-1">Manage known players, allow lists, and global bans</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -213,6 +220,12 @@ function PlayerManagement() {
         <div className="mb-4 p-3 bg-green-500/10 border border-green-500/30 rounded-lg flex items-center gap-2">
           <Check className="w-4 h-4 text-green-400 flex-shrink-0" />
           <p className="text-sm text-green-400">{success}</p>
+        </div>
+      )}
+      {notice && (
+        <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+          <p className="text-sm text-amber-300">{notice}</p>
         </div>
       )}
 
@@ -295,8 +308,17 @@ function PlayerManagement() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <h3 className="font-semibold text-white truncate">{player.username}</h3>
-                    {player.is_whitelisted === 1 && (
-                      <span className="badge badge-success"><Shield className="w-3 h-3 mr-1" />Whitelisted</span>
+                    {whitelistCount(player) > 0 && (
+                      <span className="badge badge-success">
+                        <Shield className="w-3 h-3 mr-1" />
+                        whitelisted on {whitelistCount(player)} {whitelistCount(player) === 1 ? 'server' : 'servers'}
+                      </span>
+                    )}
+                    {player.is_banned === 1 && (
+                      <span className="badge badge-danger">
+                        <Ban className="w-3 h-3 mr-1" />
+                        Banned
+                      </span>
                     )}
                   </div>
                   <div className="flex items-center gap-4 text-xs text-mc-textMuted">
@@ -308,23 +330,41 @@ function PlayerManagement() {
 
                 {/* Actions */}
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  {player.is_whitelisted === 1 ? (
+                  {whitelistCount(player) > 0 ? (
                     <button
-                      onClick={() => handleUnwhitelist(player.id)}
+                      onClick={() => handleUnwhitelistAll(player)}
+                      disabled={busyPlayerId === player.id}
                       className="btn btn-secondary text-sm text-mc-danger hover:bg-red-500/20"
-                      title="Remove from whitelist"
+                      title="Remove this user from all allow lists"
                     >
-                      <ShieldOff className="w-4 h-4" />
+                      {busyPlayerId === player.id ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <ShieldOff className="w-4 h-4" />
+                      )}
                     </button>
                   ) : (
-                    <button
-                      onClick={() => handleWhitelist(player.id)}
-                      className="btn btn-secondary text-sm"
-                      title="Add to whitelist (all running servers)"
+                    <span
+                      className="btn btn-secondary text-sm opacity-60 cursor-default pointer-events-auto"
+                      title="User is not included in any whitelists"
                     >
                       <Shield className="w-4 h-4" />
-                    </button>
+                    </span>
                   )}
+                  <button
+                    onClick={() => handleToggleBan(player)}
+                    disabled={busyPlayerId === player.id}
+                    className={`btn btn-secondary text-sm ${player.is_banned ? 'text-mc-danger hover:bg-red-500/20' : ''}`}
+                    title={player.is_banned
+                      ? 'Remove this user from all ban lists'
+                      : 'Ban this user from all servers, including servers created later'}
+                  >
+                    {busyPlayerId === player.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Ban className={`w-4 h-4 ${player.is_banned ? 'text-red-400' : ''}`} />
+                    )}
+                  </button>
                 </div>
               </div>
             </div>
