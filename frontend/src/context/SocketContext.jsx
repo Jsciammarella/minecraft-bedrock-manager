@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, useRef, useCallback } f
 import { io } from 'socket.io-client';
 
 const SocketContext = createContext(null);
+const MAX_CONSOLE_LINES = 200;
 
 export function SocketProvider({ children }) {
   const socketRef = useRef(null);
@@ -37,21 +38,13 @@ export function SocketProvider({ children }) {
     });
 
     socket.on('server-output', (data) => {
-      // Append new output as individual lines to the server's output array
-      // Cap at MAX_OUTPUT_LINES to prevent unbounded memory growth
-      const MAX_OUTPUT_LINES = 2000;
+      // Keep only the latest lines so every server console stays bounded
       setServerOutputs(prev => {
         const existing = prev[data.serverId] || [];
-        // Split incoming data into lines
         const newLines = data.data.split('\n').filter(line => line.trim().length > 0);
-        const combined = [...existing, ...newLines];
-        // Trim to max lines if exceeded
-        const trimmed = combined.length > MAX_OUTPUT_LINES
-          ? combined.slice(combined.length - MAX_OUTPUT_LINES)
-          : combined;
         return {
           ...prev,
-          [data.serverId]: trimmed,
+          [data.serverId]: [...existing, ...newLines].slice(-MAX_CONSOLE_LINES),
         };
       });
     });
@@ -110,7 +103,7 @@ export function SocketProvider({ children }) {
       const existing = prev[key] || [];
       return {
         ...prev,
-        [key]: [...existing, line].slice(-2000),
+        [key]: [...existing, line].slice(-MAX_CONSOLE_LINES),
       };
     });
   }, []);

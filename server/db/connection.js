@@ -216,5 +216,9 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_server_players_server_player
   ON server_players(server_id, player_id)
 `);
+const serverModColumns = new Set(db.prepare('PRAGMA table_info(server_mods)').all().map(column => column.name));
+if (!serverModColumns.has('install_manifest')) {
+  db.exec('ALTER TABLE server_mods ADD COLUMN install_manifest TEXT');
+}
 
 module.exports = db;

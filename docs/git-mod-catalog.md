@@ -73,9 +73,13 @@ maps/
   starter-world/
     mod.json
     starter-world.mcworld
+templates/
+  starter-template.mctemplate
+structures/
+  house.mcstructure
 ```
 
-Supported pack files: `.mcaddon`, `.mcpack`, `.mcworld`, `.zip`, `.mctemplate`.
+Supported pack files: `.mcaddon`, `.mcpack`, `.mcworld`, `.mctemplate`, `.mcstructure`, `.zip`.
 
 Optional images in the same folder: `thumbnail.png`, `thumbnail.jpg`, `logo.png`, `icon.png`, or `pack_icon.png`.
 

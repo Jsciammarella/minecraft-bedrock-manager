@@ -65,7 +65,7 @@ For a native installation:
 
    | Setting | When to change it |
    | --- | --- |
-   | `TZ` | Host timezone, for example `America/Denver` |
+   | `TZ` | Leave unset to use the host timezone. Set only to override it, for example `America/Denver` |
    | `PORT` | Web UI port if `3000` is already in use |
    | `CONNECT_HOST` | Optional IPv4 override for tiles and Bedrock Connect. Leave empty to use this host's LAN IP. Hostnames are ignored because consoles resolve them unreliably |
    | `CURSEFORGE_API_KEY` | Optional. You can also paste this later in **Mod Catalog → Settings** |
@@ -226,7 +226,7 @@ The IPv4 and IPv6 available-port dropdowns combine the manager database with a l
 | `PORT` | `3000` | Web interface and API port |
 | `CONNECT_HOST` | empty | Optional IPv4 shown as the Minecraft connect address; hostnames are ignored and the LAN IP is used instead |
 | `LOG_LEVEL` | `info` | Application logging level |
-| `TZ` | `UTC` | Container timezone |
+| `TZ` | unset | Leave unset to follow the host timezone (`/etc/localtime`). Set only to override |
 | `AUTO_UPDATE_CHECK_INTERVAL` | `86400` | Update-check interval in seconds |
 | `CURSEFORGE_API_KEY` | empty | Optional CurseForge API credential; can also be set in Catalog Settings |
 | `GIT_CATALOG_ENABLED` | empty | Optional Git catalog enable flag when no UI value exists |

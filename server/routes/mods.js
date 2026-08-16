@@ -6,6 +6,7 @@ const path = require('path');
 const modManager = require('../services/modManager');
 const catalog = require('../services/catalogService');
 const gitCatalog = require('../services/gitCatalogClient');
+const packFiles = require('../services/packFiles');
 
 // Multer config for file uploads
 const uploadsDir = path.join(__dirname, '../../data/uploads');
@@ -20,10 +21,10 @@ const upload = multer({
   }),
   limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB; files stream to disk instead of memory
   fileFilter: (req, file, cb) => {
-    const allowed = ['.mcpack', '.mcaddon', '.mcworld', '.zip', '.mctemplate'];
+    const allowed = packFiles.IMPORT_EXTS;
     const ext = path.extname(file.originalname).toLowerCase();
     if (allowed.includes(ext)) cb(null, true);
-    else cb(new Error(`Unsupported file type ${ext || '(none)'}. Use .mcpack, .mcaddon, .mcworld, .zip, or .mctemplate.`));
+    else cb(new Error(packFiles.unsupportedMessage(ext)));
   }
 });
 

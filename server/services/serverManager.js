@@ -979,6 +979,8 @@ done
 
     try {
       this.writeRuntimeServerProperties(current);
+      const packInstaller = require('./packInstaller');
+      await packInstaller.activateServerPacks(current);
       fs.chmodSync(serverBin, '755');
 
       const lanBroadcast = require('./lanBroadcast');
@@ -1139,10 +1141,8 @@ done
 
     const announce = (minutes) => {
       if (!this.ptySessions.has(key)) return;
-      this.sendCommand(
-        serverId,
-        `say [Server Manager] Server restart in ${minutes} minute${minutes === 1 ? '' : 's'}. Please prepare to disconnect.`
-      );
+      const message = `Server Manager: restart in ${minutes} minute${minutes === 1 ? '' : 's'}. Please prepare to disconnect.`;
+      this.sendCommand(serverId, `say ${this.quoteCommandArgument(message)}`);
     };
 
     announce(5);

@@ -33,12 +33,15 @@ services:
       - CONNECT_HOST=${CONNECT_HOST:-}
       - AUTO_UPDATE_CHECK_INTERVAL=${AUTO_UPDATE_CHECK_INTERVAL:-86400}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - TZ=${TZ:-UTC}
     volumes:
       # Persistent data - server worlds, configs, mods
       - mc-data:/app/data
       # Optional: mount custom logs directory
       - mc-logs:/app/data/logs
+      # Follow the host timezone. Do not set TZ here; an explicit TZ value
+      # would override these files. Add TZ only if you need to override the host.
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/api/health"]
       interval: 30s

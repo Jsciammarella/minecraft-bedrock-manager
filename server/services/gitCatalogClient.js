@@ -6,16 +6,18 @@ const settingsStore = require('./settingsStore');
 const modManager = require('./modManager');
 const logger = require('./logger');
 const db = require('../db/connection');
+const packFiles = require('./packFiles');
 
 const execFileAsync = promisify(execFile);
 
 const CLONE_DIR = path.join(__dirname, '../../data/git-catalog/repo');
-const PACK_EXTS = new Set(['.mcaddon', '.mcpack', '.mcworld', '.zip', '.mctemplate']);
+const PACK_EXTS = new Set(packFiles.IMPORT_EXTS);
 const META_NAMES = new Set(['mod.json', 'addon.json']);
 const TYPE_FROM_EXT = {
   '.mcworld': 'world',
   '.mcpack': 'texture_pack',
   '.mctemplate': 'template',
+  '.mcstructure': 'structure',
   '.mcaddon': 'addon',
   '.zip': 'addon',
 };
@@ -31,6 +33,10 @@ const TYPE_FROM_CLASS = {
   skins: 'skin',
   skin: 'skin',
   scripts: 'addon',
+  templates: 'template',
+  template: 'template',
+  structures: 'structure',
+  structure: 'structure',
 };
 const CLASS_FROM_TYPE = {
   addon: 'addons',
@@ -38,7 +44,8 @@ const CLASS_FROM_TYPE = {
   resource_pack: 'texture-packs',
   world: 'maps',
   skin: 'skins',
-  template: 'addons',
+  template: 'templates',
+  structure: 'structures',
 };
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -206,10 +213,13 @@ class GitCatalogClient {
 
     const remote = this.sshToHttps(config.url);
     const branch = config.branch || 'main';
+    const probe = config.token
+      ? this.authenticatedUrl(remote, config.username, config.token)
+      : remote;
     try {
       const { stdout } = await this.runGit(
-        ['ls-remote', '--heads', remote, branch],
-        { timeout: 30000, token: config.token, username: config.username }
+        ['ls-remote', '--heads', probe, branch],
+        { timeout: 30000, remoteUrl: remote }
       );
       const matched = stdout.trim().length > 0;
       if (!matched) {
@@ -240,7 +250,7 @@ class GitCatalogClient {
     fs.mkdirSync(path.dirname(CLONE_DIR), { recursive: true });
     const remote = this.sshToHttps(config.url);
     const branch = config.branch || 'main';
-    const gitAuth = { token: config.token, username: config.username };
+    const gitAuth = { token: config.token, username: config.username, remoteUrl: remote };
 
     try {
       if (fs.existsSync(path.join(CLONE_DIR, '.git'))) {
@@ -594,7 +604,7 @@ class GitCatalogClient {
   }
 
   async runGit(args, options = {}) {
-    const { cwd, timeout = 60000, token, username, skipLfsSmudge = false, lfsUrl } = options;
+    const { cwd, timeout = 60000, token, username, skipLfsSmudge = false, lfsUrl, remoteUrl } = options;
     const gitArgs = [
       '-c', 'credential.helper=',
       '-c', 'credential.interactive=never',
@@ -603,7 +613,7 @@ class GitCatalogClient {
       const basic = Buffer.from(`${username || 'oauth2'}:${token}`, 'utf8').toString('base64');
       const header = `Authorization: Basic ${basic}`;
       try {
-        const origin = new URL(this.sshToHttps(this.getConfig().url || 'https://example.com')).origin;
+        const origin = new URL(this.sshToHttps(remoteUrl || this.getConfig().url || 'https://example.com')).origin;
         gitArgs.push('-c', `http.${origin}/.extraHeader=${header}`);
       } catch {
         gitArgs.push('-c', `http.extraHeader=${header}`);
@@ -654,6 +664,9 @@ class GitCatalogClient {
     const text = raw.replace(/https?:\/\/[^/\s]+@/gi, 'https://***@');
     if (/You are not allowed to download code/i.test(text)) {
       return 'GitLab denied code download. Create a personal, project, or deploy token with the read_repository scope. A token that only has read_user cannot clone a private catalog.';
+    }
+    if (/could not read Username|terminal prompts disabled/i.test(text)) {
+      return 'Git could not authenticate without prompting. Paste the access token (or save settings first) and try Test Connection again.';
     }
     if (/HTTP Basic: Access denied|Authentication failed|AUTH_FAILED|invalid credentials|401 Unauthorized/i.test(text)) {
       return 'Git authentication failed. Check the access token, username, and repository URL.';

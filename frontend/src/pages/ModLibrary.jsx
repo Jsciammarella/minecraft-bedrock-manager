@@ -64,6 +64,12 @@ function ModLibrary() {
     if (file) {
       setUploadFile(file);
       setUploadName(file.name.replace(/\.[^/.]+$/, ''));
+      const name = file.name.toLowerCase();
+      if (name.endsWith('.mcworld')) setUploadType('world');
+      else if (name.endsWith('.mctemplate')) setUploadType('template');
+      else if (name.endsWith('.mcstructure')) setUploadType('structure');
+      else if (name.endsWith('.mcpack')) setUploadType('texture_pack');
+      else setUploadType('addon');
     }
   };
 
@@ -203,8 +209,9 @@ function ModLibrary() {
       resource_pack: 'badge-warning',
       world: 'badge-success',
       map: 'badge-success',
+      template: 'badge-success',
+      structure: 'badge-warning',
       skin: 'badge-danger',
-      template: 'badge-info',
     };
     return <span className={`badge ${colors[type] || 'badge-info'}`}>{(type || 'addon').replace('_', ' ')}</span>;
   };
@@ -290,6 +297,8 @@ function ModLibrary() {
             <option value="addon">Addons</option>
             <option value="texture_pack">Texture Packs</option>
             <option value="world">Worlds</option>
+            <option value="template">Templates</option>
+            <option value="structure">Structures</option>
             <option value="skin">Skins</option>
           </select>
         </div>
@@ -377,11 +386,11 @@ function ModLibrary() {
                 ) : (
                   <p className="text-sm text-mc-textMuted">Click to select a file</p>
                 )}
-                <p className="text-xs text-mc-textMuted mt-1">.mcpack, .mcaddon, .mcworld, .zip</p>
+                <p className="text-xs text-mc-textMuted mt-1">.mcpack, .mcaddon, .mcworld, .mctemplate, .mcstructure, .zip</p>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".mcpack,.mcaddon,.mcworld,.zip,.mctemplate"
+                  accept=".mcpack,.mcaddon,.mcworld,.zip,.mctemplate,.mcstructure"
                   onChange={handleFileSelect}
                   className="hidden"
                 />
@@ -408,8 +417,9 @@ function ModLibrary() {
                   <option value="addon">Addon</option>
                   <option value="texture_pack">Texture Pack</option>
                   <option value="world">World/Map</option>
-                  <option value="skin">Skin</option>
                   <option value="template">Template</option>
+                  <option value="structure">Structure</option>
+                  <option value="skin">Skin</option>
                 </select>
               </div>
 

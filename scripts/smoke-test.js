@@ -3,16 +3,58 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const dgram = require('dgram');
+const zlib = require('zlib');
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-manager-smoke-'));
 process.env.MC_MANAGER_DB_PATH = path.join(testRoot, 'mc_manager.db');
 const db = require('../server/db/connection');
 const serverManager = require('../server/services/serverManager');
 const curseforge = require('../server/services/curseforgeClient');
 const gitCatalog = require('../server/services/gitCatalogClient');
+const packInstaller = require('../server/services/packInstaller');
 const settingsStore = require('../server/services/settingsStore');
 const modManager = require('../server/services/modManager');
 const connectHost = require('../server/services/connectHost');
 const portRanges = require('../server/services/portRanges');
+
+function zipStore(files) {
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const [name, body] of Object.entries(files)) {
+    const data = Buffer.from(body);
+    const nameBuf = Buffer.from(name);
+    const crc = zlib.crc32(data) >>> 0;
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    const localFile = Buffer.concat([local, nameBuf, data]);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(nameBuf.length, 28);
+    central.writeUInt32LE(offset, 42);
+    locals.push(localFile);
+    centrals.push(Buffer.concat([central, nameBuf]));
+    offset += localFile.length;
+  }
+  const localBuf = Buffer.concat(locals);
+  const centralBuf = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(locals.length, 8);
+  end.writeUInt16LE(locals.length, 10);
+  end.writeUInt32LE(centralBuf.length, 12);
+  end.writeUInt32LE(localBuf.length, 16);
+  return Buffer.concat([localBuf, centralBuf, end]);
+}
 
 async function run() {
   const accessTable = db.prepare(
@@ -214,6 +256,126 @@ async function run() {
   const updatedMod = await modManager.updateMod(libraryMod.lastInsertRowid, { description: 'Added after upload' });
   assert.equal(updatedMod.description, 'Added after upload');
 
+  const promptErr = gitCatalog.friendlyGitError(new Error("fatal: could not read Username for 'https://sci-gitlab-01.sciamfam.com': terminal prompts disabled"));
+  assert.match(promptErr, /access token/i);
+
+  const bpManifest = {
+    format_version: 2,
+    header: { name: 'Smoke BP', uuid: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', version: [1, 0, 0] },
+    modules: [{ type: 'data', uuid: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', version: [1, 0, 0] }],
+  };
+  const rpManifest = {
+    format_version: 2,
+    header: { name: 'Smoke RP', uuid: 'cccccccc-cccc-cccc-cccc-cccccccccccc', version: [1, 0, 0] },
+    modules: [{ type: 'resources', uuid: 'dddddddd-dddd-dddd-dddd-dddddddddddd', version: [1, 0, 0] }],
+  };
+  const unpacked = path.join(testRoot, 'unpacked-addon');
+  fs.mkdirSync(path.join(unpacked, 'BP'), { recursive: true });
+  fs.mkdirSync(path.join(unpacked, 'RP'), { recursive: true });
+  fs.writeFileSync(path.join(unpacked, 'BP', 'manifest.json'), JSON.stringify(bpManifest));
+  fs.writeFileSync(path.join(unpacked, 'RP', 'manifest.json'), JSON.stringify(rpManifest));
+  const discovered = packInstaller.findManifestPacks(unpacked);
+  assert.equal(discovered.length, 2, 'addon folders with BP and RP manifests should be discovered');
+  assert.equal(packInstaller.packTypeFromManifest(bpManifest), 'data');
+  assert.equal(packInstaller.packTypeFromManifest(rpManifest), 'resources');
+
+  const addonZip = path.join(testRoot, 'smoke-addon.mcaddon');
+  fs.writeFileSync(addonZip, zipStore({
+    'BP/manifest.json': JSON.stringify(bpManifest),
+    'RP/manifest.json': JSON.stringify(rpManifest),
+  }));
+  const packServerPath = path.join(testRoot, 'pack-server');
+  fs.mkdirSync(path.join(packServerPath, 'behavior_packs'), { recursive: true });
+  fs.mkdirSync(path.join(packServerPath, 'resource_packs'), { recursive: true });
+  fs.writeFileSync(path.join(packServerPath, 'server.properties'), 'level-name=Bedrock level\n');
+  fs.writeFileSync(path.join(packServerPath, 'behavior_packs', 'smoke-addon.mcaddon'), 'stale-archive');
+  const packServer = db.prepare(`
+    INSERT INTO servers (name, version, port, data_path)
+    VALUES (?, 'test', ?, ?)
+  `).run(`packs-${suffix}`, 40200, packServerPath);
+  const packMod = db.prepare(`
+    INSERT INTO mods (name, slug, type, description, file_path, source)
+    VALUES (?, ?, 'addon', '', ?, 'upload')
+  `).run('Smoke Addon', `smoke-addon-${suffix}`, addonZip);
+  await modManager.installModToServer(packServer.lastInsertRowid, packMod.lastInsertRowid);
+  const placedBp = path.join(packServerPath, 'behavior_packs', `addon_${packMod.lastInsertRowid}_aaaaaaaa`);
+  const placedRp = path.join(packServerPath, 'resource_packs', `addon_${packMod.lastInsertRowid}_cccccccc`);
+  assert(fs.existsSync(path.join(placedBp, 'manifest.json')), 'behavior pack was not extracted');
+  assert(fs.existsSync(path.join(placedRp, 'manifest.json')), 'resource pack was not extracted');
+  assert.equal(fs.existsSync(path.join(packServerPath, 'behavior_packs', 'smoke-addon.mcaddon')), false);
+  const worldBp = JSON.parse(fs.readFileSync(path.join(packServerPath, 'worlds', 'Bedrock level', 'world_behavior_packs.json'), 'utf8'));
+  const worldRp = JSON.parse(fs.readFileSync(path.join(packServerPath, 'worlds', 'Bedrock level', 'world_resource_packs.json'), 'utf8'));
+  assert.equal(worldBp[0].pack_id, 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+  assert.equal(worldRp[0].pack_id, 'cccccccc-cccc-cccc-cccc-cccccccccccc');
+  await modManager.uninstallModFromServer(packServer.lastInsertRowid, packMod.lastInsertRowid);
+  assert.equal(fs.existsSync(placedBp), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(packServerPath, 'worlds', 'Bedrock level', 'world_behavior_packs.json'), 'utf8')).length, 0);
+
+  const worldZip = path.join(testRoot, 'smoke-map.mcworld');
+  fs.writeFileSync(worldZip, zipStore({
+    'level.dat': 'dummy-level',
+    'levelname.txt': 'Smoke Map\n',
+    'db/placeholder': 'x',
+  }));
+  fs.writeFileSync(path.join(packServerPath, 'worlds', 'smoke-map.mcworld'), 'stale-world');
+  const worldMod = db.prepare(`
+    INSERT INTO mods (name, slug, type, description, file_path, source)
+    VALUES (?, ?, 'world', '', ?, 'upload')
+  `).run('Smoke Map', `smoke-map-${suffix}`, worldZip);
+  await modManager.installModToServer(packServer.lastInsertRowid, worldMod.lastInsertRowid);
+  const importedWorld = path.join(packServerPath, 'worlds', 'Smoke Map');
+  assert(fs.existsSync(path.join(importedWorld, 'level.dat')), 'mcworld was not extracted as a world folder');
+  assert.equal(fs.existsSync(path.join(packServerPath, 'worlds', 'smoke-map.mcworld')), false);
+  assert.match(fs.readFileSync(path.join(packServerPath, 'server.properties'), 'utf8'), /^level-name=Smoke Map$/m);
+  await modManager.uninstallModFromServer(packServer.lastInsertRowid, worldMod.lastInsertRowid);
+  assert.equal(fs.existsSync(importedWorld), false, 'imported world folder was not removed');
+  assert.match(fs.readFileSync(path.join(packServerPath, 'server.properties'), 'utf8'), /^level-name=Bedrock level$/m);
+  assert(fs.existsSync(path.join(packServerPath, 'worlds', 'Bedrock level')), 'original world should stay after map uninstall');
+
+  const zipAddon = path.join(testRoot, 'smoke-addon.zip');
+  fs.writeFileSync(zipAddon, zipStore({
+    'BP/manifest.json': JSON.stringify(bpManifest),
+    'RP/manifest.json': JSON.stringify(rpManifest),
+  }));
+  const zipMod = db.prepare(`
+    INSERT INTO mods (name, slug, type, description, file_path, source)
+    VALUES (?, ?, 'addon', '', ?, 'upload')
+  `).run('Smoke Zip Addon', `smoke-zip-${suffix}`, zipAddon);
+  await modManager.installModToServer(packServer.lastInsertRowid, zipMod.lastInsertRowid);
+  const zipBp = path.join(packServerPath, 'behavior_packs', `addon_${zipMod.lastInsertRowid}_aaaaaaaa`);
+  assert(fs.existsSync(path.join(zipBp, 'manifest.json')), '.zip addon was not extracted');
+  await modManager.uninstallModFromServer(packServer.lastInsertRowid, zipMod.lastInsertRowid);
+  assert.equal(fs.existsSync(zipBp), false);
+
+  const templateZip = path.join(testRoot, 'smoke.mctemplate');
+  fs.writeFileSync(templateZip, zipStore({
+    'level.dat': 'dummy-level',
+    'levelname.txt': 'Smoke Template\n',
+  }));
+  const templateMod = db.prepare(`
+    INSERT INTO mods (name, slug, type, description, file_path, source)
+    VALUES (?, ?, 'template', '', ?, 'upload')
+  `).run('Smoke Template', `smoke-template-${suffix}`, templateZip);
+  await modManager.installModToServer(packServer.lastInsertRowid, templateMod.lastInsertRowid);
+  const templateWorld = path.join(packServerPath, 'worlds', 'Smoke Template');
+  assert(fs.existsSync(path.join(templateWorld, 'level.dat')), '.mctemplate was not extracted as a world');
+  assert.match(fs.readFileSync(path.join(packServerPath, 'server.properties'), 'utf8'), /^level-name=Smoke Template$/m);
+  await modManager.uninstallModFromServer(packServer.lastInsertRowid, templateMod.lastInsertRowid);
+  assert.equal(fs.existsSync(templateWorld), false);
+  assert.match(fs.readFileSync(path.join(packServerPath, 'server.properties'), 'utf8'), /^level-name=Bedrock level$/m);
+
+  const structurePath = path.join(testRoot, 'house.mcstructure');
+  fs.writeFileSync(structurePath, 'structure-bytes');
+  const structureMod = db.prepare(`
+    INSERT INTO mods (name, slug, type, description, file_path, source)
+    VALUES (?, ?, 'structure', '', ?, 'upload')
+  `).run('Smoke Structure', `smoke-structure-${suffix}`, structurePath);
+  await modManager.installModToServer(packServer.lastInsertRowid, structureMod.lastInsertRowid);
+  const structureDest = path.join(packServerPath, 'worlds', 'Bedrock level', 'structures', 'house.mcstructure');
+  assert(fs.existsSync(structureDest), '.mcstructure was not copied into the world structures folder');
+  await modManager.uninstallModFromServer(packServer.lastInsertRowid, structureMod.lastInsertRowid);
+  assert.equal(fs.existsSync(structureDest), false);
+
   const bedrockConnect = require('../server/services/bedrockConnect');
   assert.equal(bedrockConnect.bundledVersion(), '1.68.0');
   assert(
@@ -369,6 +531,7 @@ async function run() {
     udpPortDetection: 'ok',
     playerAccessFiles: 'ok',
     playerPresence: 'ok',
+    packInstall: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));

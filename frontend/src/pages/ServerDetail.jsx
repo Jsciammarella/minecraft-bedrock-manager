@@ -97,7 +97,7 @@ function ServerDetail() {
   const [lanConflict, setLanConflict] = useState(null);
   const [lanRestartMode, setLanRestartMode] = useState('immediate');
   const terminalRef = useRef(null);
-  const terminalOutput = serverOutputs[String(id)] || [];
+  const terminalOutput = (serverOutputs[String(id)] || []).slice(-200);
 
   useEffect(() => {
     setLoading(true);
