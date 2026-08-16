@@ -602,7 +602,7 @@ function ServerDetail() {
                   Proxy on UDP {lan.proxyPort}. Consoles discover it on UDP {lan.discoveryPort || 19132}.
                 </p>
               )}
-              {lan.error && (
+              {lan.error && !/Stop or remove Bedrock Connect/i.test(lan.error) && (
                 <p className="text-xs text-red-400 mt-2">{lan.error}</p>
               )}
             </div>

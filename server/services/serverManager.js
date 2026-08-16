@@ -192,15 +192,6 @@ class ServerManager {
         lan: { ...lan, enabled: false, active: false, native: false, error: null },
       };
     }
-    if (this.isBedrockConnectActive() && lan.enabled && !lan.native && !lan.active) {
-      return {
-        ...server,
-        lan: {
-          ...lan,
-          error: lan.error || 'Bedrock Connect is running on UDP 19132. Stop or remove Bedrock Connect to start LAN proxy.',
-        },
-      };
-    }
     return { ...server, lan };
   }
 

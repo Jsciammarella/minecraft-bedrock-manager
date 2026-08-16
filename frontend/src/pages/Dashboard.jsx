@@ -490,7 +490,7 @@ function Dashboard() {
                 </div>
               )}
 
-              {lan.error && (
+              {lan.error && !/Stop or remove Bedrock Connect/i.test(lan.error) && (
                 <div className="mb-4 p-2.5 rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 text-xs">
                   {lan.error}
                 </div>
