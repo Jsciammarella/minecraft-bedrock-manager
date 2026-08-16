@@ -219,13 +219,47 @@ class ServerManager {
         lan: lanBroadcast.statusFor(server),
       };
     }
-    return {
-      allowed: true,
-      native: true,
-      conflict: null,
-      message: 'This Bedrock server advertises itself on UDP 19132/19133. Phantom is not used, because current Bedrock needs LAN visibility on to accept connections.',
-      lan: lanBroadcast.statusFor({ ...server, lan_broadcast: 1 }),
-    };
+    if (Number(server.port) === lanBroadcast.DISCOVERY_PORT) {
+      return {
+        allowed: true,
+        native: true,
+        conflict: null,
+        message: 'This server already uses UDP 19132, so consoles on the same LAN can see it without a proxy.',
+        lan: lanBroadcast.statusFor({ ...server, lan_broadcast: 1 }),
+      };
+    }
+    if (lanBroadcast.isActive(serverId) || [...this.getAllServers()].some(item => lanBroadcast.isActive(item.id))) {
+      return { allowed: true, native: false, conflict: null, lan: lanBroadcast.statusFor(server) };
+    }
+    const occupant = db.prepare('SELECT * FROM servers WHERE port = ? AND id != ?').get(lanBroadcast.DISCOVERY_PORT, serverId);
+    if (occupant && !this.isBedrockConnect(occupant)) {
+      const nextPort = await this.nextAvailablePort({
+        exclude: [lanBroadcast.DISCOVERY_PORT, occupant.port, server.port],
+      });
+      return {
+        allowed: true,
+        native: false,
+        conflict: {
+          serverId: occupant.id,
+          serverName: occupant.name,
+          status: occupant.status,
+          currentPort: occupant.port,
+          nextPort,
+        },
+        message: `${occupant.name} is using UDP 19132. Consoles look for LAN games on that port, so it must be moved before LAN listing can start.`,
+        lan: lanBroadcast.statusFor(server),
+      };
+    }
+    const free = lanBroadcast.hasAnyActive() || await this.isUdpPortAvailable(lanBroadcast.DISCOVERY_PORT);
+    if (!free) {
+      return {
+        allowed: false,
+        reason: 'port_blocked',
+        message: 'UDP 19132 is in use by another process. Free it before enabling LAN listing.',
+        lan: lanBroadcast.statusFor(server),
+      };
+    }
+    return { allowed: true, native: false, conflict: null, lan: lanBroadcast.statusFor(server) };
   }
 
   async setLanBroadcast(serverId, enabled, { acceptConflict = false, restartMode = 'immediate' } = {}) {
@@ -310,10 +344,21 @@ class ServerManager {
       lanBroadcast.stop(serverId);
       return lanBroadcast.statusFor(server);
     }
-    // BDS 1.26.30+ needs enable-lan-visibility=true to send a valid MOTD pong.
-    // That binds UDP 19132/19133 natively, so Phantom must not also bind them.
+    // BDS 1.26.30+ needs enable-lan-visibility=true to send a valid MOTD pong,
+    // but that also tries to bind UDP 19132/19133. Occupy those first so only
+    // Phantom (LAN toggle on) advertises, then start Phantom if requested.
+    if (Number(server.port) === lanBroadcast.DISCOVERY_PORT) return lanBroadcast.statusFor(server);
+    if (server.status === 'creating') {
+      lanBroadcast.stop(serverId);
+      return lanBroadcast.statusFor(server);
+    }
+    if (lanBroadcast.isActive(serverId)) return lanBroadcast.statusFor(server);
     lanBroadcast.stop(serverId);
-    return lanBroadcast.statusFor(server);
+    const session = await lanBroadcast.startAndWait(server);
+    db.prepare('UPDATE servers SET lan_proxy_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(session.proxyPort, serverId);
+    this.invalidateServerCache(serverId);
+    return lanBroadcast.statusFor(this.getServer(serverId));
   }
 
   async restoreLanBroadcasts() {
@@ -925,34 +970,47 @@ done
 
     try {
       this.writeRuntimeServerProperties(current);
-      // BDS LAN visibility binds 19132/19133. Free those before spawn so Phantom
-      // cannot hold them and so Xbox can see the native LAN advertisement.
-      require('./lanBroadcast').stopAll();
       fs.chmodSync(serverBin, '755');
 
-      const { spawn: spawnPty } = require('node-pty');
-      const pty = spawnPty(serverBin, [], {
-        name: 'xterm-color',
-        cols: 120,
-        rows: 30,
-        cwd: serverPath,
-        env: {
-          ...process.env,
-          LD_LIBRARY_PATH: `${serverPath}:.`,
-          PORT: String(current.port),
-        },
-      });
+      const lanBroadcast = require('./lanBroadcast');
+      const nativeLan = Number(current.port) === lanBroadcast.DISCOVERY_PORT;
+      // Keep 19132/19133 occupied while BDS starts so LAN visibility cannot
+      // advertise this server. Phantom later binds those ports only if the
+      // LAN toggle is on.
+      const discoveryGuards = nativeLan ? [] : await lanBroadcast.occupyDiscoveryPorts();
+      try {
+        const { spawn: spawnPty } = require('node-pty');
+        const pty = spawnPty(serverBin, [], {
+          name: 'xterm-color',
+          cols: 120,
+          rows: 30,
+          cwd: serverPath,
+          env: {
+            ...process.env,
+            LD_LIBRARY_PATH: `${serverPath}:.`,
+            PORT: String(current.port),
+          },
+        });
 
-      this.ptySessions.set(sessionKey, pty);
+        this.ptySessions.set(sessionKey, pty);
 
-      // Connect PTY output to Socket.IO for real-time terminal streaming
-      this.setupPtyOutputBroadcast(serverId, pty);
+        // Connect PTY output to Socket.IO for real-time terminal streaming
+        this.setupPtyOutputBroadcast(serverId, pty);
 
-      // Update status
-      db.prepare('UPDATE servers SET status = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-        .run('starting', serverId);
-      this.invalidateServerCache(serverId);
-      this.broadcastServerStatus(serverId);
+        // Update status
+        db.prepare('UPDATE servers SET status = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run('starting', serverId);
+        this.invalidateServerCache(serverId);
+        this.broadcastServerStatus(serverId);
+
+        if (!nativeLan) {
+          await this.waitUntilUdpPortBusy(current.port);
+          // Give BDS time to fail its 19132/19133 LAN bind while we still hold them.
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      } finally {
+        lanBroadcast.releaseDiscoveryPorts(discoveryGuards);
+      }
 
       // Wait a moment then mark as running
       setTimeout(() => {
@@ -1309,6 +1367,10 @@ done
     return portRanges.preferredIpv6Port(ipv4Port) || portRanges.ipv6Candidates()[0];
   }
 
+  isTruthySetting(value) {
+    return value === true || value === 1 || value === '1' || value === 'true';
+  }
+
   bedrockRuntimeProperties(server, existing = {}) {
     const v4 = Number(server.port);
     const props = { ...existing };
@@ -1320,6 +1382,7 @@ done
     delete props['texturepacks-required'];
     delete props['content-log-file-enable'];
     delete props['compression-threshold-kb'];
+    delete props['white-list'];
     return {
       ...props,
       'server-name': server.name,
@@ -1330,7 +1393,7 @@ done
       // which is the silverfish / cannot-join failure. This also binds UDP 19132/19133.
       'enable-lan-visibility': 'true',
       'max-players': String(server.max_players || existing['max-players'] || 10),
-      'allow-list': existing['allow-list'] || 'false',
+      'allow-list': this.isTruthySetting(server.whitelist_mode) ? 'true' : 'false',
       difficulty: server.difficulty || existing.difficulty || 'peaceful',
       gamemode: server.gamemode || existing.gamemode || 'survival',
       'allow-cheats': existing['allow-cheats'] || 'true',
@@ -1751,6 +1814,17 @@ done
         ? await this.isUdp6PortAvailable(port)
         : await this.isUdpPortAvailable(port);
       if (free) return true;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    return false;
+  }
+
+  async waitUntilUdpPortBusy(port, family = 'ipv4', { attempts = 25, delayMs = 200 } = {}) {
+    for (let i = 0; i < attempts; i += 1) {
+      const free = family === 'ipv6'
+        ? await this.isUdp6PortAvailable(port)
+        : await this.isUdpPortAvailable(port);
+      if (!free) return true;
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
     return false;

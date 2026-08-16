@@ -1,11 +1,13 @@
 const fs = require('fs');
 const path = require('path');
+const dgram = require('dgram');
 const { spawn } = require('child_process');
 const axios = require('axios');
 const logger = require('./logger');
 const connectHost = require('./connectHost');
 
 const DISCOVERY_PORT = 19132;
+const DISCOVERY_IPV6 = 19133;
 const PROXY_PORT_START = 19200;
 const PROXY_PORT_END = 19299;
 const VENDOR_DIR = path.join(__dirname, '../../vendor/phantom');
@@ -21,6 +23,45 @@ const GITHUB_DOWNLOAD_HEADERS = {
   Accept: 'application/octet-stream',
   'User-Agent': 'minecraft-bedrock-manager',
 };
+
+function bindGuard(type, port, address) {
+  return new Promise((resolve, reject) => {
+    const socket = dgram.createSocket({ type, reuseAddr: true });
+    const fail = (err) => {
+      socket.removeAllListeners();
+      try { socket.close(); } catch { /* ignore */ }
+      reject(err);
+    };
+    socket.once('error', fail);
+    socket.bind(port, address, () => {
+      socket.removeListener('error', fail);
+      socket.on('error', () => {});
+      resolve(socket);
+    });
+  });
+}
+
+async function occupyDiscoveryPorts() {
+  if (hasAnyActive()) return [];
+  const sockets = [];
+  try {
+    sockets.push(await bindGuard('udp4', DISCOVERY_PORT, '0.0.0.0'));
+  } catch (err) {
+    logger.warn(`Could not reserve UDP ${DISCOVERY_PORT} before Bedrock start: ${err.message}`);
+  }
+  try {
+    sockets.push(await bindGuard('udp6', DISCOVERY_IPV6, '::'));
+  } catch (err) {
+    logger.warn(`Could not reserve UDP ${DISCOVERY_IPV6} before Bedrock start: ${err.message}`);
+  }
+  return sockets;
+}
+
+function releaseDiscoveryPorts(sockets = []) {
+  for (const socket of sockets) {
+    try { socket.close(); } catch { /* ignore */ }
+  }
+}
 
 const processes = new Map();
 const lastErrors = new Map();
@@ -262,11 +303,10 @@ async function startAndWait(server, options = {}) {
 
 function statusFor(server) {
   const id = Number(server.id);
-  const native = server.kind !== 'bedrock_connect';
-  const running = server.status === 'running' || server.status === 'starting';
+  const native = Number(server.port) === DISCOVERY_PORT && server.kind !== 'bedrock_connect';
   return {
     enabled: Number(server.lan_broadcast) === 1,
-    active: native && running,
+    active: native || isActive(id),
     native,
     proxyPort: server.lan_proxy_port || getProxyPort(id),
     error: getError(id),
@@ -276,6 +316,7 @@ function statusFor(server) {
 
 module.exports = {
   DISCOVERY_PORT,
+  DISCOVERY_IPV6,
   PROXY_PORT_START,
   PROXY_PORT_END,
   allocateProxyPort,
@@ -288,6 +329,8 @@ module.exports = {
   hasAnyActive,
   installedVersion,
   isActive,
+  occupyDiscoveryPorts,
+  releaseDiscoveryPorts,
   start,
   startAndWait,
   statusFor,

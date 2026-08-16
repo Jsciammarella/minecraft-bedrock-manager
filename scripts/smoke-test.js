@@ -250,6 +250,7 @@ async function run() {
   const props = fs.readFileSync(path.join(portServerPath, 'server.properties'), 'utf8');
   assert.match(props, /server-port=19151/);
   assert.match(props, /server-portv6=18151/);
+  assert.match(props, /allow-list=false/);
   const queuedIpv6 = await serverManager.queueIpv6PortChange(portServer.lastInsertRowid, 18152);
   assert.equal(queuedIpv6.pending, false);
   assert.equal(serverManager.getServer(portServer.lastInsertRowid).ipv6_port, 18152);
@@ -283,7 +284,9 @@ async function run() {
   assert.equal(nativeEnabled.native, true);
   const extraLanPreview = await serverManager.previewLanBroadcast(portServer.lastInsertRowid);
   assert.equal(extraLanPreview.allowed, true);
-  assert.equal(extraLanPreview.native, true);
+  assert.equal(extraLanPreview.native, false);
+  assert(extraLanPreview.conflict, 'LAN preview should report a 19132 conflict');
+  assert.equal(extraLanPreview.conflict.serverId, occupant.lastInsertRowid);
 
   db.prepare('DELETE FROM servers WHERE id = ?').run(occupant.lastInsertRowid);
   const bcPath = path.join(testRoot, 'bedrock-connect');
