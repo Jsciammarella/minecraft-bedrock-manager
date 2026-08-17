@@ -234,16 +234,16 @@ function Dashboard() {
   });
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-4 md:p-6 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="page-header flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white">Dashboard</h1>
           <p className="text-mc-textMuted mt-1">Manage your Minecraft Bedrock servers</p>
           <p className="text-xs text-mc-textMuted mt-1">Automatically updated every 5 minutes.</p>
         </div>
-        <div className="flex flex-col items-end gap-2">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-col items-end gap-2 max-md:items-stretch">
+          <div className="page-header-actions flex items-center gap-2">
           <button
             onClick={() => refresh()}
             disabled={loading}
@@ -315,7 +315,7 @@ function Dashboard() {
       )}
 
       {/* Stats Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
         <div className="card">
           <div className="flex items-center justify-between">
             <div>
@@ -372,7 +372,7 @@ function Dashboard() {
           <Server className="w-16 h-16 text-mc-textMuted mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">No servers yet</h3>
           <p className="text-mc-textMuted mb-6">Create your first Minecraft Bedrock server to get started</p>
-          <div className="flex items-center justify-center gap-3">
+          <div className="flex items-center justify-center gap-3 max-md:flex-col">
             <button
               onClick={beginBedrockConnect}
               disabled={bcDisabled}
@@ -423,14 +423,14 @@ function Dashboard() {
               aria-label={`View ${server.name} details`}
             >
               {/* Server Header */}
-              <div className="flex items-start justify-between mb-4">
+              <div className="server-card-header flex items-start justify-between mb-4">
                 <div className="flex items-center gap-3">
                   <div className={`w-3 h-3 rounded-full ${
                     server.status === 'running' ? 'bg-green-400 animate-pulse-glow' : 
                     server.status === 'starting' || server.status === 'creating' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'
                   }`} />
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-semibold text-white">{server.name}</h3>
                       {isBedrockConnect(server) && (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">
@@ -516,7 +516,7 @@ function Dashboard() {
               </div>
 
               {/* Actions */}
-              <div className="flex items-center gap-2">
+              <div className="page-actions flex items-center gap-2">
                 {server.status === 'creating' && (
                   <button disabled className="btn btn-secondary flex-1 text-sm">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />

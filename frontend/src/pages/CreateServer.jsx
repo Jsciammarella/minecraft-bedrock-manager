@@ -91,7 +91,7 @@ function CreateServer() {
   };
 
   return (
-    <div className="p-6 max-w-2xl mx-auto">
+    <div className="p-4 md:p-6 max-w-2xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-4 mb-8">
         <button

@@ -212,7 +212,7 @@ function ServerProperties() {
   }
 
   return (
-    <div className="p-6 max-w-3xl mx-auto">
+    <div className="p-4 md:p-6 max-w-3xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-4 mb-8">
         <button onClick={() => navigate(-1)} className="p-2 hover:bg-mc-surfaceLight rounded-lg transition-colors">

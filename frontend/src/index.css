@@ -35,6 +35,7 @@
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium 
            transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 
            focus:ring-offset-mc-dark disabled:opacity-50 disabled:cursor-not-allowed;
+    touch-action: manipulation;
   }
   
   .btn-primary {
@@ -137,4 +138,57 @@
 
 .terminal-prompt {
   @apply text-mc-accent;
+}
+
+@media (max-width: 767.98px) {
+  html, body, #root {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .card {
+    @apply p-4;
+  }
+
+  .btn {
+    min-height: 2.75rem;
+    touch-action: manipulation;
+  }
+
+  .input, select.input, textarea.input, .terminal-input {
+    font-size: 16px;
+  }
+
+  .page-header {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 0.75rem;
+  }
+
+  .page-header-actions,
+  .page-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .page-header-actions .btn,
+  .page-actions .btn {
+    flex: 1 1 calc(50% - 0.5rem);
+  }
+
+  .server-card-header {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 0.5rem;
+  }
+
+  .fixed.inset-0 {
+    align-items: flex-start;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-top: max(1rem, env(safe-area-inset-top));
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
 }
