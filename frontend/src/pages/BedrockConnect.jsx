@@ -255,7 +255,7 @@ function BedrockConnectPage() {
 
   if (!installed) {
     return (
-      <div className="p-6 max-w-3xl mx-auto">
+      <div className="p-4 md:p-6 max-w-3xl mx-auto">
         <div className="flex items-center gap-4 mb-8">
           <div className="w-12 h-12 rounded-xl bg-mc-accent/10 flex items-center justify-center">
             <Globe className="w-6 h-6 text-mc-accent" />
@@ -279,7 +279,7 @@ function BedrockConnectPage() {
   const status = dns?.status || {};
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="p-4 md:p-6 max-w-5xl mx-auto">
       <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-8">
         <div className="flex items-center gap-4">
           <div className="w-12 h-12 rounded-xl bg-mc-accent/10 flex items-center justify-center">

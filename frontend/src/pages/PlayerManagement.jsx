@@ -172,9 +172,9 @@ function PlayerManagement() {
   }
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="p-4 md:p-6 max-w-5xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="page-header flex items-center justify-between mb-8">
         <div className="flex items-center gap-4">
           <button onClick={() => navigate(-1)} className="p-2 hover:bg-mc-surfaceLight rounded-lg transition-colors">
             <ArrowLeft className="w-5 h-5" />
@@ -184,7 +184,7 @@ function PlayerManagement() {
             <p className="text-mc-textMuted mt-1">Manage known players, allow lists, and global bans</p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="page-header-actions flex items-center gap-3">
           {runningGameServers.length > 0 && (
             <button
               onClick={handleScanAll}
@@ -296,7 +296,7 @@ function PlayerManagement() {
         <div className="space-y-3">
           {filteredPlayers.map(player => (
             <div key={player.id} className="card animate-slide-up">
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-4 max-md:flex-wrap">
                 {/* Avatar */}
                 <div className="w-10 h-10 bg-mc-darker rounded-full flex items-center justify-center flex-shrink-0">
                   <span className="text-sm font-bold text-mc-textMuted">

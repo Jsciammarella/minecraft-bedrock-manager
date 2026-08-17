@@ -480,7 +480,7 @@ function ServerDetail() {
 
   if (!server) {
     return (
-      <div className="p-6 text-center">
+      <div className="p-4 md:p-6 text-center">
         <AlertCircle className="w-12 h-12 text-mc-textMuted mx-auto mb-4" />
         <h2 className="text-lg font-semibold text-white mb-2">Server not found</h2>
         <button onClick={() => navigate('/servers')} className="btn btn-secondary mt-4">
@@ -501,7 +501,7 @@ function ServerDetail() {
   const onlinePlayers = Array.isArray(server.onlinePlayers) ? server.onlinePlayers : [];
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
+    <div className="p-4 md:p-6 max-w-6xl mx-auto">
       {/* Header */}
       {isBC && (
         <div className="mb-4 p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
@@ -569,14 +569,14 @@ function ServerDetail() {
           Warned restart scheduled for {new Date(server.restart_scheduled_at).toLocaleTimeString()}.
         </div>
       )}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-4">
-          <button onClick={() => navigate(-1)} className="p-2 hover:bg-mc-surfaceLight rounded-lg transition-colors">
+      <div className="page-header flex items-center justify-between mb-6">
+        <div className="flex items-center gap-4 min-w-0">
+          <button onClick={() => navigate(-1)} className="p-2 hover:bg-mc-surfaceLight rounded-lg transition-colors flex-shrink-0">
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-white">{server.name}</h1>
+          <div className="min-w-0">
+            <div className="flex items-center gap-3 flex-wrap">
+              <h1 className="text-2xl font-bold text-white break-words">{server.name}</h1>
               {getStatusBadge(server.status)}
               {isBC && (
                 <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">
@@ -594,12 +594,12 @@ function ServerDetail() {
                 </span>
               )}
             </div>
-            <p className="text-mc-textMuted mt-1">
+            <p className="text-mc-textMuted mt-1 break-words">
               v{server.version} • {connectLabel} • {server.gamemode} • {server.difficulty}
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="page-header-actions flex items-center gap-2">
           <button
             onClick={openUpdateModal}
             className="btn btn-secondary text-sm"
@@ -630,7 +630,7 @@ function ServerDetail() {
 
       {!isBC && (
         <div className="card mb-6">
-          <div className="flex items-start justify-between gap-4">
+          <div className="flex items-start justify-between gap-4 max-md:flex-col">
             <div>
               <h2 className="font-semibold text-white flex items-center gap-2">
                 <Radio className="w-4 h-4 text-sky-400" />
@@ -734,7 +734,7 @@ function ServerDetail() {
       </div>
 
       {/* Server Actions */}
-      <div className="flex items-center gap-3 mb-6">
+      <div className="page-actions flex items-center gap-3 mb-6">
         {server.status === 'creating' ? (
           <button disabled className="btn btn-primary">
             <Loader2 className="w-4 h-4 animate-spin" /> Building Server...
@@ -816,8 +816,7 @@ function ServerDetail() {
               <div className="animate-slide-up">
                 <div
                   ref={terminalRef}
-                  className="terminal overflow-y-auto mb-3"
-                  style={{ height: '14.5rem' }}
+                  className="terminal overflow-y-auto mb-3 h-56 md:h-[14.5rem]"
                 >
                   {terminalOutput.length === 0 ? (
                     <div className="text-mc-textMuted text-center py-8">

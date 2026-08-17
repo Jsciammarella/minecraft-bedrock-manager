@@ -150,7 +150,7 @@ function ServerUsers() {
   }
 
   return (
-    <div className="p-6 max-w-3xl mx-auto">
+    <div className="p-4 md:p-6 max-w-3xl mx-auto">
       <div className="flex items-center gap-4 mb-8">
         <button
           onClick={() => navigate(`/servers/${id}`)}

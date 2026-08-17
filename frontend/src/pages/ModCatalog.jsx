@@ -152,8 +152,8 @@ function ModCatalog() {
       : 'Searching catalog...';
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between mb-8">
+    <div className="p-4 md:p-6 max-w-7xl mx-auto">
+      <div className="page-header flex items-center justify-between mb-8">
         <div className="flex items-center gap-4">
           <button onClick={() => navigate(-1)} className="p-2 hover:bg-mc-surfaceLight rounded-lg transition-colors">
             <ArrowLeft className="w-5 h-5" />
@@ -163,11 +163,11 @@ function ModCatalog() {
             <p className="text-mc-textMuted mt-1">Browse and download from CurseForge and a Git catalog</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="page-header-actions flex items-center gap-2">
           <button
             onClick={handleRefresh}
             disabled={refreshing || searching}
-            className="p-2 hover:bg-mc-surfaceLight rounded-lg transition-colors disabled:opacity-50"
+            className="p-2 hover:bg-mc-surfaceLight rounded-lg transition-colors disabled:opacity-50 max-md:min-h-11 max-md:min-w-11 max-md:flex max-md:items-center max-md:justify-center"
             title="Refresh Git catalog"
           >
             <RefreshCw className={`w-5 h-5 ${refreshing ? 'animate-spin' : ''}`} />
