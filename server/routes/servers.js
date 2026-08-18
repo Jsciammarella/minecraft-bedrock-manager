@@ -19,6 +19,7 @@ router.get('/', async (req, res) => {
         ...s,
         stats,
         lan: stats.lan,
+        remoteReachable: stats.remoteReachable,
         installedModIds: installedByServer[String(s.id)] || [],
       }, req);
     }));
@@ -98,7 +99,14 @@ router.get('/:id', async (req, res) => {
     const onlinePlayers = await serverManager.getOnlinePlayers(req.params.id);
     const installedMods = await modManager.getInstalledMods(req.params.id);
     
-    res.json(connectHost.attach({ ...server, stats, lan: stats.lan, onlinePlayers, installedMods }, req));
+    res.json(connectHost.attach({
+      ...server,
+      stats,
+      lan: stats.lan,
+      remoteReachable: stats.remoteReachable,
+      onlinePlayers,
+      installedMods,
+    }, req));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

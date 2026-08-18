@@ -470,6 +470,26 @@ function ServerDetail() {
     }
   };
 
+  const getRemoteReachableBadge = () => {
+    if (!server || server.kind !== 'remote' || server.status !== 'running' || typeof server.remoteReachable !== 'boolean') {
+      return null;
+    }
+    if (server.remoteReachable) {
+      return (
+        <span className="badge badge-success">
+          <span className="w-1.5 h-1.5 bg-green-400 rounded-full mr-1.5" />
+          Remote Online
+        </span>
+      );
+    }
+    return (
+      <span className="badge badge-danger">
+        <span className="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5" />
+        Remote Offline
+      </span>
+    );
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -587,7 +607,10 @@ function ServerDetail() {
           <div className="min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-2xl font-bold text-white break-words">{server.name}</h1>
-              {getStatusBadge(server.status)}
+              <div className="flex flex-col items-start gap-1">
+                {getStatusBadge(server.status)}
+                {getRemoteReachableBadge()}
+              </div>
               {isBC && (
                 <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">
                   Console list

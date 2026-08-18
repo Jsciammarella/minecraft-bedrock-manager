@@ -206,9 +206,15 @@ class ServerManager {
       return {
         ...server,
         lan: { ...lan, enabled: false, active: false, native: false, error: null },
+        remoteReachable: null,
       };
     }
-    return { ...server, lan };
+    const remotePing = require('./remotePing');
+    return {
+      ...server,
+      lan,
+      remoteReachable: this.isRemote(server) ? remotePing.reachable(server.id) : null,
+    };
   }
 
   stopLanBroadcastsForBedrockConnect() {
@@ -987,10 +993,12 @@ class ServerManager {
       this.invalidateServerCache(server.id);
       this.broadcastServerStatus(server.id);
       logger.info(`Remote gateway started for ${server.name}`);
+      this.startRemotePing(server.id);
       return { success: true, message: 'Remote gateway starting...' };
     } catch (err) {
       this.ptySessions.delete(sessionKey);
       await udpGateway.stop(server.id);
+      this.stopRemotePing(server.id);
       db.prepare('UPDATE servers SET status = ?, started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run('stopped', server.id);
       this.invalidateServerCache(server.id);
@@ -1407,6 +1415,7 @@ done
 
     const pty = this.ptySessions.get(sessionKey);
     if (this.isRemote(server)) {
+      this.stopRemotePing(serverId);
       await require('./udpGateway').stop(serverId);
       require('./lanBroadcast').stop(serverId);
       require('./lanBroadcast').killOrphanPhantoms();
@@ -1635,6 +1644,7 @@ done
       );
       this.invalidateServerCache(serverId);
       if (server.status === 'running') {
+        this.startRemotePing(serverId);
         await this.restartRemoteGateway(serverId);
         try { await this.syncLanBroadcast(serverId); } catch (err) {
           logger.warn(`LAN broadcast did not restart after remote target change: ${err.message}`);
@@ -2986,6 +2996,19 @@ done
     });
   }
 
+  startRemotePing(serverId) {
+    const server = this.getServer(serverId);
+    if (!server || !this.isRemote(server)) return;
+    require('./remotePing').start(server, {
+      onChange: () => this.broadcastServerStatus(serverId),
+    });
+    this.broadcastServerStatus(serverId);
+  }
+
+  stopRemotePing(serverId) {
+    require('./remotePing').stop(serverId);
+  }
+
   // ========== BROADCAST ==========
 
   broadcastServerStatus(serverId) {
@@ -2997,7 +3020,8 @@ done
           serverId,
           name: server.name,
           status: server.status,
-          uptime: server.started_at ? this.calculateUptime(server.started_at) : '0m'
+          uptime: server.started_at ? this.calculateUptime(server.started_at) : '0m',
+          remoteReachable: require('./remotePing').reachable(serverId),
         });
       }
     }
@@ -3016,6 +3040,7 @@ done
     this.servers.clear();
     try { require('./lanBroadcast').reapOrphans(); } catch { /* ignore */ }
     try { require('./udpGateway').stopAll(); } catch { /* ignore */ }
+    try { require('./remotePing').stopAll(); } catch { /* ignore */ }
     try { require('./dnsProxy').stop(); } catch { /* ignore */ }
   }
 }

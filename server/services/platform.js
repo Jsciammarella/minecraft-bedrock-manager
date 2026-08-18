@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const net = require('net');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 
@@ -148,6 +149,21 @@ function detectArchName() {
   return '';
 }
 
+function pingHost(host, timeoutMs = 2000) {
+  const target = String(host || '').trim();
+  if (!target || target.startsWith('-')) return Promise.resolve(false);
+  const timeoutMsClamped = Math.max(1000, Number(timeoutMs) || 2000);
+  const timeoutSec = Math.max(1, Math.ceil(timeoutMsClamped / 1000));
+  const family = net.isIP(target);
+  const args = isWindows
+    ? ['-n', '1', '-w', String(timeoutMsClamped), ...(family === 6 ? ['-6'] : []), target]
+    : ['-c', '1', '-W', String(timeoutSec), ...(family === 6 ? ['-6'] : []), target];
+  return execFileAsync('ping', args, {
+    timeout: timeoutMsClamped + 1500,
+    windowsHide: true,
+  }).then(() => true).catch(() => false);
+}
+
 module.exports = {
   LINUX_UA,
   WINDOWS_UA,
@@ -162,6 +178,7 @@ module.exports = {
   gitCommand,
   isWindows,
   javaCommand,
+  pingHost,
   pythonBins,
   unzipArchive,
   listZipEntries,

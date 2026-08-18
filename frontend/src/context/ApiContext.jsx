@@ -28,10 +28,14 @@ export function ApiProvider({ children }) {
 
     const handleStatusChange = (event) => {
       const detail = event.detail || {};
-      if (detail.serverId != null && detail.status) {
+      if (detail.serverId != null && (detail.status || detail.remoteReachable !== undefined)) {
         setServers((prev) => prev.map((server) => (
           String(server.id) === String(detail.serverId)
-            ? { ...server, status: detail.status }
+            ? {
+                ...server,
+                ...(detail.status ? { status: detail.status } : {}),
+                ...(detail.remoteReachable !== undefined ? { remoteReachable: detail.remoteReachable } : {}),
+              }
             : server
         )));
       }

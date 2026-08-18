@@ -101,6 +101,8 @@ async function run() {
   const chmodProbe = path.join(testRoot, 'chmod-probe');
   fs.writeFileSync(chmodProbe, 'ok');
   platform.chmodIfNeeded(chmodProbe);
+  assert.equal(await platform.pingHost('127.0.0.1'), true, 'loopback ICMP ping should succeed');
+  assert.equal(await platform.pingHost('-n'), false, 'ping must not accept option-like hosts');
 
   if (process.platform === 'win32') {
     const zipPath = path.join(testRoot, 'win-extract.zip');
@@ -1018,6 +1020,16 @@ async function run() {
   await serverManager.startServer(remoteCreated.id);
   assert.equal(serverManager.getServer(remoteCreated.id).status, 'running');
   assert.equal(udpGateway.isActive(remoteCreated.id), true);
+  const remotePing = require('../server/services/remotePing');
+  let reachable = null;
+  for (let i = 0; i < 20; i += 1) {
+    reachable = remotePing.reachable(remoteCreated.id);
+    if (reachable === true) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  assert.equal(reachable, true, 'a started remote gateway should report the loopback host as online');
+  const remoteStats = await serverManager.getServerStats(remoteCreated.id);
+  assert.equal(remoteStats.remoteReachable, true);
 
   const probe = dgram.createSocket('udp4');
   await new Promise((resolve, reject) => {
@@ -1049,6 +1061,7 @@ async function run() {
 
   await serverManager.stopServer(remoteCreated.id);
   assert.equal(udpGateway.isActive(remoteCreated.id), false);
+  assert.equal(remotePing.reachable(remoteCreated.id), null, 'stopped remotes should not keep pinging');
   await new Promise((resolve) => mockRemote.close(resolve));
 
   for (let i = 0; i < 10; i += 1) {
