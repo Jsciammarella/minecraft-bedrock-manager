@@ -54,6 +54,16 @@
   .mod-thumbnail-img {
     @apply w-full h-full object-contain object-center;
   }
+
+  /* One reserved line under pack art so every tile is the same height. */
+  .mod-tile-tags {
+    @apply flex flex-row-reverse flex-nowrap items-center justify-start gap-1
+           overflow-hidden h-6 mb-2;
+  }
+
+  .mod-tile-tags .badge {
+    @apply min-w-0 max-w-[32%] shrink overflow-hidden text-ellipsis whitespace-nowrap inline-block;
+  }
   
   .btn-warning {
     @apply bg-mc-warning text-mc-darker hover:bg-amber-600 focus:ring-mc-warning;
