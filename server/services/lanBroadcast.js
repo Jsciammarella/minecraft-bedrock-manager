@@ -239,14 +239,21 @@ function start(server, { proxyPort } = {}) {
 
   const port = allocateProxyPort(proxyPort || server.lan_proxy_port);
   const target = dedicatedServerTarget(server);
-  logger.info(`Starting Phantom for ${server.name}: -server ${target} -bind 0.0.0.0 -bind_port ${port}`);
-  const child = spawn(bin, [
+  const args = [
     '-server', target,
     '-bind', '0.0.0.0',
     '-bind_port', String(port),
     '-timeout', '60',
-    '-6',
-  ], {
+  ];
+  // Remote pongs include the upstream host:port. Xbox then tries that address
+  // (or NetherNet) instead of this proxy. Strip ports so the join stays here.
+  if (server.kind === 'remote') {
+    args.push('-remove_ports');
+  } else {
+    args.push('-6');
+  }
+  logger.info(`Starting Phantom for ${server.name}: ${args.join(' ')}`);
+  const child = spawn(bin, args, {
     cwd: BIN_DIR,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -308,7 +315,9 @@ async function startAndWait(server, options = {}) {
 
 function statusFor(server) {
   const id = Number(server.id);
-  const native = Number(server.port) === DISCOVERY_PORT && server.kind !== 'bedrock_connect';
+  const native = Number(server.port) === DISCOVERY_PORT
+    && server.kind !== 'bedrock_connect'
+    && server.kind !== 'remote';
   return {
     enabled: Number(server.lan_broadcast) === 1,
     active: native || isActive(id),

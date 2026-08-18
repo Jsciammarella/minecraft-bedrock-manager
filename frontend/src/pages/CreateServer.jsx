@@ -34,6 +34,7 @@ function CreateServer() {
 
   const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
   const ipv6Available = (ports.available || []).filter((item) => item.family === 'ipv6');
+  const ipv4Choices = ipv4Available.filter((item) => !remote || item.port !== 19132);
   const remoteCount = (servers || []).filter((server) => server.kind === 'remote').length;
 
   const loadPorts = async () => {
@@ -169,7 +170,25 @@ function CreateServer() {
                 disabled={remoteCount >= 5 && !remote}
                 onClick={() => {
                   if (remoteCount >= 5 && !remote) return;
-                  setRemote((value) => !value);
+                  setRemote((value) => {
+                    const next = !value;
+                    if (next) {
+                      setFormData((prev) => {
+                        if (Number(prev.port) !== 19132) return prev;
+                        const fallback = ipv4Available.find((item) => item.port !== 19132);
+                        if (!fallback) return prev;
+                        const preferredV6 = fallback.port - 1000;
+                        const match = ipv6Available.find((item) => item.port === preferredV6)
+                          || ipv6Available[0];
+                        return {
+                          ...prev,
+                          port: String(fallback.port),
+                          ipv6Port: match ? String(match.port) : prev.ipv6Port,
+                        };
+                      });
+                    }
+                    return next;
+                  });
                   setError('');
                 }}
                 className={`toggle ${remote ? 'toggle-active' : 'toggle-inactive'} ${remoteCount >= 5 && !remote ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -204,12 +223,14 @@ function CreateServer() {
               required
             >
               <option value="">Select an available IPv4 port...</option>
-              {ipv4Available.map(({ port }) => (
+              {ipv4Choices.map(({ port }) => (
                 <option key={port} value={port}>{port}</option>
               ))}
           </select>
           <p className="mt-2 text-xs text-mc-textMuted">
-            Defaults to the next free IPv4 port. UDP 19133 is reserved for IPv6 discovery.
+            {remote
+              ? 'UDP 19132 stays free so this host can advertise the remote as a LAN game. UDP 19133 is reserved for IPv6 discovery.'
+              : 'Defaults to the next free IPv4 port. UDP 19133 is reserved for IPv6 discovery.'}
           </p>
         </div>
 

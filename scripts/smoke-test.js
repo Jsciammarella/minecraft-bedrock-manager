@@ -867,6 +867,13 @@ async function run() {
   );
 
   const udpGateway = require('../server/services/udpGateway');
+  const lanBroadcast = require('../server/services/lanBroadcast');
+  assert.equal(lanBroadcast.statusFor({
+    id: 1,
+    port: 19132,
+    kind: 'remote',
+    lan_broadcast: 1,
+  }).native, false, 'remote servers must not use native LAN on 19132');
   assert.equal(udpGateway.validateRemoteHost('127.0.0.1'), '127.0.0.1');
   assert.equal(udpGateway.validateRemoteHost('[::1]'), '::1');
   assert.throws(() => udpGateway.validateRemoteHost('bad host'), /invalid characters/);

@@ -355,7 +355,9 @@ class ServerManager {
     // BDS 1.26.30+ needs enable-lan-visibility=true to send a valid MOTD pong,
     // but that also tries to bind UDP 19132/19133. Occupy those first so only
     // Phantom (LAN toggle on) advertises, then start Phantom if requested.
-    if (Number(server.port) === lanBroadcast.DISCOVERY_PORT) return lanBroadcast.statusFor(server);
+    if (Number(server.port) === lanBroadcast.DISCOVERY_PORT && !this.isRemote(server)) {
+      return lanBroadcast.statusFor(server);
+    }
     if (server.status === 'creating') {
       lanBroadcast.stop(serverId);
       return lanBroadcast.statusFor(server);
@@ -590,6 +592,9 @@ class ServerManager {
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error('Port must be between 1 and 65535');
     }
+    if (this.isRemote(server) && port === BEDROCK_CONNECT_PORT) {
+      throw new Error('UDP port 19132 is reserved for LAN discovery. Choose another local IPv4 port for a remote server.');
+    }
     if (port === Number(server.port) && !server.pending_port) return { success: true, port };
     if (port === Number(server.ipv6_port) || port === Number(server.pending_ipv6_port)) {
       throw new Error('IPv4 and IPv6 ports must be different');
@@ -779,8 +784,8 @@ class ServerManager {
     if (ipv6Port != null && ipv6Port !== '' && Number(ipv6Port) === Number(port)) {
       throw new Error('IPv4 and IPv6 ports must be different');
     }
-    if (Number(port) === BEDROCK_CONNECT_PORT && (this.getBedrockConnectServer() || this.getPendingBedrockConnect())) {
-      throw new Error('UDP port 19132 is reserved for Bedrock Connect');
+    if (Number(port) === BEDROCK_CONNECT_PORT) {
+      throw new Error('UDP port 19132 is reserved for LAN discovery and Bedrock Connect. Choose another local IPv4 port for a remote server.');
     }
 
     const existing = db.prepare('SELECT * FROM servers WHERE port = ? OR ipv6_port = ? OR name = ?').get(port, port, name);
@@ -850,7 +855,14 @@ class ServerManager {
     this.invalidateServerCache(server.id);
     this.broadcastServerStatus(server.id);
     try {
-      await udpGateway.start(this.getServer(server.id));
+      const current = this.getServer(server.id);
+      const lanBroadcast = require('./lanBroadcast');
+      const useLanPhantom = Number(current.lan_broadcast) === 1 && !this.isBedrockConnectActive();
+      // Phantom always binds UDP 19132. A userspace gateway on that same port
+      // would steal discovery pings and break RakNet joins.
+      if (!(useLanPhantom && Number(current.port) === lanBroadcast.DISCOVERY_PORT)) {
+        await udpGateway.start(current);
+      }
       db.prepare(`
         UPDATE servers
         SET status = ?, pending_restart = 0, pending_restart_reason = NULL,
