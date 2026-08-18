@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -325,6 +326,29 @@ async function run() {
   const lfsEntry = gitCatalog.parseCatalogFromDir(gitRoot).find(mod => mod.slug === 'lfs-pack');
   assert(lfsEntry, 'LFS pack folder was not parsed');
   assert(!lfsEntry.thumbnailPath, 'LFS pointer thumbnail should be ignored until the real file is pulled');
+
+  if (spawnSync('bash', ['-c', 'true']).status === 0) {
+    const upgradeScript = path.join(__dirname, 'upgrade.sh');
+    const runUpgrade = (args) => spawnSync('bash', [upgradeScript, ...args], {
+      encoding: 'utf8',
+      timeout: 8000,
+    });
+    const assertUpgradeRejects = (args, pattern) => {
+      const result = runUpgrade(args);
+      const output = `${result.stderr || ''}${result.stdout || ''}`;
+      assert.notEqual(result.status, 0, `upgrade.sh ${args.join(' ')} should fail`);
+      assert.match(output, pattern, output);
+    };
+    assert.equal(runUpgrade(['--help']).status, 0, 'upgrade.sh --help should succeed');
+    assert.match(runUpgrade(['--help']).stdout, /--no-backup/, 'upgrade.sh --help should document --no-backup');
+    assertUpgradeRejects(['--branch'], /requires a value/);
+    assertUpgradeRejects(['--branch', '--all'], /must not start with a dash/);
+    assertUpgradeRejects(['--branch', 'HEAD'], /not a valid branch name/);
+    assertUpgradeRejects(['--branch', 'refs/heads/main'], /not a raw refs\/ path/);
+    assertUpgradeRejects(['--branch', 'feat/foo;rm'], /invalid characters/);
+    assertUpgradeRejects(['--tag', 'v0.2.0^{}'], /invalid characters/);
+    assertUpgradeRejects(['--branch', 'release/0.2.1', '--tag', 'v0.2.0'], /not both/);
+  }
 
   const denied = gitCatalog.friendlyGitError(new Error('remote: You are not allowed to download code.\nfatal: The requested URL returned error: 403'));
   assert.match(denied, /read_repository/, 'GitLab download denial should mention the required token scope');
