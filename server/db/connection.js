@@ -49,6 +49,9 @@ db.exec(`
     pending_ipv6_port INTEGER,
     lan_broadcast INTEGER NOT NULL DEFAULT 0,
     lan_proxy_port INTEGER,
+    remote_host TEXT,
+    remote_ipv4_port INTEGER,
+    remote_ipv6_port INTEGER,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -200,6 +203,9 @@ ensureServerColumn('ipv6_port', 'INTEGER');
 ensureServerColumn('pending_ipv6_port', 'INTEGER');
 ensureServerColumn('lan_broadcast', 'INTEGER NOT NULL DEFAULT 0');
 ensureServerColumn('lan_proxy_port', 'INTEGER');
+ensureServerColumn('remote_host', 'TEXT');
+ensureServerColumn('remote_ipv4_port', 'INTEGER');
+ensureServerColumn('remote_ipv6_port', 'INTEGER');
 const portUsageColumns = new Set(db.prepare('PRAGMA table_info(port_usage)').all().map(column => column.name));
 if (!portUsageColumns.has('family')) {
   db.exec(`ALTER TABLE port_usage ADD COLUMN family TEXT NOT NULL DEFAULT 'ipv4'`);

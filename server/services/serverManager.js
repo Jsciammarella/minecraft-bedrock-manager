@@ -145,6 +145,14 @@ class ServerManager {
     return Boolean(server && server.kind === 'bedrock_connect');
   }
 
+  isRemote(server) {
+    return Boolean(server && server.kind === 'remote');
+  }
+
+  countRemoteServers() {
+    return db.prepare("SELECT COUNT(*) AS count FROM servers WHERE kind = 'remote'").get()?.count || 0;
+  }
+
   getBedrockConnectServer() {
     return db.prepare("SELECT * FROM servers WHERE kind = 'bedrock_connect' LIMIT 1").get();
   }
@@ -632,7 +640,7 @@ class ServerManager {
       ipv6Port = await this.allocateIpv6Port(port, { excludeServerId: serverId });
     }
 
-    if (!this.isBedrockConnect(server)) {
+    if (!this.isBedrockConnect(server) && !this.isRemote(server)) {
       this.writeRuntimeServerProperties({ ...current, port, ipv6_port: ipv6Port });
     }
 
@@ -648,6 +656,13 @@ class ServerManager {
     logger.info(`Server ${server.name} is now on port ${port}`);
     require('./bedrockConnectList').scheduleSync();
     try {
+      if (this.isRemote(this.getServer(serverId)) && this.getServer(serverId).status === 'running') {
+        await this.restartRemoteGateway(serverId);
+      }
+    } catch (err) {
+      logger.warn(`Remote gateway did not restart after port change for ${server.name}: ${err.message}`);
+    }
+    try {
       if (Number(this.getServer(serverId)?.lan_broadcast) === 1) {
         await this.syncLanBroadcast(serverId);
       }
@@ -660,6 +675,9 @@ class ServerManager {
   // ========== SERVER LIFECYCLE ==========
 
   async createServer(config) {
+    if (config?.kind === 'remote' || config?.remote === true) {
+      return this.createRemoteServer(config);
+    }
     const { name, port, ipv6Port, version, maxPlayers, description, gamemode, difficulty } = config;
 
     if (port < 1 || port > 65535) {
@@ -731,6 +749,138 @@ class ServerManager {
     logger.info(`Queued server create: ${name} on IPv4 ${port} / IPv6 ${assignedIpv6}`);
     require('./bedrockConnectList').scheduleSync();
     return { id: serverId, name, port, ipv6Port: assignedIpv6, status: 'creating', dataPath: serverPath };
+  }
+
+  async createRemoteServer(config) {
+    const udpGateway = require('./udpGateway');
+    const name = String(config.name || '').trim();
+    const port = parseInt(config.port, 10);
+    const ipv6Port = config.ipv6Port ?? config.ipv6_port;
+    const remoteHost = udpGateway.validateRemoteHost(config.remoteHost || config.remote_host);
+    const remoteIpv4Port = udpGateway.validateUdpPort(
+      config.remoteIpv4Port ?? config.remote_ipv4_port,
+      'Remote IPv4 port'
+    );
+    const remoteIpv6Raw = config.remoteIpv6Port ?? config.remote_ipv6_port;
+    const remoteIpv6Port = remoteIpv6Raw == null || remoteIpv6Raw === ''
+      ? remoteIpv4Port
+      : udpGateway.validateUdpPort(remoteIpv6Raw, 'Remote IPv6 port');
+
+    if (!name) throw new Error('Server name is required');
+    if (this.countRemoteServers() >= udpGateway.MAX_REMOTE_SERVERS) {
+      throw new Error(`At most ${udpGateway.MAX_REMOTE_SERVERS} remote servers can be configured`);
+    }
+    if (port < 1 || port > 65535) {
+      throw new Error('Port must be between 1 and 65535');
+    }
+    if (!portRanges.isIpv4GamePort(port)) {
+      throw new Error(`UDP port ${port} is not in the IPv4 game ranges`);
+    }
+    if (ipv6Port != null && ipv6Port !== '' && Number(ipv6Port) === Number(port)) {
+      throw new Error('IPv4 and IPv6 ports must be different');
+    }
+    if (Number(port) === BEDROCK_CONNECT_PORT && (this.getBedrockConnectServer() || this.getPendingBedrockConnect())) {
+      throw new Error('UDP port 19132 is reserved for Bedrock Connect');
+    }
+
+    const existing = db.prepare('SELECT * FROM servers WHERE port = ? OR ipv6_port = ? OR name = ?').get(port, port, name);
+    if (existing) {
+      throw new Error('Port or server name already in use');
+    }
+    const pendingTaken = db.prepare('SELECT name FROM servers WHERE pending_port = ? OR pending_ipv6_port = ?').get(port, port);
+    if (pendingTaken) {
+      throw new Error(`Port ${port} is already reserved for ${pendingTaken.name}`);
+    }
+    if (!(await this.isUdpPortAvailable(port))) {
+      throw new Error(`UDP port ${port} is already in use by another process`);
+    }
+
+    await udpGateway.resolveRemote(remoteHost);
+
+    const assignedIpv6 = await this.allocateIpv6Port(port, { requested: ipv6Port });
+    if (assignedIpv6 === Number(port)) {
+      throw new Error('IPv4 and IPv6 ports must be different');
+    }
+
+    const serverPath = path.join(BASE_DIR, name);
+    fs.mkdirSync(serverPath, { recursive: true });
+
+    const insert = db.prepare(`
+      INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
+        server_description, server_motd, status, data_path, lan_broadcast, ipv6_port, kind,
+        remote_host, remote_ipv4_port, remote_ipv6_port)
+      VALUES (?, 'N/A', ?, 0, 0, 'N/A', 'N/A', ?, ?, 'stopped', ?, 1, ?, 'remote', ?, ?, ?)
+    `);
+    const result = insert.run(
+      name, port,
+      `Remote ${remoteHost}:${remoteIpv4Port}`,
+      `Remote ${remoteHost}:${remoteIpv4Port}`,
+      serverPath,
+      assignedIpv6,
+      remoteHost,
+      remoteIpv4Port,
+      remoteIpv6Port
+    );
+    const serverId = result.lastInsertRowid;
+    this.registerPort(serverId, port, 'udp', 'ipv4');
+    this.registerPort(serverId, assignedIpv6, 'udp', 'ipv6');
+    this.invalidateServerCache(serverId);
+    this.broadcastServerStatus(serverId);
+    logger.info(`Created remote server: ${name} ${port} -> ${remoteHost}:${remoteIpv4Port}`);
+    require('./bedrockConnectList').scheduleSync();
+    return {
+      id: serverId,
+      name,
+      port,
+      ipv6Port: assignedIpv6,
+      kind: 'remote',
+      status: 'stopped',
+      remoteHost,
+      remoteIpv4Port,
+      remoteIpv6Port,
+      dataPath: serverPath,
+    };
+  }
+
+  async startRemoteServer(server) {
+    const udpGateway = require('./udpGateway');
+    const sessionKey = this.sessionKey(server.id);
+    db.prepare('UPDATE servers SET status = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run('starting', server.id);
+    this.invalidateServerCache(server.id);
+    this.broadcastServerStatus(server.id);
+    try {
+      await udpGateway.start(this.getServer(server.id));
+      db.prepare(`
+        UPDATE servers
+        SET status = ?, pending_restart = 0, pending_restart_reason = NULL,
+          pending_restart_at = NULL, restart_scheduled_at = NULL,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run('running', server.id);
+      this.invalidateServerCache(server.id);
+      this.broadcastServerStatus(server.id);
+      try { await this.syncLanBroadcast(server.id); } catch (err) {
+        logger.warn(`LAN broadcast after remote start failed for ${server.name}: ${err.message}`);
+      }
+      logger.info(`Remote gateway started for ${server.name}`);
+      return { success: true, message: 'Remote gateway starting...' };
+    } catch (err) {
+      this.ptySessions.delete(sessionKey);
+      await udpGateway.stop(server.id);
+      db.prepare('UPDATE servers SET status = ?, started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('stopped', server.id);
+      this.invalidateServerCache(server.id);
+      this.broadcastServerStatus(server.id);
+      throw new Error(`Failed to start remote gateway: ${err.message}`);
+    }
+  }
+
+  async restartRemoteGateway(serverId) {
+    const server = this.getServer(serverId);
+    if (!server || !this.isRemote(server) || server.status !== 'running') return;
+    const udpGateway = require('./udpGateway');
+    await udpGateway.start(server);
   }
 
   async finishCreateServer(serverId, config) {
@@ -966,6 +1116,10 @@ done
       return result;
     }
 
+    if (this.isRemote(current)) {
+      return this.startRemoteServer(current);
+    }
+
     const serverBin = path.join(serverPath, 'bedrock_server');
 
     // Check if binary exists
@@ -1071,7 +1225,9 @@ done
     if (server.status === 'stopped') throw new Error('Server already stopped');
 
     const pty = this.ptySessions.get(sessionKey);
-    if (pty) {
+    if (this.isRemote(server)) {
+      await require('./udpGateway').stop(serverId);
+    } else if (pty) {
       if (this.isBedrockConnect(server)) {
         try { pty.kill(); } catch { /* ignore */ }
         await new Promise((resolve) => {
@@ -1125,6 +1281,9 @@ done
     if (this.isBedrockConnect(server)) {
       throw new Error('Bedrock Connect does not support warned restarts');
     }
+    if (this.isRemote(server)) {
+      throw new Error('Remote servers do not support warned restarts');
+    }
     if (server.status !== 'running' || !this.ptySessions.has(key)) {
       throw new Error('Server must be running to schedule a warned restart');
     }
@@ -1171,6 +1330,7 @@ done
     if (!server) throw new Error('Server not found');
     const wasBedrockConnect = this.isBedrockConnect(server);
     require('./lanBroadcast').stop(serverId);
+    await require('./udpGateway').stop(serverId);
 
     if (server.status === 'creating') {
       const job = this.provisionJobs.get(Number(serverId));
@@ -1221,6 +1381,9 @@ done
     if (this.isBedrockConnect(server)) {
       throw new Error('Bedrock Connect does not accept console commands');
     }
+    if (this.isRemote(server)) {
+      throw new Error('Remote servers do not accept console commands');
+    }
     const pty = this.ptySessions.get(this.sessionKey(serverId));
     if (!pty) {
       this.markServerStopped(serverId);
@@ -1232,12 +1395,97 @@ done
 
   // ========== SERVER PROPERTIES ==========
 
+  async updateRemoteSettings(serverId, settings) {
+    const udpGateway = require('./udpGateway');
+    const server = this.getServer(serverId);
+    if (!server || !this.isRemote(server)) throw new Error('Server not found');
+
+    const allowed = new Set([
+      'port', 'ipv6Port', 'ipv6_port',
+      'remoteHost', 'remote_host',
+      'remoteIpv4Port', 'remote_ipv4_port',
+      'remoteIpv6Port', 'remote_ipv6_port',
+    ]);
+    const unknown = Object.keys(settings || {}).filter((key) => !allowed.has(key) && settings[key] != null);
+    if (unknown.length) {
+      throw new Error('Remote servers only allow changing local and remote addresses and ports');
+    }
+
+    const nextHost = settings.remoteHost ?? settings.remote_host;
+    const nextV4 = settings.remoteIpv4Port ?? settings.remote_ipv4_port;
+    const nextV6 = settings.remoteIpv6Port ?? settings.remote_ipv6_port;
+    let remoteHost = server.remote_host;
+    let remoteIpv4Port = Number(server.remote_ipv4_port);
+    let remoteIpv6Port = Number(server.remote_ipv6_port || server.remote_ipv4_port);
+
+    if (nextHost != null && String(nextHost).trim() !== '') {
+      remoteHost = udpGateway.validateRemoteHost(nextHost);
+      await udpGateway.resolveRemote(remoteHost);
+    }
+    if (nextV4 != null && nextV4 !== '') {
+      remoteIpv4Port = udpGateway.validateUdpPort(nextV4, 'Remote IPv4 port');
+    }
+    if (nextV6 != null && nextV6 !== '') {
+      remoteIpv6Port = udpGateway.validateUdpPort(nextV6, 'Remote IPv6 port');
+    } else if (nextV4 != null && nextV4 !== '' && (server.remote_ipv6_port == null || Number(server.remote_ipv6_port) === Number(server.remote_ipv4_port))) {
+      remoteIpv6Port = remoteIpv4Port;
+    }
+
+    const remoteChanged = remoteHost !== server.remote_host
+      || Number(remoteIpv4Port) !== Number(server.remote_ipv4_port)
+      || Number(remoteIpv6Port) !== Number(server.remote_ipv6_port);
+
+    if (remoteChanged) {
+      db.prepare(`
+        UPDATE servers
+        SET remote_host = ?, remote_ipv4_port = ?, remote_ipv6_port = ?,
+          server_description = ?, server_motd = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        remoteHost,
+        remoteIpv4Port,
+        remoteIpv6Port,
+        `Remote ${remoteHost}:${remoteIpv4Port}`,
+        `Remote ${remoteHost}:${remoteIpv4Port}`,
+        serverId
+      );
+      this.invalidateServerCache(serverId);
+      if (server.status === 'running') {
+        await this.restartRemoteGateway(serverId);
+        try { await this.syncLanBroadcast(serverId); } catch (err) {
+          logger.warn(`LAN broadcast did not restart after remote target change: ${err.message}`);
+        }
+      }
+    }
+
+    const requestedPort = settings.port;
+    const requestedIpv6Port = settings.ipv6Port ?? settings.ipv6_port;
+    if (requestedPort != null && requestedPort !== '' && Number(requestedPort) !== Number(server.port)) {
+      await this.queuePortChange(serverId, requestedPort);
+    }
+    const latest = this.getServer(serverId);
+    if (
+      requestedIpv6Port != null
+      && requestedIpv6Port !== ''
+      && Number(requestedIpv6Port) !== Number(server.ipv6_port)
+      && Number(requestedIpv6Port) !== Number(latest.ipv6_port)
+    ) {
+      return this.queueIpv6PortChange(serverId, requestedIpv6Port);
+    }
+    require('./bedrockConnectList').scheduleSync();
+    return { success: true };
+  }
+
   async updateSettings(serverId, settings) {
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
 
     if (this.isBedrockConnect(server)) {
       throw new Error('Bedrock Connect settings cannot be changed');
+    }
+
+    if (this.isRemote(server)) {
+      return this.updateRemoteSettings(serverId, settings);
     }
 
     const requestedPort = settings.port;
@@ -1440,6 +1688,9 @@ done
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
     if (server.status === 'creating') throw new Error('Server is still being built');
+    if (this.isRemote(server)) {
+      throw new Error('Remote servers cannot be updated from this manager');
+    }
 
       if (this.isBedrockConnect(server)) {
         const bedrockConnect = require('./bedrockConnect');
@@ -1731,7 +1982,7 @@ done
 
   async refreshOnlinePlayersFromList(serverId, { force = false, timeoutMs = 1800 } = {}) {
     const server = this.getServer(serverId);
-    if (!server || this.isBedrockConnect(server) || server.status !== 'running') {
+    if (!server || this.isBedrockConnect(server) || this.isRemote(server) || server.status !== 'running') {
       return this.readOnlinePlayers(serverId);
     }
 
@@ -1781,7 +2032,7 @@ done
   async getOnlinePlayers(serverId, { refresh = true } = {}) {
     const server = this.getServer(serverId);
     if (!server) return [];
-    if (server.status !== 'running' || this.isBedrockConnect(server)) return [];
+    if (server.status !== 'running' || this.isBedrockConnect(server) || this.isRemote(server)) return [];
 
     try {
       if (refresh && this.ptySessions.has(this.sessionKey(serverId))) {
@@ -1832,6 +2083,9 @@ done
     if (!server) throw new Error('Server not found');
     if (this.isBedrockConnect(server)) {
       return { scanned: 0, added: 0, message: 'Bedrock Connect does not have players to scan' };
+    }
+    if (this.isRemote(server)) {
+      return { scanned: 0, added: 0, message: 'Remote servers do not have players to scan' };
     }
 
     try {
@@ -1918,7 +2172,7 @@ done
 
   applyGlobalBansToServer(serverId) {
     const server = this.getServer(serverId);
-    if (!server || this.isBedrockConnect(server)) return;
+    if (!server || this.isBedrockConnect(server) || this.isRemote(server)) return;
     const banned = db.prepare('SELECT id FROM players WHERE is_banned = 1').all();
     for (const row of banned) {
       try {
@@ -1944,7 +2198,7 @@ done
 
   applyCustomPermissionOnJoin(serverId, player) {
     const server = this.getServer(serverId);
-    if (!server || server.status !== 'running' || this.isBedrockConnect(server)) return;
+    if (!server || server.status !== 'running' || this.isBedrockConnect(server) || this.isRemote(server)) return;
     const access = db.prepare(`
       SELECT permission, has_custom_permission FROM server_player_access
       WHERE server_id = ? AND player_id = ?
@@ -1978,6 +2232,7 @@ done
     if (!player) throw new Error('Player not found');
     db.prepare('UPDATE players SET is_banned = ? WHERE id = ?').run(banned ? 1 : 0, playerId);
     for (const server of this.listGameServers()) {
+      if (this.isRemote(server)) continue;
       try {
         this.updatePlayerAccess(server.id, playerId, banned
           ? { isBanned: true, isWhitelisted: false, banReason: reason || 'Banned by administrator' }
@@ -2016,6 +2271,9 @@ done
     if (!server) throw new Error('Server not found');
     if (this.isBedrockConnect(server)) {
       throw new Error('Bedrock Connect does not support player access changes');
+    }
+    if (this.isRemote(server)) {
+      throw new Error('Remote servers do not support player access changes');
     }
     if (!player) throw new Error('Player not found');
 
@@ -2350,7 +2608,9 @@ done
     if (port === Number(server.port)) {
       throw new Error('IPv4 and IPv6 ports must be different');
     }
-    this.writeRuntimeServerProperties({ ...server, ipv6_port: port });
+    if (!this.isBedrockConnect(server) && !this.isRemote(server)) {
+      this.writeRuntimeServerProperties({ ...server, ipv6_port: port });
+    }
     db.prepare(`
       UPDATE servers
       SET ipv6_port = ?, pending_ipv6_port = NULL, updated_at = CURRENT_TIMESTAMP
@@ -2361,6 +2621,11 @@ done
     this.registerPort(serverId, port, 'udp', 'ipv6');
     this.invalidateServerCache(serverId);
     logger.info(`Server ${server.name} is now on IPv6 port ${port}`);
+    if (this.isRemote(server) && server.status === 'running') {
+      try { await this.restartRemoteGateway(serverId); } catch (err) {
+        logger.warn(`Remote gateway did not restart after IPv6 port change: ${err.message}`);
+      }
+    }
     return { success: true, ipv6Port: port };
   }
 

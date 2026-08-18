@@ -598,6 +598,9 @@ async function run() {
   assert(serverColumns.includes('pending_ipv6_port'), 'servers.pending_ipv6_port column was not created');
   assert(serverColumns.includes('lan_broadcast'), 'servers.lan_broadcast column was not created');
   assert(serverColumns.includes('lan_proxy_port'), 'servers.lan_proxy_port column was not created');
+  assert(serverColumns.includes('remote_host'), 'servers.remote_host column was not created');
+  assert(serverColumns.includes('remote_ipv4_port'), 'servers.remote_ipv4_port column was not created');
+  assert(serverColumns.includes('remote_ipv6_port'), 'servers.remote_ipv6_port column was not created');
   const portUsageColumns = db.prepare('PRAGMA table_info(port_usage)').all().map(column => column.name);
   assert(portUsageColumns.includes('family'), 'port_usage.family column was not created');
   assert.equal(portRanges.preferredIpv6Port(19140), 18140);
@@ -863,6 +866,93 @@ async function run() {
     /MCPEDL project URL|must start with/
   );
 
+  const udpGateway = require('../server/services/udpGateway');
+  assert.equal(udpGateway.validateRemoteHost('127.0.0.1'), '127.0.0.1');
+  assert.equal(udpGateway.validateRemoteHost('[::1]'), '::1');
+  assert.throws(() => udpGateway.validateRemoteHost('bad host'), /invalid characters/);
+  assert.throws(() => udpGateway.validateRemoteHost(''), /required/);
+
+  const mockRemote = dgram.createSocket('udp4');
+  await new Promise((resolve, reject) => {
+    mockRemote.once('error', reject);
+    mockRemote.bind(0, '127.0.0.1', resolve);
+  });
+  const mockRemotePort = mockRemote.address().port;
+  const received = new Promise((resolve) => {
+    mockRemote.once('message', (msg, rinfo) => resolve({ msg, rinfo }));
+  });
+
+  const remoteCreated = await serverManager.createServer({
+    kind: 'remote',
+    name: `remote-gw-${suffix}`,
+    port: 19190,
+    ipv6Port: 18190,
+    remoteHost: '127.0.0.1',
+    remoteIpv4Port: mockRemotePort,
+    remoteIpv6Port: mockRemotePort,
+  });
+  assert.equal(remoteCreated.kind, 'remote');
+  assert.equal(remoteCreated.status, 'stopped');
+  const storedRemote = serverManager.getServer(remoteCreated.id);
+  assert.equal(storedRemote.remote_host, '127.0.0.1');
+  assert.equal(Number(storedRemote.remote_ipv4_port), mockRemotePort);
+  assert.equal(udpGateway.isActive(remoteCreated.id), false);
+
+  await serverManager.startServer(remoteCreated.id);
+  assert.equal(serverManager.getServer(remoteCreated.id).status, 'running');
+  assert.equal(udpGateway.isActive(remoteCreated.id), true);
+
+  const probe = dgram.createSocket('udp4');
+  await new Promise((resolve, reject) => {
+    probe.once('error', reject);
+    probe.send(Buffer.from('ping-remote'), 19190, '127.0.0.1', (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+  const got = await Promise.race([
+    received,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('UDP gateway did not forward')), 2000)),
+  ]);
+  assert.equal(got.msg.toString(), 'ping-remote');
+  probe.close();
+
+  await assert.rejects(
+    () => serverManager.sendCommand(remoteCreated.id, 'list'),
+    /do not accept console commands/
+  );
+  await assert.rejects(
+    () => serverManager.updateServer(remoteCreated.id, 'latest'),
+    /cannot be updated/
+  );
+  await assert.rejects(
+    () => modManager.installModToServer(remoteCreated.id, 1),
+    /do not support mods/
+  );
+
+  await serverManager.stopServer(remoteCreated.id);
+  assert.equal(udpGateway.isActive(remoteCreated.id), false);
+  await new Promise((resolve) => mockRemote.close(resolve));
+
+  for (let i = 0; i < 5; i += 1) {
+    const capPath = path.join(testRoot, `remote-cap-${i}`);
+    fs.mkdirSync(capPath, { recursive: true });
+    db.prepare(`
+      INSERT INTO servers (name, version, port, data_path, kind, remote_host, remote_ipv4_port)
+      VALUES (?, 'N/A', ?, ?, 'remote', '127.0.0.1', 19132)
+    `).run(`remote-cap-${suffix}-${i}`, 25580 + i, capPath);
+  }
+  await assert.rejects(
+    () => serverManager.createServer({
+      kind: 'remote',
+      name: `remote-cap-extra-${suffix}`,
+      port: 19191,
+      remoteHost: '127.0.0.1',
+      remoteIpv4Port: 19132,
+    }),
+    /At most 5 remote servers/
+  );
+
   console.log(JSON.stringify({
     databaseMigration: 'ok',
     udpPortDetection: 'ok',
@@ -872,6 +962,7 @@ async function run() {
     dnsProxy: 'ok',
     bedrockConnectList: 'ok',
     curseforgeUrlImport: 'ok',
+    remoteGateway: 'ok',
     mcpedlUrlImport: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),

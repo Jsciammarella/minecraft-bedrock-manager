@@ -69,6 +69,8 @@ function ServerUsers() {
   const [permission, setPermission] = useState('member');
 
   const isBC = server?.kind === 'bedrock_connect';
+  const isRemote = server?.kind === 'remote';
+  const accessLocked = isBC || isRemote;
   const customPlayers = players.filter((player) => Number(player.has_custom_permission) === 1);
 
   useEffect(() => {
@@ -171,6 +173,11 @@ function ServerUsers() {
           Bedrock Connect does not have per-player permissions.
         </div>
       )}
+      {isRemote && (
+        <div className="mb-6 p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
+          Remote servers do not have per-player permissions on this manager.
+        </div>
+      )}
 
       {error && (
         <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-3">
@@ -185,7 +192,7 @@ function ServerUsers() {
         </div>
       )}
 
-      <div className={`card ${isBC ? 'opacity-60' : ''}`}>
+      <div className={`card ${accessLocked ? 'opacity-60' : ''}`}>
         <h2 className="font-semibold text-white flex items-center gap-2 mb-2">
           <Users className="w-4 h-4" />
           Permission list
@@ -203,14 +210,14 @@ function ServerUsers() {
             value={query}
             onChange={setQuery}
             options={players.filter((player) => Number(player.has_custom_permission) !== 1)}
-            disabled={isBC}
+            disabled={accessLocked}
             placeholder="Type a player name..."
             onEnter={addCustomPermission}
           />
           <select
             value={permission}
             onChange={(e) => setPermission(e.target.value)}
-            disabled={isBC || busy}
+            disabled={accessLocked || busy}
             className="input sm:w-36 text-sm"
             aria-label="Permission level"
           >
@@ -220,7 +227,7 @@ function ServerUsers() {
           </select>
           <button
             onClick={addCustomPermission}
-            disabled={isBC || !query.trim() || busy}
+            disabled={accessLocked || !query.trim() || busy}
             className="btn btn-primary"
           >
             <UserPlus className="w-4 h-4" /> Add Player
@@ -261,7 +268,7 @@ function ServerUsers() {
                   { permission: e.target.value, hasCustomPermission: true },
                   `${player.username}'s permission updated.`
                 )}
-                disabled={isBC || busy}
+                disabled={accessLocked || busy}
                 className="input sm:w-36 text-sm"
                 aria-label={`Permission for ${player.username}`}
               >
@@ -275,7 +282,7 @@ function ServerUsers() {
                   { hasCustomPermission: false },
                   `${player.username} will now use this server's default permission.`
                 )}
-                disabled={isBC || busy}
+                disabled={accessLocked || busy}
                 className="btn btn-secondary text-sm text-mc-danger"
                 title="Remove custom permission. This does not change allow list or ban status."
               >

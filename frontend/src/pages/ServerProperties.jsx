@@ -47,6 +47,9 @@ function ServerProperties() {
     natural_regeneration: 1,
     remote_discovery: 0,
     tx_rate: '30',
+    remote_host: '',
+    remote_ipv4_port: '19132',
+    remote_ipv6_port: '19133',
   });
 
   useEffect(() => {
@@ -64,6 +67,9 @@ function ServerProperties() {
         ...prev,
         port: String(res.data.port || ''),
         ipv6_port: String(res.data.ipv6_port || ''),
+        remote_host: res.data.remote_host || '',
+        remote_ipv4_port: String(res.data.remote_ipv4_port || '19132'),
+        remote_ipv6_port: String(res.data.remote_ipv6_port || '19133'),
         max_players: String(res.data.max_players || 10),
         difficulty: res.data.difficulty || 'peaceful',
         gamemode: res.data.gamemode || 'survival',
@@ -157,6 +163,20 @@ function ServerProperties() {
         });
         return;
       }
+      if (server?.kind === 'remote') {
+        await serverApi.update(id, {
+          port: formData.port === '' ? undefined : parseInt(formData.port, 10),
+          ipv6Port: formData.ipv6_port === '' ? undefined : parseInt(formData.ipv6_port, 10),
+          remoteHost: formData.remote_host,
+          remoteIpv4Port: parseInt(formData.remote_ipv4_port, 10),
+          remoteIpv6Port: formData.remote_ipv6_port === '' ? undefined : parseInt(formData.remote_ipv6_port, 10),
+        });
+        navigate(`/servers/${id}`, {
+          replace: true,
+          state: { message: 'Remote server addresses saved successfully.' },
+        });
+        return;
+      }
       const payload = {
         ...formData,
         port: formData.port === '' ? undefined : parseInt(formData.port, 10),
@@ -192,6 +212,8 @@ function ServerProperties() {
   }
 
   const isBC = server?.kind === 'bedrock_connect';
+  const isRemote = server?.kind === 'remote';
+  const settingsLocked = isBC || isRemote;
   const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
   const ipv6Available = (ports.available || []).filter((item) => item.family === 'ipv6');
   const portOptions = [];
@@ -227,6 +249,11 @@ function ServerProperties() {
       {isBC && (
         <div className="mb-6 p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
           Bedrock Connect port and gameplay settings cannot be changed. Auto-update works the same as a normal server.
+        </div>
+      )}
+      {isRemote && (
+        <div className="mb-6 p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
+          Remote servers only allow changing local ports and the remote host and ports. Other settings stay disabled.
         </div>
       )}
 
@@ -298,63 +325,70 @@ function ServerProperties() {
                 </p>
               )}
             </div>
-            <FormField label="Server Description" name="server_description" value={formData.server_description} onChange={handleChange} type="text" disabled={isBC} />
-            <FormField label="Server MOTD" name="server_motd" value={formData.server_motd} onChange={handleChange} type="text" disabled={isBC} />
-            <FormField label="Max Players" name="max_players" value={formData.max_players} onChange={handleChange} type="number" min="1" max="1000" disabled={isBC} />
-            <FormField label="Level Seed" name="level_seed" value={formData.level_seed} onChange={handleChange} type="text" placeholder="Leave empty for random" disabled={isBC} />
+            {isRemote && (
+              <>
+                <FormField label="Remote IP or Hostname" name="remote_host" value={formData.remote_host} onChange={handleChange} type="text" required />
+                <FormField label="Remote IPv4 Port" name="remote_ipv4_port" value={formData.remote_ipv4_port} onChange={handleChange} type="number" min="1" max="65535" required />
+                <FormField label="Remote IPv6 Port" name="remote_ipv6_port" value={formData.remote_ipv6_port} onChange={handleChange} type="number" min="1" max="65535" required />
+              </>
+            )}
+            <FormField label="Server Description" name="server_description" value={formData.server_description} onChange={handleChange} type="text" disabled={settingsLocked} />
+            <FormField label="Server MOTD" name="server_motd" value={formData.server_motd} onChange={handleChange} type="text" disabled={settingsLocked} />
+            <FormField label="Max Players" name="max_players" value={formData.max_players} onChange={handleChange} type="number" min="1" max="1000" disabled={settingsLocked} />
+            <FormField label="Level Seed" name="level_seed" value={formData.level_seed} onChange={handleChange} type="text" placeholder="Leave empty for random" disabled={settingsLocked} />
           </div>
         </Section>
 
         {/* Game Settings */}
         <Section title="Game Settings">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <SelectField label="Game Mode" name="gamemode" value={formData.gamemode} onChange={handleChange} disabled={isBC} options={[
+            <SelectField label="Game Mode" name="gamemode" value={formData.gamemode} onChange={handleChange} disabled={settingsLocked} options={[
               { value: 'survival', label: 'Survival' },
               { value: 'creative', label: 'Creative' },
               { value: 'adventure', label: 'Adventure' },
               { value: 'default', label: 'Default' },
             ]} />
-            <SelectField label="Difficulty" name="difficulty" value={formData.difficulty} onChange={handleChange} disabled={isBC} options={[
+            <SelectField label="Difficulty" name="difficulty" value={formData.difficulty} onChange={handleChange} disabled={settingsLocked} options={[
               { value: 'peaceful', label: 'Peaceful' },
               { value: 'easy', label: 'Easy' },
               { value: 'normal', label: 'Normal' },
               { value: 'hard', label: 'Hard' },
             ]} />
-            <FormField label="View Distance" name="view_distance" value={formData.view_distance} onChange={handleChange} type="number" min="2" max="32" disabled={isBC} />
-            <FormField label="Tick Distance" name="tick_distance" value={formData.tick_distance} onChange={handleChange} type="number" min="1" max="10" disabled={isBC} />
-            <FormField label="Player Idle Timeout (min)" name="player_idle_timeout" value={formData.player_idle_timeout} onChange={handleChange} type="number" min="0" max="1440" disabled={isBC} />
-            <FormField label="TX Rate (FPS)" name="tx_rate" value={formData.tx_rate} onChange={handleChange} type="number" min="1" max="60" disabled={isBC} />
+            <FormField label="View Distance" name="view_distance" value={formData.view_distance} onChange={handleChange} type="number" min="2" max="32" disabled={settingsLocked} />
+            <FormField label="Tick Distance" name="tick_distance" value={formData.tick_distance} onChange={handleChange} type="number" min="1" max="10" disabled={settingsLocked} />
+            <FormField label="Player Idle Timeout (min)" name="player_idle_timeout" value={formData.player_idle_timeout} onChange={handleChange} type="number" min="0" max="1440" disabled={settingsLocked} />
+            <FormField label="TX Rate (FPS)" name="tx_rate" value={formData.tx_rate} onChange={handleChange} type="number" min="1" max="60" disabled={settingsLocked} />
           </div>
         </Section>
 
         {/* Toggles */}
         <Section title="Server Options">
           <div className="space-y-4">
-            <ToggleRow label="Enable Cheats" name="enable_cheats" value={formData.enable_cheats} onToggle={handleToggle} description="Allow cheats and commands" disabled={isBC} />
-            <ToggleRow label="Server Authoritative" name="server_authoritative" value={formData.server_authoritative} onToggle={handleToggle} description="Server controls game logic" disabled={isBC} />
-            <ToggleRow label="Whitelist Mode" name="whitelist_mode" value={formData.whitelist_mode} onToggle={handleToggle} description="Only whitelisted players can join" disabled={isBC} />
-            <ToggleRow label="Texture Pack Required" name="texture_pack_required" value={formData.texture_pack_required} onToggle={handleToggle} description="Players must accept texture packs" disabled={isBC} />
-            <ToggleRow label="Auto Ice" name="auto_ice" value={formData.auto_ice} onToggle={handleToggle} description="Water freezes into ice" disabled={isBC} />
-            <ToggleRow label="Natural Regeneration" name="natural_regeneration" value={formData.natural_regeneration} onToggle={handleToggle} description="Health regenerates over time" disabled={isBC} />
-            <ToggleRow label="Online Mode" name="online_mode" value={formData.online_mode} onToggle={handleToggle} description="Require Xbox Live authentication" disabled={isBC} />
-            <ToggleRow label="Remote Discovery" name="remote_discovery" value={formData.remote_discovery} onToggle={handleToggle} description="Show server in external listings" disabled={isBC} />
-            <ToggleRow label="Allow Third-Party Requests" name="allow_third_party_requests" value={formData.allow_third_party_requests} onToggle={handleToggle} description="Allow realms invites" disabled={isBC} />
-            <ToggleRow label="Allow Third-Party Pictures" name="allow_third_party_pictures" value={formData.allow_third_party_pictures} onToggle={handleToggle} description="Allow skin data from third parties" disabled={isBC} />
-            <ToggleRow label="Require Secure Chat" name="require_secure_chat" value={formData.require_secure_chat} onToggle={handleToggle} description="Enforce chat signing" disabled={isBC} />
-            <ToggleRow label="Server Authoritative Inventory" name="server_authoritative_inventory" value={formData.server_authoritative_inventory} onToggle={handleToggle} description="Server manages inventory" disabled={isBC} />
-            <ToggleRow label="Enable Player Data Init" name="enable_player_data_initialization" value={formData.enable_player_data_initialization} onToggle={handleToggle} description="Create player data on first join" disabled={isBC} />
+            <ToggleRow label="Enable Cheats" name="enable_cheats" value={formData.enable_cheats} onToggle={handleToggle} description="Allow cheats and commands" disabled={settingsLocked} />
+            <ToggleRow label="Server Authoritative" name="server_authoritative" value={formData.server_authoritative} onToggle={handleToggle} description="Server controls game logic" disabled={settingsLocked} />
+            <ToggleRow label="Whitelist Mode" name="whitelist_mode" value={formData.whitelist_mode} onToggle={handleToggle} description="Only whitelisted players can join" disabled={settingsLocked} />
+            <ToggleRow label="Texture Pack Required" name="texture_pack_required" value={formData.texture_pack_required} onToggle={handleToggle} description="Players must accept texture packs" disabled={settingsLocked} />
+            <ToggleRow label="Auto Ice" name="auto_ice" value={formData.auto_ice} onToggle={handleToggle} description="Water freezes into ice" disabled={settingsLocked} />
+            <ToggleRow label="Natural Regeneration" name="natural_regeneration" value={formData.natural_regeneration} onToggle={handleToggle} description="Health regenerates over time" disabled={settingsLocked} />
+            <ToggleRow label="Online Mode" name="online_mode" value={formData.online_mode} onToggle={handleToggle} description="Require Xbox Live authentication" disabled={settingsLocked} />
+            <ToggleRow label="Remote Discovery" name="remote_discovery" value={formData.remote_discovery} onToggle={handleToggle} description="Show server in external listings" disabled={settingsLocked} />
+            <ToggleRow label="Allow Third-Party Requests" name="allow_third_party_requests" value={formData.allow_third_party_requests} onToggle={handleToggle} description="Allow realms invites" disabled={settingsLocked} />
+            <ToggleRow label="Allow Third-Party Pictures" name="allow_third_party_pictures" value={formData.allow_third_party_pictures} onToggle={handleToggle} description="Allow skin data from third parties" disabled={settingsLocked} />
+            <ToggleRow label="Require Secure Chat" name="require_secure_chat" value={formData.require_secure_chat} onToggle={handleToggle} description="Enforce chat signing" disabled={settingsLocked} />
+            <ToggleRow label="Server Authoritative Inventory" name="server_authoritative_inventory" value={formData.server_authoritative_inventory} onToggle={handleToggle} description="Server manages inventory" disabled={settingsLocked} />
+            <ToggleRow label="Enable Player Data Init" name="enable_player_data_initialization" value={formData.enable_player_data_initialization} onToggle={handleToggle} description="Create player data on first join" disabled={settingsLocked} />
           </div>
         </Section>
 
         {/* Permission */}
         <Section title="Permissions">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <SelectField label="Default Player Permission" name="default_player_permission" value={formData.default_player_permission} onChange={handleChange} disabled={isBC} options={[
+            <SelectField label="Default Player Permission" name="default_player_permission" value={formData.default_player_permission} onChange={handleChange} disabled={settingsLocked} options={[
               { value: 'visitor', label: 'Visitor' },
               { value: 'member', label: 'Member' },
               { value: 'operator', label: 'Operator' },
             ]} />
-            <SelectField label="Default 1st Person" name="default_1st_person" value={formData.default_1st_person} onChange={handleChange} disabled={isBC} options={[
+            <SelectField label="Default 1st Person" name="default_1st_person" value={formData.default_1st_person} onChange={handleChange} disabled={settingsLocked} options={[
               { value: '0', label: 'Off' },
               { value: '1', label: 'On' },
             ]} />
@@ -378,8 +412,8 @@ function ServerProperties() {
                 <button
                   type="button"
                   onClick={handleAutoUpdateToggle}
-                  disabled={autoUpdating}
-                  className={`toggle ${autoUpdateEnabled ? 'toggle-active' : 'toggle-inactive'}`}
+                  disabled={autoUpdating || isRemote}
+                  className={`toggle ${autoUpdateEnabled ? 'toggle-active' : 'toggle-inactive'} ${isRemote ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <span className={`toggle-thumb ${autoUpdateEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
                 </button>
@@ -421,7 +455,7 @@ function ServerProperties() {
               </>
             )}
           </button>
-          <button type="button" onClick={loadServer} disabled={isBC} className="btn btn-secondary">
+          <button type="button" onClick={loadServer} className="btn btn-secondary">
             <RefreshCw className="w-4 h-4" />
             Reset
           </button>

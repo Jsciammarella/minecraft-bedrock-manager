@@ -12,6 +12,10 @@ function isBedrockConnect(server) {
   return server?.kind === 'bedrock_connect';
 }
 
+function isRemote(server) {
+  return server?.kind === 'remote';
+}
+
 function Dashboard() {
   const navigate = useNavigate();
   const { servers, loading, refresh } = useApi();
@@ -437,6 +441,11 @@ function Dashboard() {
                           Console list
                         </span>
                       )}
+                      {isRemote(server) && (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30">
+                          Remote
+                        </span>
+                      )}
                       {lan.active && !lan.native && !isBedrockConnect(server) && (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 border border-sky-500/30">
                           LAN
@@ -449,7 +458,7 @@ function Dashboard() {
                       )}
                     </div>
                     <p className="text-xs text-mc-textMuted" title={connectLabel}>
-                      v{server.version} • <span className={connectLabel === 'Phantom Proxy' ? 'text-sky-300' : 'font-mono text-mc-text'}>{connectLabel}</span>
+                      v{isRemote(server) ? 'N/A' : server.version} • <span className={connectLabel === 'Phantom Proxy' ? 'text-sky-300' : 'font-mono text-mc-text'}>{connectLabel}</span>
                     </p>
                   </div>
                 </div>
@@ -500,7 +509,7 @@ function Dashboard() {
               <div className="grid grid-cols-3 gap-3 mb-4">
                 <div className="text-center p-2 bg-mc-darker rounded-lg">
                   <Users className="w-4 h-4 text-mc-textMuted mx-auto mb-1" />
-                  <p className="text-sm font-medium text-white">{server.stats?.onlinePlayers || 0}</p>
+                  <p className="text-sm font-medium text-white">{isRemote(server) ? 'N/A' : (server.stats?.onlinePlayers || 0)}</p>
                   <p className="text-xs text-mc-textMuted">Players</p>
                 </div>
                 <div className="text-center p-2 bg-mc-darker rounded-lg">
@@ -510,7 +519,7 @@ function Dashboard() {
                 </div>
                 <div className="text-center p-2 bg-mc-darker rounded-lg">
                   <PackageIcon className="w-4 h-4 text-mc-textMuted mx-auto mb-1" />
-                  <p className="text-sm font-medium text-white">{server.stats?.installedMods || 0}</p>
+                  <p className="text-sm font-medium text-white">{isRemote(server) ? 'N/A' : (server.stats?.installedMods || 0)}</p>
                   <p className="text-xs text-mc-textMuted">Mods</p>
                 </div>
               </div>

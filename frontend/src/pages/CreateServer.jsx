@@ -6,10 +6,11 @@ import { ArrowLeft, Server, Loader2, Check, AlertCircle } from 'lucide-react';
 
 function CreateServer() {
   const navigate = useNavigate();
-  const { refresh } = useApi();
+  const { refresh, servers } = useApi();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [remote, setRemote] = useState(false);
   
   const [formData, setFormData] = useState({
     name: '',
@@ -20,6 +21,9 @@ function CreateServer() {
     description: '',
     gamemode: 'survival',
     difficulty: 'peaceful',
+    remoteHost: '',
+    remoteIpv4Port: '19132',
+    remoteIpv6Port: '19133',
   });
 
   const [ports, setPorts] = useState({ used: [], available: [] });
@@ -30,6 +34,7 @@ function CreateServer() {
 
   const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
   const ipv6Available = (ports.available || []).filter((item) => item.family === 'ipv6');
+  const remoteCount = (servers || []).filter((server) => server.kind === 'remote').length;
 
   const loadPorts = async () => {
     try {
@@ -75,12 +80,23 @@ function CreateServer() {
     setSuccess('');
 
     try {
-      await serverApi.create({
-        ...formData,
-        port: parseInt(formData.port, 10),
-        ipv6Port: formData.ipv6Port === '' ? undefined : parseInt(formData.ipv6Port, 10),
-        maxPlayers: parseInt(formData.maxPlayers, 10),
-      });
+      const payload = remote
+        ? {
+            kind: 'remote',
+            name: formData.name,
+            port: parseInt(formData.port, 10),
+            ipv6Port: formData.ipv6Port === '' ? undefined : parseInt(formData.ipv6Port, 10),
+            remoteHost: formData.remoteHost,
+            remoteIpv4Port: parseInt(formData.remoteIpv4Port, 10),
+            remoteIpv6Port: formData.remoteIpv6Port === '' ? undefined : parseInt(formData.remoteIpv6Port, 10),
+          }
+        : {
+            ...formData,
+            port: parseInt(formData.port, 10),
+            ipv6Port: formData.ipv6Port === '' ? undefined : parseInt(formData.ipv6Port, 10),
+            maxPlayers: parseInt(formData.maxPlayers, 10),
+          };
+      await serverApi.create(payload);
       await refresh();
       navigate('/');
     } catch (err) {
@@ -102,7 +118,11 @@ function CreateServer() {
         </button>
         <div>
           <h1 className="text-2xl font-bold text-white">Create New Server</h1>
-          <p className="text-mc-textMuted mt-1">Set up a new Minecraft Bedrock server</p>
+          <p className="text-mc-textMuted mt-1">
+            {remote
+              ? 'Forward a local UDP port to a pingable Minecraft Bedrock host'
+              : 'Set up a new Minecraft Bedrock server'}
+          </p>
         </div>
       </div>
 
@@ -123,20 +143,53 @@ function CreateServer() {
       {/* Form */}
       <form onSubmit={handleSubmit} className="card space-y-6">
         {/* Server Name */}
-        <div>
-          <label className="block text-sm font-medium text-mc-text mb-2">
-            Server Name <span className="text-mc-danger">*</span>
-          </label>
-          <input
-            type="text"
-            name="name"
-            value={formData.name}
-            onChange={handleChange}
-            className="input"
-            placeholder="My Awesome Server"
-            required
-          />
+        <div className="flex items-end gap-4">
+          <div className="flex-1 min-w-0">
+            <label className="block text-sm font-medium text-mc-text mb-2">
+              Server Name <span className="text-mc-danger">*</span>
+            </label>
+            <input
+              type="text"
+              name="name"
+              value={formData.name}
+              onChange={handleChange}
+              className="input"
+              placeholder="My Awesome Server"
+              required
+            />
+          </div>
+          <div className="flex-shrink-0 pb-1">
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-medium text-mc-text">Remote</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={remote}
+                aria-label="Create as a remote server"
+                disabled={remoteCount >= 5 && !remote}
+                onClick={() => {
+                  if (remoteCount >= 5 && !remote) return;
+                  setRemote((value) => !value);
+                  setError('');
+                }}
+                className={`toggle ${remote ? 'toggle-active' : 'toggle-inactive'} ${remoteCount >= 5 && !remote ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <span className={`toggle-thumb ${remote ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+            </div>
+          </div>
         </div>
+        {remote && (
+          <p className="text-xs text-mc-textMuted -mt-4">
+            This host listens on the local ports below and forwards UDP game traffic to another Bedrock server.
+            At most 5 remote servers. Extra latency is expected, especially over a VPN.
+          </p>
+        )}
+        {remoteCount >= 5 && !remote && (
+          <p className="text-xs text-amber-300 -mt-4">
+            Remote server limit reached (5). Delete one before adding another.
+          </p>
+        )}
 
         {/* Port Selection */}
         <div>
@@ -181,6 +234,61 @@ function CreateServer() {
           </p>
         </div>
 
+        {remote && (
+          <>
+            <div>
+              <label className="block text-sm font-medium text-mc-text mb-2">
+                Remote IP or Hostname <span className="text-mc-danger">*</span>
+              </label>
+              <input
+                type="text"
+                name="remoteHost"
+                value={formData.remoteHost}
+                onChange={handleChange}
+                className="input"
+                placeholder="100.x.x.x or hostname"
+                required={remote}
+                autoComplete="off"
+              />
+              <p className="mt-2 text-xs text-mc-textMuted">
+                Must resolve from this host. Tailscale and other VPN names work if this machine can reach them.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-mc-text mb-2">
+                Remote IPv4 Port <span className="text-mc-danger">*</span>
+              </label>
+              <input
+                type="number"
+                name="remoteIpv4Port"
+                value={formData.remoteIpv4Port}
+                onChange={handleChange}
+                className="input"
+                min="1"
+                max="65535"
+                required={remote}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-mc-text mb-2">
+                Remote IPv6 Port <span className="text-mc-danger">*</span>
+              </label>
+              <input
+                type="number"
+                name="remoteIpv6Port"
+                value={formData.remoteIpv6Port}
+                onChange={handleChange}
+                className="input"
+                min="1"
+                max="65535"
+                required={remote}
+              />
+            </div>
+          </>
+        )}
+
+        {!remote && (
+          <>
         {/* Version */}
         <div>
           <label className="block text-sm font-medium text-mc-text mb-2">Version</label>
@@ -257,6 +365,8 @@ function CreateServer() {
             placeholder="A short description for your server..."
           />
         </div>
+          </>
+        )}
 
         {/* Submit */}
         <div className="flex items-center gap-3 pt-4 border-t border-mc-surfaceLight">
@@ -273,7 +383,7 @@ function CreateServer() {
             ) : (
               <>
                 <Server className="w-4 h-4" />
-                Create Server
+                {remote ? 'Create Remote Server' : 'Create Server'}
               </>
             )}
           </button>

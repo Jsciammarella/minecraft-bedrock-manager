@@ -696,7 +696,7 @@ function uninstallModFromServer(server, mod, manifestRaw) {
 }
 
 async function activateServerPacks(server) {
-  if (!server || server.kind === 'bedrock_connect') return;
+  if (!server || server.kind === 'bedrock_connect' || server.kind === 'remote') return;
   const rows = db.prepare(`
     SELECT sm.mod_id, sm.install_manifest, m.file_path, m.name, m.type
     FROM server_mods sm

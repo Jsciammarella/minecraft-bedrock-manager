@@ -306,7 +306,7 @@ function ServerDetail() {
   };
 
   const sendCommand = async (cmd) => {
-    if (server?.kind === 'bedrock_connect') return;
+    if (server?.kind === 'bedrock_connect' || server?.kind === 'remote') return;
     if (!cmd.trim()) return;
     const trimmedCommand = cmd.trim();
     addServerOutput(id, `[You] ${trimmedCommand}`);
@@ -411,6 +411,7 @@ function ServerDetail() {
   };
 
   const openUpdateModal = async () => {
+    if (server?.kind === 'remote') return;
     setUpdateError('');
     setUpdateVersion('latest');
     setShowUpdateModal(true);
@@ -491,6 +492,8 @@ function ServerDetail() {
   }
 
   const isBC = server.kind === 'bedrock_connect';
+  const isRemote = server.kind === 'remote';
+  const gameplayLocked = isBC || isRemote;
   const isBuilding = server.status === 'creating';
   const createFailed = String(server.pending_restart_reason || '').startsWith('Create failed');
   const lan = server.stats?.lan || server.lan || {};
@@ -506,6 +509,11 @@ function ServerDetail() {
       {isBC && (
         <div className="mb-4 p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
           Bedrock Connect supports start, stop, restart, JAR updates, and auto-update. Console commands, port, players, and mods do not apply.
+        </div>
+      )}
+      {isRemote && (
+        <div className="mb-4 p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
+          This is a UDP gateway to another Bedrock host. Start/stop, LAN listing, and local/remote ports can be changed. Console, players, mods, and updates are not available.
         </div>
       )}
       {location.state?.message && (
@@ -583,6 +591,11 @@ function ServerDetail() {
                   Console list
                 </span>
               )}
+              {isRemote && (
+                <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30">
+                  Remote
+                </span>
+              )}
               {lan.active && !lan.native && !isBC && (
                 <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 border border-sky-500/30">
                   LAN
@@ -595,20 +608,23 @@ function ServerDetail() {
               )}
             </div>
             <p className="text-mc-textMuted mt-1 break-words">
-              v{server.version} • {connectLabel} • {server.gamemode} • {server.difficulty}
+              {isRemote
+                ? <>N/A • {connectLabel} • N/A • N/A</>
+                : <>v{server.version} • {connectLabel} • {server.gamemode} • {server.difficulty}</>}
             </p>
           </div>
         </div>
         <div className="page-header-actions flex items-center gap-2">
           <button
             onClick={openUpdateModal}
-            className="btn btn-secondary text-sm"
-            title="Update server"
+            disabled={isRemote}
+            className={`btn text-sm ${isRemote ? 'bg-mc-surfaceLight text-mc-textMuted' : 'btn-secondary'}`}
+            title={isRemote ? 'Remote servers cannot be updated from this manager' : 'Update server'}
           >
             <Download className="w-4 h-4" />
             Update
           </button>
-          {!isBC && (
+          {!gameplayLocked && (
             <button
               onClick={() => navigate(`/servers/${id}/users`)}
               className="btn btn-secondary text-sm"
@@ -690,7 +706,7 @@ function ServerDetail() {
             </div>
             <div>
               <p className="text-xs text-mc-textMuted">Players</p>
-              <p className={`text-lg font-bold ${isBC ? 'text-mc-textMuted' : 'text-white'}`}>{onlinePlayers.length}/{server.max_players}</p>
+              <p className={`text-lg font-bold ${gameplayLocked ? 'text-mc-textMuted' : 'text-white'}`}>{isRemote ? 'N/A' : `${onlinePlayers.length}/${server.max_players}`}</p>
             </div>
           </div>
         </div>
@@ -712,7 +728,7 @@ function ServerDetail() {
             </div>
             <div>
               <p className="text-xs text-mc-textMuted">Mods</p>
-              <p className={`text-lg font-bold ${isBC ? 'text-mc-textMuted' : 'text-white'}`}>{server.installedMods?.length || 0}</p>
+              <p className={`text-lg font-bold ${gameplayLocked ? 'text-mc-textMuted' : 'text-white'}`}>{isRemote ? 'N/A' : (server.installedMods?.length || 0)}</p>
             </div>
           </div>
         </div>
@@ -782,9 +798,9 @@ function ServerDetail() {
             ) : (
               <button
                 onClick={handleWarnedRestart}
-                disabled={restartScheduling || isBC}
+                disabled={restartScheduling || gameplayLocked}
                 className="btn btn-secondary"
-                title={isBC ? 'Bedrock Connect does not support warned restarts' : undefined}
+                title={gameplayLocked ? (isRemote ? 'Remote servers do not support warned restarts' : 'Bedrock Connect does not support warned restarts') : undefined}
               >
                 {restartScheduling ? <Loader2 className="w-4 h-4 animate-spin" /> : <Clock className="w-4 h-4" />}
                 Restart with Warning
@@ -834,20 +850,20 @@ function ServerDetail() {
                 </div>
                 
                 {server.status === 'running' && (
-                  <div className={`flex items-center gap-2 ${isBC ? 'opacity-50' : ''}`}>
+                  <div className={`flex items-center gap-2 ${gameplayLocked ? 'opacity-50' : ''}`}>
                     <span className="terminal-prompt">{'>'}</span>
                     <input
                       type="text"
                       value={command}
                       onChange={(e) => setCommand(e.target.value)}
                       onKeyDown={handleCommandKeyDown}
-                      placeholder={isBC ? 'Commands are not available for Bedrock Connect' : 'Enter command...'}
+                      placeholder={gameplayLocked ? 'Commands are not available for this server' : 'Enter command...'}
                       className="terminal-input flex-1"
-                      disabled={isBC || server.status !== 'running'}
+                      disabled={gameplayLocked || server.status !== 'running'}
                     />
                     <button
                       onClick={() => sendCommand(command)}
-                      disabled={isBC}
+                      disabled={gameplayLocked}
                       className="p-2 hover:bg-mc-surfaceLight rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <Send className="w-4 h-4" />
@@ -858,7 +874,7 @@ function ServerDetail() {
             )}
           </div>
 
-          <div className={`card ${isBC ? 'opacity-60' : ''}`}>
+          <div className={`card ${gameplayLocked ? 'opacity-60' : ''}`}>
             <h2 className="font-semibold text-white flex items-center gap-2 mb-2">
               <Shield className="w-4 h-4" />
               Allow List & Player Permissions
@@ -880,13 +896,13 @@ function ServerDetail() {
                 value={allowQuery}
                 onChange={setAllowQuery}
                 options={playerAccess.filter(player => !player.is_whitelisted && !player.is_banned)}
-                disabled={isBC}
+                disabled={gameplayLocked}
                 placeholder="Type a player name..."
                 onEnter={addAllowPlayer}
               />
               <button
                 onClick={addAllowPlayer}
-                disabled={isBC || !allowQuery.trim() || accessBusy}
+                disabled={gameplayLocked || !allowQuery.trim() || accessBusy}
                 className="btn btn-primary"
               >
                 <UserPlus className="w-4 h-4" /> Add Player
@@ -904,7 +920,7 @@ function ServerDetail() {
                   <select
                     value={player.permission}
                     onChange={(e) => updatePlayerAccess(player.id, { permission: e.target.value, hasCustomPermission: true }, `${player.username}'s permission updated.`)}
-                    disabled={isBC || accessBusy}
+                    disabled={gameplayLocked || accessBusy}
                     className="input sm:w-36 text-sm"
                     aria-label={`Permission for ${player.username}`}
                   >
@@ -914,7 +930,7 @@ function ServerDetail() {
                   </select>
                   <button
                     onClick={() => updatePlayerAccess(player.id, { isWhitelisted: false }, `${player.username} removed from this server allow list.`)}
-                    disabled={isBC || accessBusy}
+                    disabled={gameplayLocked || accessBusy}
                     className="btn btn-secondary text-sm text-mc-danger"
                     title="Remove from this server's allow list"
                   >
@@ -926,7 +942,7 @@ function ServerDetail() {
           </div>
 
           {/* Per-server ban list */}
-          <div className={`card ${isBC ? 'opacity-60' : ''}`}>
+          <div className={`card ${gameplayLocked ? 'opacity-60' : ''}`}>
             <h2 className="font-semibold text-white flex items-center gap-2 mb-2">
               <Ban className="w-4 h-4 text-red-400" />
               Ban List
@@ -937,13 +953,13 @@ function ServerDetail() {
                 value={banQuery}
                 onChange={setBanQuery}
                 options={playerAccess.filter(player => !player.is_banned)}
-                disabled={isBC}
+                disabled={gameplayLocked}
                 placeholder="Type a player name..."
                 onEnter={addBanPlayer}
               />
               <button
                 onClick={addBanPlayer}
-                disabled={isBC || !banQuery.trim() || accessBusy}
+                disabled={gameplayLocked || !banQuery.trim() || accessBusy}
                 className="btn btn-danger"
               >
                 <Ban className="w-4 h-4" /> Ban Player
@@ -964,7 +980,7 @@ function ServerDetail() {
                   </div>
                   <button
                     onClick={() => updatePlayerAccess(player.id, { isBanned: false }, `${player.username} unbanned from this server.`)}
-                    disabled={isBC || accessBusy || player.is_globally_banned}
+                    disabled={gameplayLocked || accessBusy || player.is_globally_banned}
                     className="btn btn-secondary text-sm"
                     title={player.is_globally_banned
                       ? 'This player is banned on all servers. Remove the global ban from Player Management.'
@@ -981,7 +997,7 @@ function ServerDetail() {
         {/* Right sidebar - Players & Mods */}
         <div className="space-y-6">
           {/* Online Players */}
-          <div className={`card ${isBC ? 'opacity-60' : ''}`}>
+          <div className={`card ${gameplayLocked ? 'opacity-60' : ''}`}>
             <button
               onClick={() => setShowPlayers(!showPlayers)}
               className="w-full flex items-center justify-between"
@@ -1020,7 +1036,7 @@ function ServerDetail() {
           </div>
 
           {/* Installed Mods */}
-          <div className={`card ${isBC ? 'opacity-60' : ''}`}>
+          <div className={`card ${gameplayLocked ? 'opacity-60' : ''}`}>
             <button
               onClick={() => setShowMods(!showMods)}
               className="w-full flex items-center justify-between"
@@ -1061,7 +1077,7 @@ function ServerDetail() {
                       </div>
                       <button
                         onClick={() => handleRemoveMod(mod)}
-                        disabled={isBC || removingModId === mod.id || Boolean(busyModId)}
+                        disabled={gameplayLocked || removingModId === mod.id || Boolean(busyModId)}
                         className="p-2 text-mc-textMuted hover:text-red-400 hover:bg-red-500/10 rounded transition-colors disabled:opacity-50"
                         title="Remove from this server only"
                         aria-label={`Remove ${mod.name} from this server`}
@@ -1076,7 +1092,7 @@ function ServerDetail() {
                 )}
                 <button
                   onClick={openManageMods}
-                  disabled={isBC}
+                  disabled={gameplayLocked}
                   className="w-full btn btn-secondary text-sm mt-2"
                 >
                   Manage Mods
@@ -1089,16 +1105,23 @@ function ServerDetail() {
           <div className="card">
             <h2 className="font-semibold text-white mb-3">Server Info</h2>
             <div className="space-y-2 text-sm">
-              <InfoRow label="Version" value={server.version} />
+              <InfoRow label="Version" value={isRemote ? 'N/A' : server.version} />
               <InfoRow label="Address" value={connectLabel} />
               <InfoRow label="IPv4 Port" value={server.pending_port ? `${server.port} → ${server.pending_port}` : server.port} />
               <InfoRow label="IPv6 Port" value={server.pending_ipv6_port ? `${server.ipv6_port || 'unset'} → ${server.pending_ipv6_port}` : (server.ipv6_port || 'unset')} />
+              {isRemote && (
+                <>
+                  <InfoRow label="Remote Host" value={server.remote_host || 'N/A'} />
+                  <InfoRow label="Remote IPv4 Port" value={server.remote_ipv4_port || 'N/A'} />
+                  <InfoRow label="Remote IPv6 Port" value={server.remote_ipv6_port || 'N/A'} />
+                </>
+              )}
               <InfoRow label="LAN listing" value={isBC ? 'n/a' : (lan.native ? 'Native (19132)' : (lan.active && lan.enabled) ? 'On' : (lan.enabled && bcRunning) ? 'Paused' : 'Off')} />
-              <InfoRow label="Max Players" value={server.max_players} />
-              <InfoRow label="Game Mode" value={server.gamemode} />
-              <InfoRow label="Difficulty" value={server.difficulty} />
-              <InfoRow label="Auto-Update" value={autoUpdateEnabled ? 'Enabled' : 'Disabled'} />
-              <InfoRow label="Created" value={new Date(server.created_at).toLocaleDateString()} />
+              <InfoRow label="Max Players" value={isRemote ? 'N/A' : server.max_players} />
+              <InfoRow label="Game Mode" value={isRemote ? 'N/A' : server.gamemode} />
+              <InfoRow label="Difficulty" value={isRemote ? 'N/A' : server.difficulty} />
+              <InfoRow label="Auto-Update" value={isRemote ? 'N/A' : (autoUpdateEnabled ? 'Enabled' : 'Disabled')} />
+              <InfoRow label="Created" value={isRemote ? 'N/A' : new Date(server.created_at).toLocaleDateString()} />
             </div>
           </div>
         </div>

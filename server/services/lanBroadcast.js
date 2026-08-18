@@ -216,6 +216,11 @@ function stopAll() {
 }
 
 function dedicatedServerTarget(server) {
+  if (server?.kind === 'remote' && server.remote_host) {
+    const host = String(server.remote_host).trim();
+    const wrapped = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+    return `${wrapped}:${Number(server.remote_ipv4_port) || server.port}`;
+  }
   // Always target THIS host's Bedrock process. CONNECT_HOST is only a display
   // address for tiles and must not be used here (it may be DNS or another box).
   const lan = connectHost.detectLanIPv4();

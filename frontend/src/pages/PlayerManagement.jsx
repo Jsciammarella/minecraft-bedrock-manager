@@ -107,7 +107,7 @@ function PlayerManagement() {
   };
 
   const runningGameServers = servers.filter(
-    (s) => s.status === 'running' && s.kind !== 'bedrock_connect'
+    (s) => s.status === 'running' && s.kind !== 'bedrock_connect' && s.kind !== 'remote'
   );
 
   const handleScan = async (serverId) => {

@@ -101,6 +101,11 @@ class AutoUpdateScheduler {
 
       for (const server of servers) {
         try {
+          if (server.kind === 'remote') {
+            skipped++;
+            this.updateLastCheck(server.id);
+            continue;
+          }
           if (server.kind === 'bedrock_connect') {
             if (!latestConnect) {
               skipped++;
@@ -196,6 +201,10 @@ class AutoUpdateScheduler {
    */
   enableAutoUpdate(serverId, intervalHours = 24) {
     try {
+      const server = db.prepare('SELECT kind FROM servers WHERE id = ?').get(serverId);
+      if (server?.kind === 'remote') {
+        throw new Error('Remote servers do not support auto-update');
+      }
       db.prepare(`
         INSERT INTO auto_updates (server_id, enabled, check_interval_hours)
         VALUES (?, 1, ?)
