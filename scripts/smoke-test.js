@@ -77,6 +77,30 @@ async function run() {
     'an OS-bound UDP port was incorrectly reported as available'
   );
   await new Promise(resolve => blocker.close(resolve));
+
+  const platform = require('../server/services/platform');
+  assert.equal(
+    platform.bedrockBinaryName(),
+    process.platform === 'win32' ? 'bedrock_server.exe' : 'bedrock_server'
+  );
+  const needles = platform.bedrockDownloadNeedles();
+  if (process.platform === 'win32') {
+    assert.ok(needles.typeRe.test('serverBedrockWindows'));
+    assert.ok(!needles.typeRe.test('serverBedrockLinux'));
+    assert.ok(needles.urlRe.test('https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-1.21.0.zip'));
+  } else {
+    assert.ok(needles.typeRe.test('serverBedrockLinux'));
+    assert.ok(!needles.typeRe.test('serverBedrockWindows'));
+    assert.ok(needles.urlRe.test('https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.21.0.zip'));
+    assert.ok(!needles.urlRe.test('https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-1.21.0.zip'));
+  }
+  if (!process.env.MC_MANAGER_JAVA && !process.env.JAVA_HOME) {
+    assert.equal(platform.javaCommand(), process.platform === 'win32' ? 'java.exe' : 'java');
+  }
+  const chmodProbe = path.join(testRoot, 'chmod-probe');
+  fs.writeFileSync(chmodProbe, 'ok');
+  platform.chmodIfNeeded(chmodProbe);
+
   assert.equal(
     await serverManager.isUdpPortAvailable(blockedPort),
     true,
@@ -988,6 +1012,7 @@ async function run() {
     curseforgeUrlImport: 'ok',
     remoteGateway: 'ok',
     mcpedlUrlImport: 'ok',
+    windowsPlatformAdapter: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));

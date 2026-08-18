@@ -28,6 +28,7 @@ data/
 upgrade-backups/
 temp/
 *.tmp
+packaging/windows/cache/
 *.swp
 
 # Editors and operating systems

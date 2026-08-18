@@ -27,6 +27,10 @@ sudo git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manage
 
 The script installs Node.js **20.x**, build tools, Java, Git LFS, firewall rules, and a `mcmanager` systemd service for that checkout. Open `http://<this-host>:3000`.
 
+### Windows MSI (preview)
+
+A native Windows x64 installer (no WSL, no Docker) lives on a separate packaging path and does **not** change the Linux Docker or native installers. See [docs/windows-msi.md](docs/windows-msi.md).
+
 ### After install
 
 - Create a Bedrock server from the dashboard. The tile shows **Building Server** while the official Linux zip downloads.
@@ -289,6 +293,8 @@ npm test
 Production image: `docker compose up -d --build` (Linux host networking). The image includes Git, Git LFS, `unzip`, and a Java runtime for Bedrock Connect.
 
 Native package set if you are not using `install-native.sh`: `python3`, `make`, `g++`, `git`, `git-lfs`, `wget`, `tar`, `unzip`, `default-jre-headless`, Node.js 20.
+
+Windows MSI packaging (optional, Windows packager only): [docs/windows-msi.md](docs/windows-msi.md).
 
 Keep runtime data, worlds, add-on packages, logs, and `.env` out of commits. See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues using [SECURITY.md](SECURITY.md), not a public issue.
 

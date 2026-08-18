@@ -7,6 +7,7 @@ const modManager = require('./modManager');
 const logger = require('./logger');
 const db = require('../db/connection');
 const packFiles = require('./packFiles');
+const platform = require('./platform');
 
 const execFileAsync = promisify(execFile);
 
@@ -292,7 +293,7 @@ class GitCatalogClient {
     }
 
     try {
-      await execFileAsync('git', ['lfs', 'version'], { timeout: 5000, windowsHide: true });
+      await execFileAsync(platform.gitCommand(), ['lfs', 'version'], { timeout: 5000, windowsHide: true });
     } catch {
       throw new Error('This catalog uses Git LFS, but git-lfs is not available to the manager process.');
     }
@@ -567,9 +568,11 @@ class GitCatalogClient {
 
   async assertGitAvailable() {
     try {
-      await execFileAsync('git', ['--version'], { timeout: 5000, windowsHide: true });
+      await execFileAsync(platform.gitCommand(), ['--version'], { timeout: 5000, windowsHide: true });
     } catch {
-      throw new Error('Git is not installed on this host. Install Git and restart the manager.');
+      throw new Error(platform.isWindows
+        ? 'Git is not available. The Windows installer bundles MinGit under runtime\\git; restart the manager service after install.'
+        : 'Git is not installed on this host. Install Git and restart the manager.');
     }
   }
 
@@ -643,7 +646,7 @@ class GitCatalogClient {
     delete env.SSH_ASKPASS;
 
     try {
-      return await execFileAsync('git', gitArgs, {
+      return await execFileAsync(platform.gitCommand(), gitArgs, {
         cwd,
         timeout,
         windowsHide: true,

@@ -1,0 +1,94 @@
+<?ifndef Version ?>
+  <?define Version = "0.2.3" ?>
+<?endif ?>
+
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Minecraft Bedrock Manager"
+    Manufacturer="Minecraft Bedrock Manager"
+    Version="$(var.Version)"
+    UpgradeCode="A3F8C2E1-9B47-4D6A-8E21-5C70F1A92B44"
+    Scope="perMachine"
+    Compressed="yes">
+    <SummaryInformation Description="Native Windows installer for Minecraft Bedrock Manager. Linux Docker and native installs are unchanged." />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Minecraft Bedrock Manager is already installed." Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPURLINFOABOUT" Value="http://127.0.0.1:3000" />
+    <Property Id="ARPCOMMENTS" Value="Does not include Minecraft Bedrock Dedicated Server. Worlds stay under data\ on uninstall." />
+
+    <Feature Id="Main" Title="Minecraft Bedrock Manager" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="DataFolderComp" />
+      <ComponentRef Id="DataServersFolderComp" />
+      <ComponentRef Id="DataModsFolderComp" />
+      <ComponentRef Id="DataLogsFolderComp" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Minecraft Bedrock Manager">
+        <Directory Id="DataFolder" Name="data">
+          <Directory Id="DataServersFolder" Name="servers" />
+          <Directory Id="DataModsFolder" Name="mods" />
+          <Directory Id="DataLogsFolder" Name="logs" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppMenuFolder" Name="Minecraft Bedrock Manager" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="!(bindpath.Stage)\**" />
+    </ComponentGroup>
+
+    <Component Id="DataFolderComp" Directory="DataFolder" Permanent="yes" Guid="B7C1D4E2-8F93-4A16-9B05-6E2C8A71F3D0">
+      <CreateFolder />
+      <RegistryValue Root="HKLM" Key="Software\MinecraftBedrockManager" Name="DataFolder" Type="string" Value="[DataFolder]" KeyPath="yes" />
+    </Component>
+    <Component Id="DataServersFolderComp" Directory="DataServersFolder" Permanent="yes" Guid="C8D2E5F3-9A04-4B27-8C16-7F3D9B82A4E1">
+      <CreateFolder />
+      <RegistryValue Root="HKLM" Key="Software\MinecraftBedrockManager" Name="DataServersFolder" Type="string" Value="[DataServersFolder]" KeyPath="yes" />
+    </Component>
+    <Component Id="DataModsFolderComp" Directory="DataModsFolder" Permanent="yes" Guid="D9E3F604-0B15-4C38-9D27-8A4E0C93B5F2">
+      <CreateFolder />
+      <RegistryValue Root="HKLM" Key="Software\MinecraftBedrockManager" Name="DataModsFolder" Type="string" Value="[DataModsFolder]" KeyPath="yes" />
+    </Component>
+    <Component Id="DataLogsFolderComp" Directory="DataLogsFolder" Permanent="yes" Guid="E0F40715-1C26-4D49-AE38-9B5F1D04C6A3">
+      <CreateFolder />
+      <RegistryValue Root="HKLM" Key="Software\MinecraftBedrockManager" Name="DataLogsFolder" Type="string" Value="[DataLogsFolder]" KeyPath="yes" />
+    </Component>
+
+    <Component Id="StartMenuShortcut" Directory="AppMenuFolder" Guid="F1A51826-2D37-4E50-BF49-AC602E15D7B4">
+      <Shortcut
+        Id="OpenManagerShortcut"
+        Name="Minecraft Bedrock Manager"
+        Description="Open the manager web UI"
+        Target="[INSTALLFOLDER]Open Manager.url"
+        WorkingDirectory="INSTALLFOLDER" />
+      <RemoveFolder Id="AppMenuFolder" On="uninstall" />
+      <RegistryValue Root="HKLM" Key="Software\MinecraftBedrockManager" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <CustomAction Id="StopService" Directory="INSTALLFOLDER" ExeCommand="MinecraftBedrockManager.exe stop" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="InstallService" Directory="INSTALLFOLDER" ExeCommand="MinecraftBedrockManager.exe install" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="StartService" Directory="INSTALLFOLDER" ExeCommand="MinecraftBedrockManager.exe start" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="UninstallService" Directory="INSTALLFOLDER" ExeCommand="MinecraftBedrockManager.exe uninstall" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="InstallFirewall" Directory="INSTALLFOLDER" ExeCommand="cmd.exe /c firewall-install.cmd" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="UninstallFirewall" Directory="INSTALLFOLDER" ExeCommand="cmd.exe /c firewall-uninstall.cmd" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="CopyEnv" Directory="INSTALLFOLDER" ExeCommand="cmd.exe /c copy-env.cmd" Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="StopService" Before="InstallFiles" Condition="Installed AND NOT REMOVE" />
+      <Custom Action="InstallFirewall" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="CopyEnv" After="InstallFirewall" Condition="NOT REMOVE" />
+      <Custom Action="InstallService" After="CopyEnv" Condition="NOT Installed" />
+      <Custom Action="StartService" After="InstallService" Condition="NOT REMOVE" />
+      <Custom Action="UninstallService" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="UninstallFirewall" After="UninstallService" Condition="REMOVE=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>
