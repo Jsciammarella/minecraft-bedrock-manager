@@ -27,9 +27,11 @@ sudo git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manage
 
 The script installs Node.js **20.x**, build tools, Java, Git LFS, firewall rules, and a `mcmanager` systemd service for that checkout. Open `http://<this-host>:3000`.
 
-### Windows MSI (preview)
+### Windows
 
-A native Windows x64 installer (no WSL, no Docker) lives on a separate packaging path and does **not** change the Linux Docker or native installers. See [docs/windows-msi.md](docs/windows-msi.md).
+A native Windows x64 installer (no WSL, no Docker) lives on a separate packaging path and does **not** change the Linux Docker or native installers. The manager web UI is the same on Linux and Windows.
+
+Download the latest `MinecraftBedrockManager-0.2.3_*.exe` from [`dist/windows/`](dist/windows/) in this repository, or build it. See [docs/windows-msi.md](docs/windows-msi.md).
 
 ### After install
 

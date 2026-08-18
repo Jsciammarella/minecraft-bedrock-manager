@@ -7,7 +7,10 @@ public/
 !frontend/public/
 !frontend/public/**
 coverage/
-dist/
+dist/*
+!dist/windows/
+dist/windows/*
+!dist/windows/*.exe
 
 # Runtime data (worlds, binaries, database, uploads, mods, and logs)
 data/

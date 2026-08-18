@@ -611,21 +611,22 @@ function ServerDetail() {
             </div>
             <p className="text-mc-textMuted mt-1 break-words">
               {isRemote
-                ? <>N/A • {connectLabel} • N/A • N/A</>
+                ? <>{server.remote_host || 'Remote'}{server.remote_ipv4_port ? `:${server.remote_ipv4_port}` : ''} • {connectLabel}</>
                 : <>v{server.version} • {connectLabel} • {server.gamemode} • {server.difficulty}</>}
             </p>
           </div>
         </div>
         <div className="page-header-actions flex items-center gap-2">
-          <button
-            onClick={openUpdateModal}
-            disabled={isRemote}
-            className={`btn text-sm ${isRemote ? 'bg-mc-surfaceLight text-mc-textMuted' : 'btn-secondary'}`}
-            title={isRemote ? 'Remote servers cannot be updated from this manager' : 'Update server'}
-          >
-            <Download className="w-4 h-4" />
-            Update
-          </button>
+          {!isRemote && (
+            <button
+              onClick={openUpdateModal}
+              className="btn btn-secondary text-sm"
+              title="Update server"
+            >
+              <Download className="w-4 h-4" />
+              Update
+            </button>
+          )}
           {!gameplayLocked && (
             <button
               onClick={() => navigate(`/servers/${id}/users`)}
@@ -797,17 +798,16 @@ function ServerDetail() {
                 {restartScheduling ? <Loader2 className="w-4 h-4 animate-spin" /> : <Clock className="w-4 h-4" />}
                 Cancel Warned Restart
               </button>
-            ) : (
+            ) : !gameplayLocked ? (
               <button
                 onClick={handleWarnedRestart}
-                disabled={restartScheduling || gameplayLocked}
+                disabled={restartScheduling}
                 className="btn btn-secondary"
-                title={gameplayLocked ? (isRemote ? 'Remote servers do not support warned restarts' : 'Bedrock Connect does not support warned restarts') : undefined}
               >
                 {restartScheduling ? <Loader2 className="w-4 h-4 animate-spin" /> : <Clock className="w-4 h-4" />}
                 Restart with Warning
               </button>
-            )}
+            ) : null}
           </>
         )}
       </div>
@@ -816,6 +816,17 @@ function ServerDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Terminal - Takes 2 columns */}
         <div className="lg:col-span-2 space-y-6">
+          {isRemote ? (
+            <div className="card text-sm text-mc-textMuted">
+              <h2 className="font-semibold text-white mb-2">UDP gateway</h2>
+              <p>
+                This manager forwards local UDP traffic to {server.remote_host || 'the remote host'}
+                {server.remote_ipv4_port ? `:${server.remote_ipv4_port}` : ''}.
+                Console, players, mods, allow lists, and updates stay on the remote Bedrock server.
+              </p>
+            </div>
+          ) : (
+          <>
           <div className="card">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-semibold text-white flex items-center gap-2">
@@ -994,10 +1005,14 @@ function ServerDetail() {
               ))}
             </div>
           </div>
+          </>
+          )}
         </div>
 
         {/* Right sidebar - Players & Mods */}
         <div className="space-y-6">
+          {!isRemote && (
+          <>
           {/* Online Players */}
           <div className={`card ${gameplayLocked ? 'opacity-60' : ''}`}>
             <button
@@ -1102,15 +1117,17 @@ function ServerDetail() {
               </div>
             )}
           </div>
+          </>
+          )}
 
           {/* Server Info */}
           <div className="card">
             <h2 className="font-semibold text-white mb-3">Server Info</h2>
             <div className="space-y-2 text-sm">
-              <InfoRow label="Version" value={isRemote ? 'N/A' : server.version} />
+              {!isRemote && <InfoRow label="Version" value={server.version} />}
               <InfoRow label="Address" value={connectLabel} />
-              <InfoRow label="IPv4 Port" value={server.pending_port ? `${server.port} → ${server.pending_port}` : server.port} />
-              <InfoRow label="IPv6 Port" value={server.pending_ipv6_port ? `${server.ipv6_port || 'unset'} → ${server.pending_ipv6_port}` : (server.ipv6_port || 'unset')} />
+              <InfoRow label={isRemote ? 'Local IPv4 Port' : 'IPv4 Port'} value={server.pending_port ? `${server.port} → ${server.pending_port}` : server.port} />
+              <InfoRow label={isRemote ? 'Local IPv6 Port' : 'IPv6 Port'} value={server.pending_ipv6_port ? `${server.ipv6_port || 'unset'} → ${server.pending_ipv6_port}` : (server.ipv6_port || 'unset')} />
               {isRemote && (
                 <>
                   <InfoRow label="Remote Host" value={server.remote_host || 'N/A'} />
@@ -1119,18 +1136,22 @@ function ServerDetail() {
                 </>
               )}
               <InfoRow label="LAN listing" value={isBC ? 'n/a' : (lan.native ? 'Native (19132)' : (lan.active && lan.enabled) ? 'On' : (lan.enabled && bcRunning) ? 'Paused' : 'Off')} />
-              <InfoRow label="Max Players" value={isRemote ? 'N/A' : server.max_players} />
-              <InfoRow label="Game Mode" value={isRemote ? 'N/A' : server.gamemode} />
-              <InfoRow label="Difficulty" value={isRemote ? 'N/A' : server.difficulty} />
-              <InfoRow label="Auto-Update" value={isRemote ? 'N/A' : (autoUpdateEnabled ? 'Enabled' : 'Disabled')} />
-              <InfoRow label="Created" value={isRemote ? 'N/A' : new Date(server.created_at).toLocaleDateString()} />
+              {!isRemote && (
+                <>
+                  <InfoRow label="Max Players" value={server.max_players} />
+                  <InfoRow label="Game Mode" value={server.gamemode} />
+                  <InfoRow label="Difficulty" value={server.difficulty} />
+                  <InfoRow label="Auto-Update" value={autoUpdateEnabled ? 'Enabled' : 'Disabled'} />
+                  <InfoRow label="Created" value={new Date(server.created_at).toLocaleDateString()} />
+                </>
+              )}
             </div>
           </div>
         </div>
       </div>
 
       {/* Update Modal */}
-      {showUpdateModal && (
+      {showUpdateModal && !isRemote && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
           <div className="card max-w-md w-full animate-slide-up">
             <h3 className="text-lg font-semibold text-white mb-4">Update Server</h3>

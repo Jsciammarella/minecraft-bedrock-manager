@@ -12,9 +12,15 @@ router.get('/', async (req, res) => {
   try {
     const servers = serverManager.getAllServers();
     await serverManager.refreshRunningOnlinePlayers();
+    const installedByServer = modManager.getInstalledModIdsByServer();
     const result = await Promise.all(servers.map(async (s) => {
       const stats = await serverManager.getServerStats(s.id);
-      return connectHost.attach({ ...s, stats, lan: stats.lan }, req);
+      return connectHost.attach({
+        ...s,
+        stats,
+        lan: stats.lan,
+        installedModIds: installedByServer[String(s.id)] || [],
+      }, req);
     }));
     res.json(result);
   } catch (err) {

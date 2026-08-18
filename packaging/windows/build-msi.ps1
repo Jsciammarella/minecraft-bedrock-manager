@@ -1,7 +1,11 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Stage the manager and build a 64-bit Windows MSI.
+  Stage the manager and build a 64-bit Windows installer.
+
+  Output is dist\windows\MinecraftBedrockManager-<version>_<build>.exe
+  (for example MinecraftBedrockManager-0.2.3_0001.exe). The product version
+  stays 0.2.3 until you pass -Version; the build number increments automatically.
 
 .DESCRIPTION
   Linux Docker and native installers are not used here. Run this on Windows 10/11 x64
@@ -13,6 +17,7 @@
 param(
   [string]$RepoRoot = '',
   [string]$Version = '',
+  [int]$Build = 0,
   [switch]$SkipOptionalRuntimes,
   [switch]$SkipGit,
   [switch]$SkipNpm,
@@ -34,18 +39,53 @@ $MinGitVersion = '2.47.1'
 $MinGitTag = 'v2.47.1.windows.1'
 $MinGitZipName = 'MinGit-2.47.1-64-bit.zip'
 
-function Get-MsiVersion {
+function Get-ProductVersion {
   param([string]$Requested)
-  if ($Requested -match '^\d+\.\d+\.\d+') { return $Matches[0] }
-  Push-Location $RepoRoot
-  try {
-    $tag = (git describe --tags --abbrev=0 2>$null)
-  } finally {
-    Pop-Location
-  }
-  $normalized = [string]$tag -replace '^v', ''
-  if ($normalized -match '^\d+\.\d+\.\d+') { return $Matches[0] }
+  if ($Requested -match '^(\d+\.\d+\.\d+)(?:_(\d+))?$') { return $Matches[1] }
   return '0.2.3'
+}
+
+function Get-RequestedBuild {
+  param([string]$Requested, [int]$Build)
+  if ($Build -gt 0) { return $Build }
+  if ($Requested -match '^(\d+\.\d+\.\d+)_(\d+)$') { return [int]$Matches[2] }
+  return 0
+}
+
+function Read-BuildNumberFile {
+  param([string]$Path, [string]$ProductVersion)
+  if (-not (Test-Path $Path)) { return 0 }
+  $line = (Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue | Select-Object -Last 1)
+  if ($line -match '^(\d+\.\d+\.\d+)\s+(\d+)\s*$' -and $Matches[1] -eq $ProductVersion) {
+    return [int]$Matches[2]
+  }
+  return 0
+}
+
+function Write-BuildNumberFile {
+  param([string]$Path, [string]$ProductVersion, [int]$Build)
+  Set-Content -LiteralPath $Path -Value ("{0} {1}" -f $ProductVersion, $Build) -Encoding ascii
+}
+
+function Get-HighestExistingBuild {
+  param([string]$OutDir, [string]$ProductVersion)
+  $highest = 0
+  if (-not (Test-Path $OutDir)) { return 0 }
+  Get-ChildItem -LiteralPath $OutDir -Filter ("MinecraftBedrockManager-{0}_*.exe" -f $ProductVersion) -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.BaseName -match ('_(\d+)$')) {
+      $n = [int]$Matches[1]
+      if ($n -gt $highest) { $highest = $n }
+    }
+  }
+  return $highest
+}
+
+function Get-NextBuildNumber {
+  param([string]$ProductVersion, [int]$RequestedBuild, [string]$StampPath, [string]$OutDir)
+  if ($RequestedBuild -gt 0) { return $RequestedBuild }
+  $fromFile = Read-BuildNumberFile $StampPath $ProductVersion
+  $fromDist = Get-HighestExistingBuild $OutDir $ProductVersion
+  return [Math]::Max($fromFile, $fromDist) + 1
 }
 
 function Get-CachedFile {
@@ -81,17 +121,23 @@ function Copy-Tree {
   Copy-Item -Path (Join-Path $Source '*') -Destination $Dest -Recurse -Force
 }
 
-$MsiVersion = Get-MsiVersion $Version
+$ProductVersion = Get-ProductVersion $Version
 $OutDir = Join-Path $RepoRoot 'dist\windows'
 $Stage = Join-Path $OutDir 'stage'
 $CacheDir = Join-Path $PSScriptRoot 'cache'
-$MsiOut = Join-Path $OutDir ("MinecraftBedrockManager-$MsiVersion.msi")
+$BuildStamp = Join-Path $PSScriptRoot 'installer-build-number.txt'
+$BuildNumber = Get-NextBuildNumber $ProductVersion (Get-RequestedBuild $Version $Build) $BuildStamp $OutDir
+$DisplayVersion = '{0}_{1:D4}' -f $ProductVersion, $BuildNumber
+# MSI ProductVersion is only x.y.z. Burn can use a fourth field so 0.2.3_0002 replaces 0.2.3_0001.
+$BundleVersion = '{0}.{1}' -f $ProductVersion, $BuildNumber
+$MsiOut = Join-Path $OutDir ("MinecraftBedrockManager-$DisplayVersion.msi")
+$ExeOut = Join-Path $OutDir ("MinecraftBedrockManager-$DisplayVersion.exe")
 
 New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
 if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
 New-Item -ItemType Directory -Path $Stage | Out-Null
 
-Write-Host "Staging Minecraft Bedrock Manager $MsiVersion"
+Write-Host "Staging Minecraft Bedrock Manager $DisplayVersion"
 
 if (-not $SkipFrontend) {
   Push-Location $RepoRoot
@@ -202,17 +248,19 @@ if (-not $wix) {
 Write-Host "Building $MsiOut"
 & wix build (Join-Path $PSScriptRoot 'Product.wxs') `
   -arch x64 `
-  -d "Version=$MsiVersion" `
+  -d "Version=$ProductVersion" `
+  -d "DisplayVersion=$DisplayVersion" `
   -bindpath "Stage=$Stage" `
   -acceptEula wix7 `
   -o $MsiOut
 if ($LASTEXITCODE -ne 0) { throw "wix build failed with exit code $LASTEXITCODE" }
 
-$ExeOut = Join-Path $OutDir ("MinecraftBedrockManager-$MsiVersion.exe")
 Write-Host "Building $ExeOut"
 & wix build (Join-Path $PSScriptRoot 'Bundle.wxs') `
   -arch x64 `
-  -d "Version=$MsiVersion" `
+  -d "Version=$ProductVersion" `
+  -d "BundleVersion=$BundleVersion" `
+  -d "DisplayVersion=$DisplayVersion" `
   -d "MsiPath=$MsiOut" `
   -ext WixToolset.BootstrapperApplications.wixext `
   -ext WixToolset.Util.wixext `
@@ -220,5 +268,6 @@ Write-Host "Building $ExeOut"
   -o $ExeOut
 if ($LASTEXITCODE -ne 0) { throw "wix bundle build failed with exit code $LASTEXITCODE" }
 
+Write-BuildNumberFile $BuildStamp $ProductVersion $BuildNumber
 Write-Host "Installer written to $ExeOut"
 Write-Host 'Double-click the .exe, approve UAC, then open http://127.0.0.1:3000'

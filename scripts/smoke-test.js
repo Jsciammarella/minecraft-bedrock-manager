@@ -522,6 +522,11 @@ async function run() {
     VALUES (?, ?, 'addon', '', ?, 'upload')
   `).run('Smoke Addon', `smoke-addon-${suffix}`, addonZip);
   await modManager.installModToServer(packServer.lastInsertRowid, packMod.lastInsertRowid);
+  const installedByServer = modManager.getInstalledModIdsByServer();
+  assert(
+    (installedByServer[String(packServer.lastInsertRowid)] || []).includes(packMod.lastInsertRowid),
+    'installedModIds should include the pack just installed'
+  );
   const placedBp = path.join(packServerPath, 'behavior_packs', `addon_${packMod.lastInsertRowid}_aaaaaaaa`);
   const placedRp = path.join(packServerPath, 'resource_packs', `addon_${packMod.lastInsertRowid}_cccccccc`);
   assert(fs.existsSync(path.join(placedBp, 'manifest.json')), 'behavior pack was not extracted');

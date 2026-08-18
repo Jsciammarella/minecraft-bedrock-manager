@@ -348,6 +348,17 @@ class ModManager {
     return candidate;
   }
 
+  getInstalledModIdsByServer() {
+    const rows = db.prepare('SELECT server_id, mod_id FROM server_mods').all();
+    const byServer = {};
+    for (const row of rows) {
+      const serverId = String(row.server_id);
+      if (!byServer[serverId]) byServer[serverId] = [];
+      byServer[serverId].push(row.mod_id);
+    }
+    return byServer;
+  }
+
   generateSlug(name) {
     return name.toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')

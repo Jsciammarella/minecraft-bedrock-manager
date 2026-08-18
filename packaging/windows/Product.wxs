@@ -1,6 +1,9 @@
 <?ifndef Version ?>
   <?define Version = "0.2.3" ?>
 <?endif ?>
+<?ifndef DisplayVersion ?>
+  <?define DisplayVersion = $(var.Version) ?>
+<?endif ?>
 
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
@@ -12,12 +15,15 @@
     Compressed="yes">
     <SummaryInformation Description="Native Windows installer for Minecraft Bedrock Manager. Linux Docker and native installs are unchanged." />
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Minecraft Bedrock Manager is already installed." Schedule="afterInstallInitialize" />
+    <MajorUpgrade
+      AllowSameVersionUpgrades="yes"
+      DowngradeErrorMessage="A newer version of Minecraft Bedrock Manager is already installed."
+      Schedule="afterInstallInitialize" />
     <MediaTemplate EmbedCab="yes" />
 
     <Property Id="MSIUSEREALADMINDETECTION" Value="1" />
     <Property Id="ARPURLINFOABOUT" Value="http://127.0.0.1:3000" />
-    <Property Id="ARPCOMMENTS" Value="Does not include Minecraft Bedrock Dedicated Server. Worlds stay under data\ on uninstall." />
+    <Property Id="ARPCOMMENTS" Value="Does not include Minecraft Bedrock Dedicated Server. Worlds stay under data\ on uninstall. Installer $(var.DisplayVersion)." />
 
     <Launch
       Condition="Privileged"

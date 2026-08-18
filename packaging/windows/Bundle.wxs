@@ -1,6 +1,12 @@
 <?ifndef Version ?>
   <?define Version = "0.2.3" ?>
 <?endif ?>
+<?ifndef BundleVersion ?>
+  <?define BundleVersion = $(var.Version) ?>
+<?endif ?>
+<?ifndef DisplayVersion ?>
+  <?define DisplayVersion = $(var.Version) ?>
+<?endif ?>
 
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
@@ -8,7 +14,7 @@
   <Bundle
     Name="Minecraft Bedrock Manager"
     Manufacturer="Minecraft Bedrock Manager"
-    Version="$(var.Version)"
+    Version="$(var.BundleVersion)"
     UpgradeCode="C4D8E2A1-7B59-4F3C-9E16-2A80D5B47C91"
     IconSourceFile="$(sys.SOURCEFILEDIR)theme\favicon.ico"
     Compressed="yes">

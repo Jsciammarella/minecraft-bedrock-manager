@@ -314,6 +314,14 @@ function ModLibrary() {
     return <span className="badge badge-warning">Uploaded</span>;
   };
 
+  const installTargets = installModal
+    ? servers.filter((server) => {
+      if (server.kind === 'bedrock_connect' || server.kind === 'remote') return false;
+      const installed = (server.installedModIds || []).map(Number);
+      return !installed.includes(Number(installModal.id));
+    })
+    : [];
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -858,10 +866,14 @@ function ModLibrary() {
             )}
 
             <div className={`space-y-2 mb-4 max-h-64 overflow-y-auto ${installing ? 'pointer-events-none' : ''}`}>
-              {servers.length === 0 ? (
-                <p className="text-sm text-mc-textMuted text-center py-4">No servers available</p>
+              {installTargets.length === 0 ? (
+                <p className="text-sm text-mc-textMuted text-center py-4">
+                  {servers.some((server) => server.kind !== 'bedrock_connect' && server.kind !== 'remote')
+                    ? 'This pack is already installed on every gameplay server.'
+                    : 'No gameplay servers available'}
+                </p>
               ) : (
-                servers.map(server => {
+                installTargets.map(server => {
                   const isTarget = installing && installingServerId === server.id;
                   return (
                     <button
