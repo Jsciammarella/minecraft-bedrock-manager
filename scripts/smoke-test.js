@@ -815,6 +815,14 @@ async function run() {
     () => curseforgeImporter.validateOnly('https://www.curseforge.com/minecraft-bedrock'),
     /Bedrock project URL|must start with|Not a CurseForge/
   );
+  const previousFetchUrl = process.env.CURSEFORGE_FETCH_URL;
+  process.env.CURSEFORGE_FETCH_URL = 'http://127.0.0.1:1';
+  await assert.rejects(
+    () => curseforgeImporter.importFromUrl('https://example.com/not-curseforge'),
+    /must start with/
+  );
+  if (previousFetchUrl === undefined) delete process.env.CURSEFORGE_FETCH_URL;
+  else process.env.CURSEFORGE_FETCH_URL = previousFetchUrl;
 
   console.log(JSON.stringify({
     databaseMigration: 'ok',

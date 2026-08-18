@@ -22,6 +22,8 @@ services:
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=${PORT:-3000}
+      - CURSEFORGE_FETCH_URL=http://127.0.0.1:37851
+      - CURSEFORGE_FETCH_WORKDIR=/tmp/mc-cf-import
       - CURSEFORGE_API_KEY=${CURSEFORGE_API_KEY:-}
       - GIT_CATALOG_ENABLED=${GIT_CATALOG_ENABLED:-}
       - GIT_CATALOG_URL=${GIT_CATALOG_URL:-}
@@ -38,9 +40,14 @@ services:
       - mc-data:/app/data
       # Optional: mount custom logs directory
       - mc-logs:/app/data/logs
+      # Shared scratch dir for CurseForge URL imports (sidecar writes, manager reads)
+      - mc-cf-fetch:/tmp/mc-cf-import
       # Follow the host timezone. Do not set TZ here; an explicit TZ value
       # would override this file. Add TZ only if you need to override the host.
       - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      mc-curseforge-fetch:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/api/health"]
       interval: 30s
@@ -49,8 +56,34 @@ services:
       start_period: 40s
     # Compose v2 ignores Swarm deploy limits unless you are in swarm mode.
 
+  # Ubuntu 26.04 Python/OpenSSL for CurseForge page fetches. The manager image
+  # stays on Debian bookworm. Listen on loopback only (host networking).
+  mc-curseforge-fetch:
+    build:
+      context: .
+      dockerfile: Dockerfile.curseforge-fetch
+    container_name: mc-curseforge-fetch
+    restart: unless-stopped
+    network_mode: host
+    user: "0:0"
+    environment:
+      - CURSEFORGE_FETCH_BIND=127.0.0.1
+      - CURSEFORGE_FETCH_PORT=37851
+      - CURSEFORGE_FETCH_WORKDIR=/tmp/mc-cf-import
+    volumes:
+      - mc-cf-fetch:/tmp/mc-cf-import
+      - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:37851/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 volumes:
   mc-data:
     driver: local
   mc-logs:
+    driver: local
+  mc-cf-fetch:
     driver: local

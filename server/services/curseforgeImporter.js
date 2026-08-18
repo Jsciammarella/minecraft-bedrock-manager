@@ -42,6 +42,63 @@ function pythonMissingError() {
   return new Error('Python 3 is required to import CurseForge URLs. Install python3 and try again.');
 }
 
+function fetchSidecarUrl() {
+  return String(process.env.CURSEFORGE_FETCH_URL || '').replace(/\/$/, '');
+}
+
+function fetchWorkRoot() {
+  if (process.env.CURSEFORGE_FETCH_WORKDIR) return process.env.CURSEFORGE_FETCH_WORKDIR;
+  if (fetchSidecarUrl()) return '/tmp/mc-cf-import';
+  return os.tmpdir();
+}
+
+function sidecarUnavailableError(err) {
+  const detail = err?.cause?.code || err?.code || err?.message || '';
+  if (err?.name === 'AbortError') {
+    return new Error('CurseForge import timed out after 20 minutes');
+  }
+  if (/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed/i.test(String(detail))) {
+    return new Error(
+      'CurseForge fetch sidecar is not running. Rebuild with docker compose so mc-curseforge-fetch is up.'
+    );
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+async function fetchViaSidecar(projectUrl, workDir) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), IMPORT_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${fetchSidecarUrl()}/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: projectUrl, root: workDir }),
+      signal: controller.signal,
+    });
+    let payload = {};
+    try {
+      payload = await res.json();
+    } catch {
+      payload = {};
+    }
+    if (!res.ok || payload.ok === false) {
+      throw new Error(payload.error || `CurseForge fetch sidecar returned ${res.status}`);
+    }
+  } catch (err) {
+    throw sidecarUnavailableError(err);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runFetchScript(projectUrl, workDir) {
+  if (fetchSidecarUrl()) {
+    await fetchViaSidecar(projectUrl, workDir);
+    return;
+  }
+  await spawnPython([SCRIPT_PATH, projectUrl, '--root', workDir]);
+}
+
 function spawnPython(args, { timeoutMs = IMPORT_TIMEOUT_MS, cwd } = {}) {
   return new Promise((resolve, reject) => {
     const tryBin = (index) => {
@@ -168,10 +225,12 @@ async function importFromUrl(url) {
   }
 
   const projectSlug = parts[2];
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-cf-import-'));
+  const workRoot = fetchWorkRoot();
+  fs.mkdirSync(workRoot, { recursive: true });
+  const workDir = fs.mkdtempSync(path.join(workRoot, 'job-'));
   let filePath = '';
   try {
-    await spawnPython([SCRIPT_PATH, projectUrl, '--root', workDir]);
+    await runFetchScript(projectUrl, workDir);
     const metaPath = findModJson(workDir);
     if (!metaPath) {
       throw new Error('The CurseForge fetch script did not create a catalog folder');

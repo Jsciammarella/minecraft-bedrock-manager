@@ -17,6 +17,8 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=3000
+      - CURSEFORGE_FETCH_URL=http://mc-curseforge-fetch:37851
+      - CURSEFORGE_FETCH_WORKDIR=/tmp/mc-cf-import
       - CURSEFORGE_API_KEY=${CURSEFORGE_API_KEY:-}
       - GIT_CATALOG_ENABLED=${GIT_CATALOG_ENABLED:-}
       - GIT_CATALOG_URL=${GIT_CATALOG_URL:-}
@@ -33,14 +35,44 @@ services:
       - ./frontend:/app/frontend
       - ./vendor:/app/vendor
       - ./data:/app/data
+      - mc-cf-fetch:/tmp/mc-cf-import
       # Avoid mounting node_modules from host
       - /app/node_modules
       - /app/frontend/node_modules
     networks:
       - mc-network
+    depends_on:
+      mc-curseforge-fetch:
+        condition: service_healthy
     stdin_open: true
     tty: true
+
+  mc-curseforge-fetch:
+    build:
+      context: .
+      dockerfile: Dockerfile.curseforge-fetch
+    container_name: mc-curseforge-fetch-dev
+    environment:
+      - CURSEFORGE_FETCH_BIND=0.0.0.0
+      - CURSEFORGE_FETCH_PORT=37851
+      - CURSEFORGE_FETCH_WORKDIR=/tmp/mc-cf-import
+    volumes:
+      - ./server/scripts/fetch-curseforge-mod.py:/opt/cf-fetch/fetch-curseforge-mod.py:ro
+      - ./server/scripts/curseforge-fetch-server.py:/opt/cf-fetch/curseforge-fetch-server.py:ro
+      - mc-cf-fetch:/tmp/mc-cf-import
+    networks:
+      - mc-network
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:37851/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 networks:
   mc-network:
     driver: bridge
+
+volumes:
+  mc-cf-fetch:
+    driver: local

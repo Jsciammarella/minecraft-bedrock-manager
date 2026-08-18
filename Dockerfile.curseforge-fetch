@@ -1,0 +1,28 @@
+# Ubuntu 26.04 helper for CurseForge URL imports.
+# Keeps the manager image on Debian bookworm. This sidecar matches the host
+# Python 3.14 / OpenSSL 3.5 stack that CurseForge accepts on sci-linux-01.
+# Ubuntu 24.04's Python 3.12 is served a Cloudflare challenge page.
+FROM ubuntu:26.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CURSEFORGE_FETCH_BIND=127.0.0.1
+ENV CURSEFORGE_FETCH_PORT=37851
+ENV CURSEFORGE_FETCH_WORKDIR=/tmp/mc-cf-import
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/cf-fetch
+COPY server/scripts/fetch-curseforge-mod.py ./
+COPY server/scripts/curseforge-fetch-server.py ./
+
+EXPOSE 37851
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:37851/health || exit 1
+
+USER root
+CMD ["python3", "/opt/cf-fetch/curseforge-fetch-server.py"]
