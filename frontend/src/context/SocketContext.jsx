@@ -3,6 +3,11 @@ import { io } from 'socket.io-client';
 
 const SocketContext = createContext(null);
 const MAX_CONSOLE_LINES = 200;
+const ANSI_RE = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]|\u009b[\d;]*[A-Za-z]|\[(?:\d{1,3}(?:;\d{1,3})*)?m/g;
+
+function stripAnsi(text) {
+  return String(text || '').replace(ANSI_RE, '').replace(/\r/g, '');
+}
 
 export function SocketProvider({ children }) {
   const socketRef = useRef(null);
@@ -41,7 +46,7 @@ export function SocketProvider({ children }) {
       // Keep only the latest lines so every server console stays bounded
       setServerOutputs(prev => {
         const existing = prev[data.serverId] || [];
-        const newLines = data.data.split('\n').filter(line => line.trim().length > 0);
+        const newLines = stripAnsi(data.data).split('\n').filter(line => line.trim().length > 0);
         return {
           ...prev,
           [data.serverId]: [...existing, ...newLines].slice(-MAX_CONSOLE_LINES),

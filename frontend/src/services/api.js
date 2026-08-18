@@ -92,9 +92,10 @@ export const modApi = {
     params: { projectClass, source },
   }),
   catalogSettings: () => api.get('/mods/catalog/settings'),
-  saveCatalogSettings: (data) => api.put('/mods/catalog/settings', data, { timeout: 120000 }),
+  saveCatalogSettings: (data) => api.put('/mods/catalog/settings', data),
   testGitCatalog: (data) => api.post('/mods/catalog/git/test', data, { timeout: 45000 }),
-  syncGitCatalog: () => api.post('/mods/catalog/git/sync', {}, { timeout: 120000 }),
+  gitCatalogSyncStatus: () => api.get('/mods/catalog/git/status'),
+  syncGitCatalog: () => api.post('/mods/catalog/git/sync'),
 };
 
 // ========== PLAYERS ==========

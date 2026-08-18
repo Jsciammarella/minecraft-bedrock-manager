@@ -149,6 +149,7 @@ function getSettings() {
     git: {
       ...settings.git,
       modCount: gitModCount,
+      sync: gitCatalog.getSyncStatus(),
     },
   };
 }

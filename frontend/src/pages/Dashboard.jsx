@@ -611,7 +611,13 @@ function Dashboard() {
                     Building...
                   </button>
                 )}
-                {server.status !== 'running' && server.status !== 'creating' && (
+                {server.status === 'starting' && (
+                  <button disabled className="btn btn-primary flex-1 text-sm">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Starting...
+                  </button>
+                )}
+                {server.status !== 'running' && server.status !== 'creating' && server.status !== 'starting' && (
                   <button
                     onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'start'); }}
                     disabled={actions[`${server.id}-start`]}

@@ -53,12 +53,14 @@ export function ApiProvider({ children }) {
     };
   }, [fetchServers]);
 
-  const hasCreating = servers.some((server) => server.status === 'creating');
+  const hasTransient = servers.some((server) => (
+    server.status === 'creating' || server.status === 'starting'
+  ));
   useEffect(() => {
-    if (!hasCreating) return undefined;
+    if (!hasTransient) return undefined;
     const interval = setInterval(fetchServers, 2000);
     return () => clearInterval(interval);
-  }, [fetchServers, hasCreating]);
+  }, [fetchServers, hasTransient]);
 
   const refresh = useCallback(() => {
     setLoading(true);

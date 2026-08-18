@@ -126,7 +126,7 @@ Per-server allowlists, operator permissions, and bans. Scan running servers (Bed
 
 Upload `.mcpack`, `.mcaddon`, `.mcworld`, `.mctemplate`, `.mcstructure`, and `.zip` files into the mod library, then install them onto a server. Archives are extracted: behavior/resource packs go into the correct folders and world pack JSON is updated; worlds and templates replace `level-name`; structure files go into the world's `structures/` folder.
 
-**Mod Catalog** can search CurseForge (an API key is recommended) and an optional Git repository of packs. Configure those on **Mod Catalog → Settings**. Git URL, branch, token, Test, and Sync stay disabled until **Enable Git catalog** is on. See [docs/git-mod-catalog.md](docs/git-mod-catalog.md) for the repository layout.
+**Mod Catalog** can search CurseForge (an API key is recommended) and an optional Git repository of packs. Configure those on **Mod Catalog → Settings**. Git URL, branch, token, and Test stay disabled until **Enable Git catalog** is on. **Sync Now** stays disabled until the Git catalog is enabled and an access token has been saved. See [docs/git-mod-catalog.md](docs/git-mod-catalog.md) for the repository layout.
 
 ### Ports
 

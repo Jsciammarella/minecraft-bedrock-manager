@@ -11,7 +11,8 @@ It is **not** a compiled Bedrock binary. The MSI ships Node, optional JRE / Pyth
 | Manager + UI | `C:\Program Files\Minecraft Bedrock Manager\` |
 | Worlds, SQLite, mods | `C:\Program Files\Minecraft Bedrock Manager\data\` |
 | Bundled Node 20 | `runtime\node\node.exe` |
-| Windows service | **Minecraft Bedrock Manager** (WinSW, LocalSystem) |
+| Windows service | **Minecraft Bedrock Manager** (`MinecraftBedrockManager`, LocalSystem, starts at install) |
+| Start menu | **MC Manager → Minecraft Bedrock Manager** (`http://127.0.0.1:3000`) |
 | Uninstall | Apps & features |
 
 Firewall rules match the Linux UDP ranges plus TCP `3000` and DNS `53`. Data folders are marked permanent so worlds survive uninstall.
@@ -35,7 +36,7 @@ From the repo root:
 powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\build-msi.ps1
 ```
 
-The MSI is written to `dist\windows\MinecraftBedrockManager-<version>.msi`. Downloads are cached under `packaging\windows\cache\`.
+The installer is a single elevated `.exe` (`dist\windows\MinecraftBedrockManager-<version>.exe`) with the MSI packed inside. The setup UI uses the manager favicon and a dark theme with the card drawn as the window background (not a covering image, which hid the buttons). The success page shows `http://localhost:3000` and the computer’s LAN name. The packager always rebuilds the web UI so dashboard search and remote servers are included. Downloads are cached under `packaging\windows\cache\`.
 
 Useful switches:
 
@@ -47,14 +48,16 @@ GitLab CI stays Linux-only and does not build this MSI.
 
 ## Install and use
 
-1. Run the MSI as an administrator.
-2. Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
-3. Create a Bedrock server as usual. The manager fetches the official **Windows** zip (`bedrock_server.exe`).
-4. Xbox / LAN listing still uses bundled `vendor\phantom\phantom-windows.exe`.
+Copy one file onto the PC: `MinecraftBedrockManager-<version>.exe`. Double-click it and approve the User Account Control prompt (the `.exe` is marked to run as administrator).
 
-Service commands:
+1. After setup, the **Minecraft Bedrock Manager** service should be running. Open [http://127.0.0.1:3000](http://127.0.0.1:3000) from **Start → MC Manager → Minecraft Bedrock Manager**.
+2. Create a Bedrock server as usual. The manager fetches the official **Windows** zip (`bedrock_server.exe`).
+3. Xbox / LAN listing still uses bundled `vendor\phantom\phantom-windows.exe`.
+
+Do not start `MinecraftBedrockManager.exe` from a console; that file is the Windows service wrapper. Use Services or:
 
 ```powershell
+sc.exe query MinecraftBedrockManager
 sc.exe stop MinecraftBedrockManager
 sc.exe start MinecraftBedrockManager
 ```

@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { modApi } from '../services/api';
 import ModTileTags from '../components/ModTileTags';
+import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
 import {
   ArrowLeft, Search, Download, Package, AlertCircle, Check, Loader2,
   ExternalLink, Star, Settings, GitBranch, RefreshCw, X
@@ -27,13 +28,28 @@ function ModCatalog() {
   const [sortBy, setSortBy] = useState('relevancy');
   const [downloadModal, setDownloadModal] = useState(null);
   const [downloading, setDownloading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [expandedMod, setExpandedMod] = useState(null);
+  const { status, startSync } = useGitCatalogSync();
+  const wasSyncing = useRef(false);
 
   useEffect(() => {
     loadCategories();
     searchMods();
   }, []);
+
+  useEffect(() => {
+    if (wasSyncing.current && !status.running) {
+      loadCategories();
+      searchMods(page, source);
+      if (status.error) {
+        setError(status.error);
+      } else if (status.lastSync) {
+        setSuccess(`Git catalog synced (${status.modCount || 0} mods)`);
+        setTimeout(() => setSuccess(''), 3000);
+      }
+    }
+    wasSyncing.current = Boolean(status.running);
+  }, [status.running]);
 
   const loadCategories = async () => {
     try {
@@ -83,23 +99,15 @@ function ModCatalog() {
   };
 
   const handleRefresh = async () => {
-    setRefreshing(true);
+    if (!status.canSync || status.running) return;
     setError('');
     try {
-      await modApi.syncGitCatalog();
-      setSuccess('Git catalog synced');
-      setTimeout(() => setSuccess(''), 3000);
+      await startSync();
     } catch (err) {
       const message = err.response?.data?.error || err.message || '';
-      if (!/not enabled|missing a repository/i.test(message)) {
+      if (!/not enabled|missing a repository|access token/i.test(message)) {
         setError(message || 'Git catalog refresh failed');
       }
-    }
-    try {
-      await loadCategories();
-      await searchMods(page, source);
-    } finally {
-      setRefreshing(false);
     }
   };
 
@@ -167,11 +175,17 @@ function ModCatalog() {
         <div className="page-header-actions flex items-center gap-2">
           <button
             onClick={handleRefresh}
-            disabled={refreshing || searching}
+            disabled={!status.canSync || status.running}
             className="p-2 hover:bg-mc-surfaceLight rounded-lg transition-colors disabled:opacity-50 max-md:min-h-11 max-md:min-w-11 max-md:flex max-md:items-center max-md:justify-center"
-            title="Refresh Git catalog"
+            title={
+              status.running
+                ? 'Git catalog is syncing'
+                : !status.canSync
+                  ? 'Save Git catalog settings with an access token to sync'
+                  : 'Refresh Git catalog'
+            }
           >
-            <RefreshCw className={`w-5 h-5 ${refreshing ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-5 h-5 ${status.running ? 'animate-spin' : ''}`} />
           </button>
           <button
             onClick={() => navigate('/mods/catalog/settings')}

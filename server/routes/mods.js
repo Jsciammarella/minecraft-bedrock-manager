@@ -209,20 +209,32 @@ router.get('/catalog/settings', async (req, res) => {
 
 router.put('/catalog/settings', async (req, res) => {
   try {
+    const previous = gitCatalog.getConfig();
     const saved = catalog.saveSettings(req.body || {});
-    const git = saved.git || {};
-    if (git.enabled && git.url) {
-      try {
-        const sync = await gitCatalog.sync();
-        saved.git = { ...saved.git, lastSync: sync.lastSync, modCount: sync.modCount };
-      } catch (err) {
-        saved.gitSyncError = err.message;
-      }
+    const next = gitCatalog.getConfig();
+    const gitChanged = previous.enabled !== next.enabled
+      || previous.url !== next.url
+      || previous.branch !== next.branch
+      || previous.username !== next.username
+      || previous.token !== next.token
+      || previous.subdir !== next.subdir;
+    if (gitChanged && gitCatalog.canSync()) {
+      gitCatalog.startSync('settings-save').catch(() => {});
     }
-    res.json(saved);
+    res.json({
+      ...saved,
+      git: {
+        ...saved.git,
+        sync: gitCatalog.getSyncStatus(),
+      },
+    });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
+});
+
+router.get('/catalog/git/status', (req, res) => {
+  res.json(gitCatalog.getSyncStatus());
 });
 
 router.post('/catalog/git/test', async (req, res) => {
@@ -236,8 +248,13 @@ router.post('/catalog/git/test', async (req, res) => {
 
 router.post('/catalog/git/sync', async (req, res) => {
   try {
-    const result = await gitCatalog.sync();
-    res.json(result);
+    if (!gitCatalog.canSync()) {
+      return res.status(400).json({
+        error: 'Save Git catalog settings with the catalog enabled and an access token before syncing.',
+      });
+    }
+    gitCatalog.startSync('manual').catch(() => {});
+    res.status(202).json(gitCatalog.getSyncStatus());
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

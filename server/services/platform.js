@@ -83,21 +83,60 @@ function gitCommand() {
   return 'git';
 }
 
-function psSingleQuote(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
+function windowsTar() {
+  return path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
 }
 
 async function unzipArchive(zipPath, destDir) {
   if (!isWindows) {
     throw new Error('unzipArchive is only used on Windows; Linux keeps unzip(1)');
   }
-  await execFileAsync('powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-ExecutionPolicy', 'Bypass',
-    '-Command',
-    `Expand-Archive -LiteralPath ${psSingleQuote(zipPath)} -DestinationPath ${psSingleQuote(destDir)} -Force`,
-  ], { timeout: 120000, windowsHide: true });
+  fs.mkdirSync(destDir, { recursive: true });
+  try {
+    await execFileAsync(windowsTar(), ['-xf', zipPath, '-C', destDir], {
+      timeout: 180000,
+      windowsHide: true,
+    });
+    return;
+  } catch (tarErr) {
+    const python = pythonBins().find((bin) => bin);
+    if (!python) throw tarErr;
+    const script = [
+      'import os, sys, zipfile',
+      'src, dest = sys.argv[1], sys.argv[2]',
+      'dest = os.path.abspath(dest)',
+      'os.makedirs(dest, exist_ok=True)',
+      'archive = zipfile.ZipFile(src)',
+      'archive.extractall(dest)',
+    ].join('\n');
+    await execFileAsync(python, ['-c', script, zipPath, destDir], {
+      timeout: 180000,
+      windowsHide: true,
+    });
+  }
+}
+
+async function listZipEntries(zipPath) {
+  const { stdout } = await execFileAsync(windowsTar(), ['-tf', zipPath], {
+    timeout: 60000,
+    windowsHide: true,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  return String(stdout || '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\\/g, '/').trim())
+    .filter(Boolean);
+}
+
+async function extractZipEntryToBuffer(zipPath, entry) {
+  const { stdout } = await execFileAsync(windowsTar(), ['-xOf', zipPath, entry], {
+    encoding: null,
+    timeout: 60000,
+    windowsHide: true,
+    maxBuffer: 6 * 1024 * 1024,
+  });
+  if (!stdout || !stdout.length) throw new Error(`No data for ${entry}`);
+  return stdout;
 }
 
 function copyDirSync(src, dst) {
@@ -125,4 +164,6 @@ module.exports = {
   javaCommand,
   pythonBins,
   unzipArchive,
+  listZipEntries,
+  extractZipEntryToBuffer,
 };

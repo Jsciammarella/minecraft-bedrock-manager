@@ -1281,6 +1281,7 @@ done
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
     if (server.status === 'running') throw new Error('Server already running');
+    if (server.status === 'starting') throw new Error('Server is already starting');
     if (server.status === 'creating') throw new Error('Server is still being built');
 
     if (server.pending_port) {
@@ -2575,7 +2576,7 @@ done
   }
 
   observePlayerTraffic(serverId, data) {
-    const text = String(data);
+    const text = playerPresence.stripAnsi(data);
     this.appendConsoleBuffer(serverId, text);
 
     let changed = false;
@@ -2926,17 +2927,25 @@ done
   }
 
   calculateUptime(startTime) {
-    const start = new Date(startTime);
-    const now = new Date();
-    const diff = now - start;
-    
+    const start = this.parseSqliteUtc(startTime);
+    const diff = Math.max(0, Date.now() - start.getTime());
+    if (!Number.isFinite(diff)) return '0m';
+
     const days = Math.floor(diff / (1000 * 60 * 60 * 24));
     const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-    
+
     if (days > 0) return `${days}d ${hours}h ${minutes}m`;
     if (hours > 0) return `${hours}h ${minutes}m`;
     return `${minutes}m`;
+  }
+
+  parseSqliteUtc(value) {
+    if (value instanceof Date) return value;
+    const text = String(value || '').trim();
+    if (!text) return new Date(NaN);
+    if (/Z$/i.test(text) || /[+-]\d{2}:\d{2}$/.test(text)) return new Date(text);
+    return new Date(text.replace(' ', 'T') + 'Z');
   }
 
   async detectArchitecture() {
@@ -2958,11 +2967,12 @@ done
     existing.forEach(listener => pty.removeListener('data', listener));
 
     pty.on('data', (data) => {
-      this.observePlayerTraffic(serverId, data);
+      const text = playerPresence.stripAnsi(data);
+      this.observePlayerTraffic(serverId, text);
       if (global.io) {
         global.io.to(`server-${serverId}`).emit('server-output', {
           serverId,
-          data
+          data: text
         });
       }
     });

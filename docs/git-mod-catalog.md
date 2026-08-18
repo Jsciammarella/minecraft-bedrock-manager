@@ -9,8 +9,8 @@ Use any Git host that speaks HTTPS or SSH. GitLab is the primary target; GitHub,
 1. Create the Git project (public or private).
 2. Commit packs using the layout below.
 3. In the manager, open **Mod Catalog** and click the settings gear.
-4. Enable **Git catalog** and paste the clone URL, branch, and an access token if the project is private.
-5. Use **Test Connection**, then **Save Settings**. The manager clones the branch and indexes the packs.
+4. Enable **Git catalog** and paste the clone URL, branch, and an access token. **Sync Now** stays disabled until the catalog is enabled and a token has been saved.
+5. Use **Test Connection**, then **Save Settings**. Save returns immediately. If Git is enabled and a token is saved, a background sync starts (the **Sync Now** button and catalog refresh icon spin until it finishes). Wait for that spinner before downloading packs.
 
 Settings are stored in the manager database. Environment variables are used only when a value has not been saved in the UI.
 
@@ -184,7 +184,7 @@ Adding `catalog.json` or `mod.json` is better once you care about descriptions, 
 ## Sync and download behavior
 
 - The manager keeps a shallow clone under `data/git-catalog/`.
-- The clone is refreshed automatically every **2 hours** while the manager is running, and immediately when you click the refresh icon on the Mod Catalog page or **Sync Now** in Catalog Settings.
+- The clone is refreshed automatically every **2 hours** while the manager is running, and in the background when you save Git catalog settings (enabled plus a saved token) or click **Sync Now** / the catalog refresh icon. Save Settings does not wait for the clone to finish. **Sync Now** stays disabled until the Git catalog is enabled and an access token has been saved. Large catalogs can take a long time; wait for the spinner to stop before downloading packs.
 - A folder that contains `mod.json` (or `addon.json`) is listed **once**, using that metadata. Pack files in the same folder are not listed separately.
 - `thumbnail.png` (or `thumbnail.jpg`, `logo.png`, `icon.png`, `pack_icon.png`) in the same folder is used as the catalog card image.
 - **Download** copies the pack file into the manager mod library with source `Git`. It does not install the pack onto a Bedrock server until you install it from the library.
@@ -211,4 +211,5 @@ A successful Git clone is not enough for LFS. The manager fetches LFS objects wi
 | Git is not installed | Install Git on the host, or rebuild the Docker image that now includes Git |
 | Duplicate Git catalog cards for one pack | A `mod.json` in the folder now wins; refresh the catalog after updating the manager |
 | Thumbnail missing | Put `thumbnail.png` next to `mod.json`. If the repo uses Git LFS, refresh the catalog after a manager update so LFS objects are pulled with the token |
-| Download file size is ~0.1 KB | The pack is still a Git LFS pointer. Refresh the Git catalog. Confirm `git-lfs` is on the PATH of the manager process and the token can download repository files |
+| Sync times out or some packs fail until you download-fail and refresh | Save Settings no longer waits on sync. After saving an enabled catalog with a token, wait for the sync spinner to finish. **Sync Now** stays disabled until those settings are saved. |
+| Download file size is ~0.1 KB | The pack is still a Git LFS pointer. Wait for the catalog sync spinner to finish. Confirm `git-lfs` is on the PATH of the manager process and the token can download repository files |

@@ -15,7 +15,8 @@ param(
   [string]$Version = '',
   [switch]$SkipOptionalRuntimes,
   [switch]$SkipGit,
-  [switch]$SkipNpm
+  [switch]$SkipNpm,
+  [switch]$SkipFrontend
 )
 
 $ErrorActionPreference = 'Stop'
@@ -92,13 +93,9 @@ New-Item -ItemType Directory -Path $Stage | Out-Null
 
 Write-Host "Staging Minecraft Bedrock Manager $MsiVersion"
 
-if (-not $SkipNpm) {
+if (-not $SkipFrontend) {
   Push-Location $RepoRoot
   try {
-    if (-not (Test-Path (Join-Path $RepoRoot 'node_modules'))) {
-      npm ci
-      if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
-    }
     npm --prefix frontend ci
     if ($LASTEXITCODE -ne 0) { throw 'frontend npm ci failed' }
     npm run build
@@ -211,5 +208,17 @@ Write-Host "Building $MsiOut"
   -o $MsiOut
 if ($LASTEXITCODE -ne 0) { throw "wix build failed with exit code $LASTEXITCODE" }
 
-Write-Host "MSI written to $MsiOut"
-Write-Host 'Install on a Windows PC, then open http://127.0.0.1:3000'
+$ExeOut = Join-Path $OutDir ("MinecraftBedrockManager-$MsiVersion.exe")
+Write-Host "Building $ExeOut"
+& wix build (Join-Path $PSScriptRoot 'Bundle.wxs') `
+  -arch x64 `
+  -d "Version=$MsiVersion" `
+  -d "MsiPath=$MsiOut" `
+  -ext WixToolset.BootstrapperApplications.wixext `
+  -ext WixToolset.Util.wixext `
+  -acceptEula wix7 `
+  -o $ExeOut
+if ($LASTEXITCODE -ne 0) { throw "wix bundle build failed with exit code $LASTEXITCODE" }
+
+Write-Host "Installer written to $ExeOut"
+Write-Host 'Double-click the .exe, approve UAC, then open http://127.0.0.1:3000'

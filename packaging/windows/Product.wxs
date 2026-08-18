@@ -15,11 +15,18 @@
     <MajorUpgrade DowngradeErrorMessage="A newer version of Minecraft Bedrock Manager is already installed." Schedule="afterInstallInitialize" />
     <MediaTemplate EmbedCab="yes" />
 
+    <Property Id="MSIUSEREALADMINDETECTION" Value="1" />
     <Property Id="ARPURLINFOABOUT" Value="http://127.0.0.1:3000" />
     <Property Id="ARPCOMMENTS" Value="Does not include Minecraft Bedrock Dedicated Server. Worlds stay under data\ on uninstall." />
 
+    <Launch
+      Condition="Privileged"
+      Message="Minecraft Bedrock Manager must be installed by an administrator. Double-click the installer and approve the User Account Control prompt." />
+
     <Feature Id="Main" Title="Minecraft Bedrock Manager" Level="1">
       <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="WindowsService" />
+      <ComponentRef Id="InstallHelpers" />
       <ComponentRef Id="DataFolderComp" />
       <ComponentRef Id="DataServersFolderComp" />
       <ComponentRef Id="DataModsFolderComp" />
@@ -38,12 +45,46 @@
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="AppMenuFolder" Name="Minecraft Bedrock Manager" />
+      <Directory Id="AppMenuFolder" Name="MC Manager" />
     </StandardDirectory>
 
     <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
-      <Files Include="!(bindpath.Stage)\**" />
+      <Files Include="!(bindpath.Stage)\**">
+        <Exclude Files="!(bindpath.Stage)\MinecraftBedrockManager.exe" />
+        <Exclude Files="!(bindpath.Stage)\MinecraftBedrockManager.xml" />
+        <Exclude Files="!(bindpath.Stage)\firewall-install.cmd" />
+        <Exclude Files="!(bindpath.Stage)\firewall-uninstall.cmd" />
+        <Exclude Files="!(bindpath.Stage)\copy-env.cmd" />
+      </Files>
     </ComponentGroup>
+
+    <Component Id="WindowsService" Directory="INSTALLFOLDER" Guid="11A2B3C4-D5E6-4F70-8A91-B2C3D4E5F607">
+      <File Id="WinSWExe" Source="!(bindpath.Stage)\MinecraftBedrockManager.exe" KeyPath="yes" />
+      <File Id="WinSWXml" Source="!(bindpath.Stage)\MinecraftBedrockManager.xml" />
+      <ServiceInstall
+        Id="McMgrService"
+        Name="MinecraftBedrockManager"
+        DisplayName="Minecraft Bedrock Manager"
+        Description="Web console for Minecraft Bedrock dedicated servers on this PC."
+        Type="ownProcess"
+        Start="auto"
+        Account="LocalSystem"
+        ErrorControl="normal"
+        Vital="yes" />
+      <ServiceControl
+        Id="McMgrServiceControl"
+        Name="MinecraftBedrockManager"
+        Start="install"
+        Stop="both"
+        Remove="uninstall"
+        Wait="yes" />
+    </Component>
+
+    <Component Id="InstallHelpers" Directory="INSTALLFOLDER" Guid="22B3C4D5-E6F7-4081-9BA2-C3D4E5F60718">
+      <File Id="FwInstall" Source="!(bindpath.Stage)\firewall-install.cmd" />
+      <File Id="FwUninstall" Source="!(bindpath.Stage)\firewall-uninstall.cmd" />
+      <File Id="CopyEnvCmd" Source="!(bindpath.Stage)\copy-env.cmd" KeyPath="yes" />
+    </Component>
 
     <Component Id="DataFolderComp" Directory="DataFolder" Permanent="yes" Guid="B7C1D4E2-8F93-4A16-9B05-6E2C8A71F3D0">
       <CreateFolder />
@@ -66,29 +107,22 @@
       <Shortcut
         Id="OpenManagerShortcut"
         Name="Minecraft Bedrock Manager"
-        Description="Open the manager web UI"
-        Target="[INSTALLFOLDER]Open Manager.url"
+        Description="Open the manager at http://127.0.0.1:3000"
+        Target="[WindowsFolder]explorer.exe"
+        Arguments="http://127.0.0.1:3000"
         WorkingDirectory="INSTALLFOLDER" />
       <RemoveFolder Id="AppMenuFolder" On="uninstall" />
       <RegistryValue Root="HKLM" Key="Software\MinecraftBedrockManager" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
     </Component>
 
-    <CustomAction Id="StopService" Directory="INSTALLFOLDER" ExeCommand="MinecraftBedrockManager.exe stop" Execute="deferred" Impersonate="no" Return="ignore" />
-    <CustomAction Id="InstallService" Directory="INSTALLFOLDER" ExeCommand="MinecraftBedrockManager.exe install" Execute="deferred" Impersonate="no" Return="ignore" />
-    <CustomAction Id="StartService" Directory="INSTALLFOLDER" ExeCommand="MinecraftBedrockManager.exe start" Execute="deferred" Impersonate="no" Return="ignore" />
-    <CustomAction Id="UninstallService" Directory="INSTALLFOLDER" ExeCommand="MinecraftBedrockManager.exe uninstall" Execute="deferred" Impersonate="no" Return="ignore" />
-    <CustomAction Id="InstallFirewall" Directory="INSTALLFOLDER" ExeCommand="cmd.exe /c firewall-install.cmd" Execute="deferred" Impersonate="no" Return="ignore" />
-    <CustomAction Id="UninstallFirewall" Directory="INSTALLFOLDER" ExeCommand="cmd.exe /c firewall-uninstall.cmd" Execute="deferred" Impersonate="no" Return="ignore" />
-    <CustomAction Id="CopyEnv" Directory="INSTALLFOLDER" ExeCommand="cmd.exe /c copy-env.cmd" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="InstallFirewall" Directory="System64Folder" ExeCommand="cmd.exe /c &quot;[#FwInstall]&quot;" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="UninstallFirewall" Directory="System64Folder" ExeCommand="cmd.exe /c &quot;[#FwUninstall]&quot;" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="CopyEnv" Directory="System64Folder" ExeCommand="cmd.exe /c &quot;[#CopyEnvCmd]&quot;" Execute="deferred" Impersonate="no" Return="ignore" />
 
     <InstallExecuteSequence>
-      <Custom Action="StopService" Before="InstallFiles" Condition="Installed AND NOT REMOVE" />
       <Custom Action="InstallFirewall" After="InstallFiles" Condition="NOT REMOVE" />
       <Custom Action="CopyEnv" After="InstallFirewall" Condition="NOT REMOVE" />
-      <Custom Action="InstallService" After="CopyEnv" Condition="NOT Installed" />
-      <Custom Action="StartService" After="InstallService" Condition="NOT REMOVE" />
-      <Custom Action="UninstallService" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
-      <Custom Action="UninstallFirewall" After="UninstallService" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="UninstallFirewall" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
   </Package>
 </Wix>

@@ -49,11 +49,18 @@ const CLASS_FROM_TYPE = {
   structure: 'structures',
 };
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const GIT_FETCH_TIMEOUT_MS = 45 * 60 * 1000;
+const GIT_LFS_PULL_TIMEOUT_MS = 45 * 60 * 1000;
+const GIT_LFS_CHECKOUT_TIMEOUT_MS = 10 * 60 * 1000;
+const SYNC_WAIT_MESSAGE = 'The Git catalog is still syncing. Wait for the sync icon to finish, then try again.';
 
 class GitCatalogClient {
   constructor() {
     this.entriesCache = null;
     this.entriesCachedAt = 0;
+    this.syncInFlight = null;
+    this.syncStartedAt = null;
+    this.syncError = '';
   }
 
   getConfig() {
@@ -63,6 +70,58 @@ class GitCatalogClient {
   isConfigured() {
     const config = this.getConfig();
     return Boolean(config.enabled && config.url);
+  }
+
+  canSync() {
+    const config = this.getConfig();
+    return Boolean(config.enabled && config.url && config.token);
+  }
+
+  getSyncStatus() {
+    let modCount = 0;
+    try {
+      if (this.isConfigured() && fs.existsSync(CLONE_DIR)) {
+        modCount = this.loadEntries().length;
+      }
+    } catch {
+      modCount = 0;
+    }
+    return {
+      running: Boolean(this.syncInFlight),
+      startedAt: this.syncStartedAt,
+      error: this.syncError || '',
+      lastSync: this.getConfig().lastSync || '',
+      modCount,
+      canSync: this.canSync(),
+    };
+  }
+
+  startSync(reason = 'manual') {
+    if (this.syncInFlight) return this.syncInFlight;
+    if (!this.isConfigured()) {
+      const err = new Error('Git catalog is not enabled or is missing a repository URL');
+      this.syncError = err.message;
+      return Promise.reject(err);
+    }
+
+    this.syncStartedAt = new Date().toISOString();
+    this.syncError = '';
+    logger.info(`Git catalog sync starting (${reason})`);
+    this.syncInFlight = this.sync()
+      .then((result) => {
+        this.syncError = '';
+        return result;
+      })
+      .catch((err) => {
+        this.syncError = err.message;
+        logger.warn(`Git catalog ${reason} sync failed: ${err.message}`);
+        throw err;
+      })
+      .finally(() => {
+        this.syncInFlight = null;
+        this.syncStartedAt = null;
+      });
+    return this.syncInFlight;
   }
 
   catalogRoot(config = this.getConfig()) {
@@ -77,14 +136,19 @@ class GitCatalogClient {
       sortBy = 'relevancy',
     } = options;
 
-    if (!this.isConfigured()) {
+    if (!this.isConfigured() || !fs.existsSync(CLONE_DIR)) {
       return { results: [], total: 0, page };
     }
 
-    await this.ensureFresh();
-    const all = this.loadEntries()
-      .filter(mod => this.matchesQuery(mod, query))
-      .filter(mod => this.matchesCategory(mod, category));
+    let all;
+    try {
+      all = this.loadEntries()
+        .filter(mod => this.matchesQuery(mod, query))
+        .filter(mod => this.matchesCategory(mod, category));
+    } catch (err) {
+      logger.warn(`Git catalog search skipped while the repository is incomplete: ${err.message}`);
+      return { results: [], total: 0, page };
+    }
 
     const sorted = this.sortMods(all, sortBy, query);
     const start = Math.max(0, (page - 1) * pageSize);
@@ -132,21 +196,21 @@ class GitCatalogClient {
     if (!this.isConfigured()) {
       throw new Error('Git catalog is not configured');
     }
-    await this.ensureFresh();
+    if (this.syncInFlight) {
+      throw new Error(SYNC_WAIT_MESSAGE);
+    }
+    if (!fs.existsSync(path.join(CLONE_DIR, '.git'))) {
+      this.startSync('download').catch(() => {});
+      throw new Error(SYNC_WAIT_MESSAGE);
+    }
     const mod = this.getMod(slug);
     if (!mod) throw new Error('Mod not found in the Git catalog');
     if (!mod.filePath || !fs.existsSync(mod.filePath)) {
       throw new Error('Catalog entry is missing its downloadable file');
     }
     if (this.isGitLfsPointer(mod.filePath)) {
-      await this.sync();
-      const refreshed = this.getMod(slug);
-      if (!refreshed?.filePath || this.isGitLfsPointer(refreshed.filePath)) {
-        throw new Error('This pack is stored in Git LFS and was not downloaded. Refresh the Git catalog and confirm git-lfs can authenticate to the repository.');
-      }
-      mod.filePath = refreshed.filePath;
-      mod.thumbnail = refreshed.thumbnail;
-      mod.thumbnailPath = refreshed.thumbnailPath;
+      this.startSync('download-lfs').catch(() => {});
+      throw new Error('This pack is stored in Git LFS and is still syncing. Wait for the catalog sync to finish, then try again.');
     }
 
     const filename = modManager.getAvailableFilename(
@@ -235,8 +299,12 @@ class GitCatalogClient {
   async ensureFresh(options = {}) {
     const { force = false } = options;
     if (!this.isConfigured()) return { synced: false };
+    if (this.syncInFlight) return { synced: false, running: true };
     const cloned = fs.existsSync(path.join(CLONE_DIR, '.git'));
-    if (!cloned || force) return this.sync();
+    if (!cloned || force) {
+      this.startSync(force ? 'force' : 'ensure-fresh').catch(() => {});
+      return { synced: false, running: true };
+    }
     return { synced: false, cached: true };
   }
 
@@ -257,7 +325,7 @@ class GitCatalogClient {
       if (fs.existsSync(path.join(CLONE_DIR, '.git'))) {
         await this.runGit(['remote', 'set-url', 'origin', remote], { cwd: CLONE_DIR, ...gitAuth });
         await this.runGit(['fetch', '--depth', '1', 'origin', branch], {
-          cwd: CLONE_DIR, timeout: 120000, ...gitAuth, skipLfsSmudge: true,
+          cwd: CLONE_DIR, timeout: GIT_FETCH_TIMEOUT_MS, ...gitAuth, skipLfsSmudge: true,
         });
         await this.runGit(['checkout', '-B', branch, `origin/${branch}`], {
           cwd: CLONE_DIR, ...gitAuth, skipLfsSmudge: true,
@@ -269,7 +337,7 @@ class GitCatalogClient {
         if (fs.existsSync(CLONE_DIR)) fs.rmSync(CLONE_DIR, { recursive: true, force: true });
         await this.runGit(
           ['clone', '--depth', '1', '--branch', branch, '--single-branch', remote, CLONE_DIR],
-          { timeout: 120000, ...gitAuth, skipLfsSmudge: true }
+          { timeout: GIT_FETCH_TIMEOUT_MS, ...gitAuth, skipLfsSmudge: true }
         );
       }
       await this.pullLfs(gitAuth, remote);
@@ -314,8 +382,8 @@ class GitCatalogClient {
         : undefined;
       // The authenticated URLs are the credential source for Git LFS. Adding the
       // same Basic header as well makes GitLab reject the request as malformed.
-      await this.runGit(['lfs', 'pull'], { cwd: CLONE_DIR, timeout: 180000, lfsUrl });
-      await this.runGit(['lfs', 'checkout'], { cwd: CLONE_DIR, timeout: 60000, lfsUrl });
+      await this.runGit(['lfs', 'pull'], { cwd: CLONE_DIR, timeout: GIT_LFS_PULL_TIMEOUT_MS, lfsUrl });
+      await this.runGit(['lfs', 'checkout'], { cwd: CLONE_DIR, timeout: GIT_LFS_CHECKOUT_TIMEOUT_MS, lfsUrl });
     } catch (err) {
       throw new Error(this.friendlyGitError(err));
     } finally {
@@ -676,6 +744,9 @@ class GitCatalogClient {
     }
     if (/not found|Repository not found|404/i.test(text)) {
       return 'Repository not found. Check the URL, branch, and whether the token can see the project.';
+    }
+    if (err.killed || /ETIMEDOUT|timed out/i.test(text)) {
+      return 'Git catalog sync timed out before the repository finished downloading. Use Sync Now and wait for the spinner to stop; large catalogs can take a long time.';
     }
     if (/Could not resolve host|ENOTFOUND|ECONNREFUSED/i.test(text)) {
       return 'Could not reach the Git host. Check the repository URL and network access.';

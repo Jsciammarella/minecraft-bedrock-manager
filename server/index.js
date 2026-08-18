@@ -7,6 +7,7 @@ const path = require('path');
 const logger = require('./services/logger');
 const connectHost = require('./services/connectHost');
 const serverManager = require('./services/serverManager');
+const playerPresence = require('./services/playerPresence');
 const autoUpdateScheduler = require('./services/autoUpdateScheduler');
 const gitCatalogScheduler = require('./services/gitCatalogScheduler');
 
@@ -155,7 +156,7 @@ const setupPtyListeners = () => {
         pty.on('data', (data) => {
           io.to(`server-${srv.id}`).emit('server-output', {
             serverId: srv.id,
-            data
+            data: playerPresence.stripAnsi(data)
           });
         });
       }

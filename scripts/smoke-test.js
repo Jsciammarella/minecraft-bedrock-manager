@@ -11,6 +11,7 @@ const db = require('../server/db/connection');
 const serverManager = require('../server/services/serverManager');
 const curseforge = require('../server/services/curseforgeClient');
 const gitCatalog = require('../server/services/gitCatalogClient');
+const catalogService = require('../server/services/catalogService');
 const packInstaller = require('../server/services/packInstaller');
 const settingsStore = require('../server/services/settingsStore');
 const modManager = require('../server/services/modManager');
@@ -100,6 +101,19 @@ async function run() {
   const chmodProbe = path.join(testRoot, 'chmod-probe');
   fs.writeFileSync(chmodProbe, 'ok');
   platform.chmodIfNeeded(chmodProbe);
+
+  if (process.platform === 'win32') {
+    const zipPath = path.join(testRoot, 'win-extract.zip');
+    fs.writeFileSync(zipPath, zipStore({ 'hello.txt': 'unzip-ok' }));
+    const destDir = path.join(testRoot, 'win-extract');
+    await platform.unzipArchive(zipPath, destDir);
+    assert.equal(
+      fs.readFileSync(path.join(destDir, 'hello.txt'), 'utf8'),
+      'unzip-ok'
+    );
+    const listed = await platform.listZipEntries(zipPath);
+    assert.ok(listed.some((name) => name.endsWith('hello.txt')));
+  }
 
   assert.equal(
     await serverManager.isUdpPortAvailable(blockedPort),
@@ -350,6 +364,50 @@ async function run() {
   const lfsEntry = gitCatalog.parseCatalogFromDir(gitRoot).find(mod => mod.slug === 'lfs-pack');
   assert(lfsEntry, 'LFS pack folder was not parsed');
   assert(!lfsEntry.thumbnailPath, 'LFS pointer thumbnail should be ignored until the real file is pulled');
+
+  const previousGitToken = process.env.GIT_CATALOG_TOKEN;
+  delete process.env.GIT_CATALOG_TOKEN;
+  settingsStore.remove(settingsStore.KEYS.GIT_TOKEN);
+  try {
+    const catalogSettings = catalogService.getSettings();
+    assert.equal(typeof catalogSettings.git.sync.running, 'boolean', 'catalog settings should include git sync status');
+    assert.equal(gitCatalog.isConfigured(), true, 'git catalog should be configured after saving URL and enabled');
+    assert.equal(gitCatalog.canSync(), false, 'sync should require a saved token, not only enabled+URL');
+    assert.equal(catalogSettings.git.sync.canSync, false, 'settings payload should hide Sync Now without a token');
+    assert.equal(gitCatalog.getSyncStatus().running, false);
+
+    settingsStore.set(settingsStore.KEYS.GIT_TOKEN, 'smoke-token');
+    assert.equal(gitCatalog.canSync(), true, 'sync should be allowed after a token is saved');
+    settingsStore.remove(settingsStore.KEYS.GIT_TOKEN);
+    assert.equal(gitCatalog.canSync(), false, 'removing the saved token should disable sync');
+  } finally {
+    if (previousGitToken == null) delete process.env.GIT_CATALOG_TOKEN;
+    else process.env.GIT_CATALOG_TOKEN = previousGitToken;
+    settingsStore.remove(settingsStore.KEYS.GIT_TOKEN);
+  }
+
+  const originalConfigured = gitCatalog.isConfigured.bind(gitCatalog);
+  const originalSync = gitCatalog.sync.bind(gitCatalog);
+  let syncStarts = 0;
+  gitCatalog.isConfigured = () => true;
+  gitCatalog.sync = async () => {
+    syncStarts += 1;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    return { success: true, lastSync: new Date().toISOString(), modCount: 3 };
+  };
+  try {
+    const first = gitCatalog.startSync('overlap-a');
+    const second = gitCatalog.startSync('overlap-b');
+    assert.equal(first, second, 'overlapping syncs should share one in-flight job');
+    assert.equal(gitCatalog.getSyncStatus().running, true, 'sync status should show running');
+    const result = await first;
+    assert.equal(syncStarts, 1, 'in-flight sync should not start a second git job');
+    assert.equal(result.modCount, 3);
+    assert.equal(gitCatalog.getSyncStatus().running, false, 'sync status should clear after completion');
+  } finally {
+    gitCatalog.isConfigured = originalConfigured;
+    gitCatalog.sync = originalSync;
+  }
 
   if (spawnSync('bash', ['-c', 'true']).status === 0) {
     const upgradeScript = path.join(__dirname, 'upgrade.sh');
@@ -750,6 +808,12 @@ async function run() {
   assert.equal(joinEvents.length, 2);
   assert.equal(joinEvents[0].username, 'SneezyPuma42904');
   assert.equal(joinEvents[0].xuid, '2533274790000000');
+  assert.equal(
+    playerPresence.stripAnsi('\u001b[38;5;15mlist\u001b[m\n\u001b[38;5;15m[2026-08-18 14:03:00:897 INFO] Player Spawned: SneezyPuma42904\u001b[m'),
+    'list\n[2026-08-18 14:03:00:897 INFO] Player Spawned: SneezyPuma42904'
+  );
+  assert.equal(serverManager.calculateUptime('2099-01-01 00:00:00'), '0m');
+  assert.match(serverManager.calculateUptime('2000-01-01 00:00:00'), /\d/);
   const leaveEvents = playerPresence.parsePresenceEvents(
     'Player disconnected: SneezyPuma42904, xuid: 2533274790000000, Pfid: abc'
   );

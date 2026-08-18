@@ -6,6 +6,7 @@ const { promisify } = require('util');
 const db = require('../db/connection');
 const logger = require('./logger');
 const packFiles = require('./packFiles');
+const platform = require('./platform');
 
 const execFileAsync = promisify(execFile);
 const ARCHIVE_EXTS = new Set(packFiles.ARCHIVE_EXTS);
@@ -155,6 +156,10 @@ function runUnzip(args, extra = {}) {
 
 async function verifyArchive(archivePath) {
   if (!packFiles.isArchiveExt(path.extname(archivePath))) return;
+  if (process.platform === 'win32') {
+    await platform.listZipEntries(archivePath);
+    return;
+  }
   const result = await runUnzip(['-t', '-q', archivePath]);
   if (result.code === 0) return;
   const err = result.error || {
@@ -187,6 +192,9 @@ function parseUnzipList(stdout) {
 }
 
 async function listArchiveEntries(archivePath) {
+  if (process.platform === 'win32') {
+    return platform.listZipEntries(archivePath);
+  }
   try {
     const { stdout } = await execFileAsync('unzip', ['-Z1', archivePath], {
       timeout: 60000,
@@ -231,6 +239,12 @@ function pickPackIconPath(entries) {
 }
 
 async function extractOneToFile(archivePath, entry, destPath) {
+  if (process.platform === 'win32') {
+    const data = await platform.extractZipEntryToBuffer(archivePath, entry);
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    fs.writeFileSync(destPath, data);
+    return;
+  }
   const { stdout } = await execFileAsync('unzip', ['-p', archivePath, entry], {
     encoding: null,
     timeout: 60000,
@@ -323,6 +337,13 @@ async function extractWithPython(archivePath, destDir) {
 
 async function extractArchive(archivePath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
+  if (process.platform === 'win32') {
+    await platform.unzipArchive(archivePath, destDir);
+    if (!extractionLooksComplete(destDir)) {
+      throw new Error(friendlyExtractError(archivePath, { message: 'Windows zip extract produced no files' }));
+    }
+    return;
+  }
   const unzipAttempts = [
     ['-O', 'UTF-8', '-I', 'UTF-8', '-o', '-qq', archivePath, '-d', destDir],
     ['-o', '-qq', archivePath, '-d', destDir],
