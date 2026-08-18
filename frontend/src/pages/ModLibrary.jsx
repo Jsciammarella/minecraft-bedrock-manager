@@ -930,7 +930,7 @@ function ModLibrary() {
                     <img
                       src={settingsPreview}
                       alt=""
-                      className="w-full h-36 object-cover rounded-lg mb-2"
+                      className="w-full h-36 object-contain object-center rounded-lg mb-2"
                     />
                   ) : (
                     <ImagePlus className="w-8 h-8 text-mc-textMuted mx-auto mb-2" />
@@ -1128,7 +1128,7 @@ function LibraryTile({
           <img
             src={thumb}
             alt={mod.name}
-            className="w-full h-full object-cover"
+            className="mod-thumbnail-img"
             loading="lazy"
             onError={(e) => { e.target.style.display = 'none'; }}
           />

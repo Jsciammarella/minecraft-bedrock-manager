@@ -458,7 +458,7 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
           <img
             src={mod.thumbnail}
             alt={mod.name}
-            className="w-full h-full object-cover"
+            className="mod-thumbnail-img"
             loading="lazy"
             onError={(e) => { e.target.style.display = 'none'; }}
           />

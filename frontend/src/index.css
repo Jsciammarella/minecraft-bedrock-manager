@@ -49,6 +49,11 @@
   .btn-danger {
     @apply bg-mc-danger text-white hover:bg-red-600 focus:ring-mc-danger;
   }
+
+  /* Pack/mod art: show the whole image inside the tile, letterboxed if needed. */
+  .mod-thumbnail-img {
+    @apply w-full h-full object-contain object-center;
+  }
   
   .btn-warning {
     @apply bg-mc-warning text-mc-darker hover:bg-amber-600 focus:ring-mc-warning;
