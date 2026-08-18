@@ -56,6 +56,12 @@ export const modApi = {
       },
     });
   },
+  importCurseforgeUrl: (url) => api.post('/mods/import-curseforge', { url }, {
+    timeout: 20 * 60 * 1000,
+  }),
+  importMcpedlUrl: (url) => api.post('/mods/import-mcpedl', { url }, {
+    timeout: 20 * 60 * 1000,
+  }),
   delete: (id) => api.delete(`/mods/${id}`),
   update: (id, { description, thumbnailFile, clearThumbnail }) => {
     const formData = new FormData();

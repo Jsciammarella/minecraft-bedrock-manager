@@ -13,6 +13,8 @@ const gitCatalog = require('../server/services/gitCatalogClient');
 const packInstaller = require('../server/services/packInstaller');
 const settingsStore = require('../server/services/settingsStore');
 const modManager = require('../server/services/modManager');
+const curseforgeImporter = require('../server/services/curseforgeImporter');
+const mcpedlImporter = require('../server/services/mcpedlImporter');
 const connectHost = require('../server/services/connectHost');
 const portRanges = require('../server/services/portRanges');
 
@@ -792,6 +794,51 @@ async function run() {
   const forwardedStart = forwardedParsed.questionEnd;
   assert.equal(Array.from(forwarded.slice(forwardedStart + 12, forwardedStart + 16)).join('.'), '9.9.9.9');
 
+  assert.equal(
+    curseforgeImporter.isValidCurseforgeUrl('https://www.curseforge.com/minecraft-bedrock/addons/pickup-carry-cf'),
+    true
+  );
+  assert.equal(curseforgeImporter.isValidCurseforgeUrl('https://www.curseforge.com/minecraft-java/mc-mods/jei'), false);
+  assert.equal(curseforgeImporter.isValidCurseforgeUrl('https://example.com/minecraft-bedrock/addons/x'), false);
+  await assert.rejects(
+    () => curseforgeImporter.importFromUrl('https://example.com/not-curseforge'),
+    /must start with/
+  );
+  const validated = await curseforgeImporter.validateOnly(
+    'https://www.curseforge.com/minecraft-bedrock/addons/pickup-carry-cf'
+  );
+  assert.equal(validated.ok, true);
+  const validatedFilesPage = await curseforgeImporter.validateOnly(
+    'https://www.curseforge.com/minecraft-bedrock/maps/one-block-plus/files/all?page=1&pageSize=20&showAlphaFiles=hide'
+  );
+  assert.equal(validatedFilesPage.url, 'https://www.curseforge.com/minecraft-bedrock/maps/one-block-plus');
+  await assert.rejects(
+    () => curseforgeImporter.validateOnly('https://www.curseforge.com/minecraft-bedrock'),
+    /Bedrock project URL|must start with|Not a CurseForge/
+  );
+  const previousFetchUrl = process.env.CURSEFORGE_FETCH_URL;
+  process.env.CURSEFORGE_FETCH_URL = 'http://127.0.0.1:1';
+  await assert.rejects(
+    () => curseforgeImporter.importFromUrl('https://example.com/not-curseforge'),
+    /must start with/
+  );
+  if (previousFetchUrl === undefined) delete process.env.CURSEFORGE_FETCH_URL;
+  else process.env.CURSEFORGE_FETCH_URL = previousFetchUrl;
+
+  assert.equal(mcpedlImporter.isValidMcpedlUrl('https://mcpedl.com/useful-slime/'), true);
+  assert.equal(mcpedlImporter.isValidMcpedlUrl('https://www.mcpedl.com/useful-slime/'), true);
+  assert.equal(mcpedlImporter.isValidMcpedlUrl('https://example.com/useful-slime'), false);
+  await assert.rejects(
+    () => mcpedlImporter.importFromUrl('https://example.com/not-mcpedl'),
+    /must start with/
+  );
+  const validatedMcpedl = await mcpedlImporter.validateOnly('https://www.mcpedl.com/useful-slime/?ref=home');
+  assert.equal(validatedMcpedl.url, 'https://mcpedl.com/useful-slime');
+  await assert.rejects(
+    () => mcpedlImporter.validateOnly('https://mcpedl.com'),
+    /MCPEDL project URL|must start with/
+  );
+
   console.log(JSON.stringify({
     databaseMigration: 'ok',
     udpPortDetection: 'ok',
@@ -800,6 +847,8 @@ async function run() {
     packInstall: 'ok',
     dnsProxy: 'ok',
     bedrockConnectList: 'ok',
+    curseforgeUrlImport: 'ok',
+    mcpedlUrlImport: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));

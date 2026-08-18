@@ -8,6 +8,9 @@ import {
 } from 'lucide-react';
 
 const LIBRARY_PAGE_SIZE = 40;
+const CURSEFORGE_URL_PREFIX = 'https://www.curseforge.com/minecraft-bedrock';
+const MCPEDL_URL_PREFIX = 'https://mcpedl.com';
+const MCPEDL_WWW_PREFIX = 'https://www.mcpedl.com';
 
 function ModLibrary() {
   const navigate = useNavigate();
@@ -33,6 +36,12 @@ function ModLibrary() {
   const [uploadDesc, setUploadDesc] = useState('');
   const [uploadType, setUploadType] = useState('addon');
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [showCurseforgeModal, setShowCurseforgeModal] = useState(false);
+  const [curseforgeUrl, setCurseforgeUrl] = useState('');
+  const [importingCurseforge, setImportingCurseforge] = useState(false);
+  const [showMcpedlModal, setShowMcpedlModal] = useState(false);
+  const [mcpedlUrl, setMcpedlUrl] = useState('');
+  const [importingMcpedl, setImportingMcpedl] = useState(false);
 
   // Install state
   const [installModal, setInstallModal] = useState(null);
@@ -115,6 +124,60 @@ function ModLibrary() {
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const curseforgeUrlValid = curseforgeUrl.trim().startsWith(CURSEFORGE_URL_PREFIX);
+  const mcpedlUrlValid = (() => {
+    const value = mcpedlUrl.trim();
+    return value.startsWith(MCPEDL_URL_PREFIX) || value.startsWith(MCPEDL_WWW_PREFIX);
+  })();
+
+  const openCurseforgeModal = () => {
+    setError('');
+    setCurseforgeUrl('');
+    setShowCurseforgeModal(true);
+  };
+
+  const handleCurseforgeImport = async () => {
+    if (!curseforgeUrlValid) return;
+    setImportingCurseforge(true);
+    setError('');
+    try {
+      const res = await modApi.importCurseforgeUrl(curseforgeUrl.trim());
+      await loadMods();
+      setSuccess(`${res.data?.name || 'Mod'} imported from CurseForge`);
+      setShowCurseforgeModal(false);
+      setCurseforgeUrl('');
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'CurseForge import failed');
+    } finally {
+      setImportingCurseforge(false);
+    }
+  };
+
+  const openMcpedlModal = () => {
+    setError('');
+    setMcpedlUrl('');
+    setShowMcpedlModal(true);
+  };
+
+  const handleMcpedlImport = async () => {
+    if (!mcpedlUrlValid) return;
+    setImportingMcpedl(true);
+    setError('');
+    try {
+      const res = await modApi.importMcpedlUrl(mcpedlUrl.trim());
+      await loadMods();
+      setSuccess(`${res.data?.name || 'Mod'} imported from MCPEDL`);
+      setShowMcpedlModal(false);
+      setMcpedlUrl('');
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'MCPEDL import failed');
+    } finally {
+      setImportingMcpedl(false);
     }
   };
 
@@ -245,6 +308,7 @@ function ModLibrary() {
 
   const getSourceBadge = (source) => {
     if (source === 'curseforge') return <span className="badge badge-info">CurseForge</span>;
+    if (source === 'mcpedl') return <span className="badge badge-info">MCPEDL</span>;
     if (source === 'git') return <span className="badge badge-success">Git</span>;
     return <span className="badge badge-warning">Uploaded</span>;
   };
@@ -273,16 +337,32 @@ function ModLibrary() {
             <p className="text-mc-textMuted mt-1">Manage addons, texture packs, and maps</p>
           </div>
         </div>
-        <button
-          onClick={() => {
-            setUploadProgress(null);
-            setShowUploadModal(true);
-          }}
-          className="btn btn-primary"
-        >
-          <Upload className="w-4 h-4" />
-          Upload Mod
-        </button>
+        <div className="page-header-actions flex items-center gap-2">
+          <button
+            onClick={() => {
+              setUploadProgress(null);
+              setShowUploadModal(true);
+            }}
+            className="btn btn-primary"
+          >
+            <Upload className="w-4 h-4" />
+            Upload Mod
+          </button>
+          <button
+            onClick={openCurseforgeModal}
+            className="btn btn-primary"
+          >
+            <Download className="w-4 h-4" />
+            Download CurseForge URL
+          </button>
+          <button
+            onClick={openMcpedlModal}
+            className="btn btn-primary"
+          >
+            <Download className="w-4 h-4" />
+            Download MCPEDL URL
+          </button>
+        </div>
       </div>
 
       {/* Messages */}
@@ -340,7 +420,7 @@ function ModLibrary() {
           <Package className="w-16 h-16 text-mc-textMuted mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">No mods in library</h3>
           <p className="text-mc-textMuted mb-6">Upload mods or download them from the catalog</p>
-          <div className="flex items-center justify-center gap-3">
+          <div className="flex items-center justify-center gap-3 flex-wrap">
             <button
               onClick={() => {
                 setUploadProgress(null);
@@ -349,6 +429,12 @@ function ModLibrary() {
               className="btn btn-primary"
             >
               <Upload className="w-4 h-4" /> Upload Mod
+            </button>
+            <button onClick={openCurseforgeModal} className="btn btn-primary">
+              <Download className="w-4 h-4" /> Download CurseForge URL
+            </button>
+            <button onClick={openMcpedlModal} className="btn btn-primary">
+              <Download className="w-4 h-4" /> Download MCPEDL URL
             </button>
             <button onClick={() => navigate('/mods/catalog')} className="btn btn-secondary">
               <Download className="w-4 h-4" /> Browse Catalog
@@ -548,6 +634,180 @@ function ModLibrary() {
                 <button
                   onClick={() => setShowUploadModal(false)}
                   disabled={uploading}
+                  className="btn btn-secondary disabled:opacity-30"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCurseforgeModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
+          <div className="card max-w-md w-full animate-slide-up">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">Download CurseForge URL</h3>
+              <button
+                onClick={() => setShowCurseforgeModal(false)}
+                disabled={importingCurseforge}
+                className="p-1 hover:bg-mc-surfaceLight rounded disabled:opacity-30"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {error && (
+              <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+                <p className="text-sm text-red-400">{error}</p>
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-mc-text mb-2">CurseForge URL</label>
+                <input
+                  type="url"
+                  value={curseforgeUrl}
+                  onChange={(e) => setCurseforgeUrl(e.target.value)}
+                  disabled={importingCurseforge}
+                  className="input"
+                  placeholder="https://www.curseforge.com/minecraft-bedrock/addons/..."
+                  autoFocus
+                />
+                <p className="text-xs text-mc-textMuted mt-2">
+                  Paste a CurseForge Bedrock project URL. The address must start with{' '}
+                  <span className="text-mc-text">https://www.curseforge.com/minecraft-bedrock</span>.
+                </p>
+                {curseforgeUrl.trim() && !curseforgeUrlValid && (
+                  <p className="text-xs text-red-400 mt-2">
+                    URL must start with https://www.curseforge.com/minecraft-bedrock
+                  </p>
+                )}
+              </div>
+
+              {importingCurseforge && (
+                <div className="p-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-yellow-300 text-sm flex items-start gap-2">
+                  <Loader2 className="w-4 h-4 flex-shrink-0 mt-0.5 animate-spin" />
+                  <div>
+                    <p className="font-medium">Downloading from CurseForge…</p>
+                    <p className="text-xs text-yellow-200/80 mt-1">
+                      Waiting for CurseForge metadata, then downloading the pack. Large maps can take several minutes.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  onClick={handleCurseforgeImport}
+                  disabled={importingCurseforge || !curseforgeUrlValid}
+                  className="btn btn-primary flex-1"
+                >
+                  {importingCurseforge ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Downloading...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4" />
+                      Download
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={() => setShowCurseforgeModal(false)}
+                  disabled={importingCurseforge}
+                  className="btn btn-secondary disabled:opacity-30"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showMcpedlModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
+          <div className="card max-w-md w-full animate-slide-up">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">Download MCPEDL URL</h3>
+              <button
+                onClick={() => setShowMcpedlModal(false)}
+                disabled={importingMcpedl}
+                className="p-1 hover:bg-mc-surfaceLight rounded disabled:opacity-30"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {error && (
+              <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+                <p className="text-sm text-red-400">{error}</p>
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-mc-text mb-2">MCPEDL URL</label>
+                <input
+                  type="url"
+                  value={mcpedlUrl}
+                  onChange={(e) => setMcpedlUrl(e.target.value)}
+                  disabled={importingMcpedl}
+                  className="input"
+                  placeholder="https://mcpedl.com/..."
+                  autoFocus
+                />
+                <p className="text-xs text-mc-textMuted mt-2">
+                  Paste an MCPEDL project URL. The address must start with{' '}
+                  <span className="text-mc-text">https://mcpedl.com</span>.
+                </p>
+                {mcpedlUrl.trim() && !mcpedlUrlValid && (
+                  <p className="text-xs text-red-400 mt-2">
+                    URL must start with https://mcpedl.com
+                  </p>
+                )}
+              </div>
+
+              {importingMcpedl && (
+                <div className="p-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-yellow-300 text-sm flex items-start gap-2">
+                  <Loader2 className="w-4 h-4 flex-shrink-0 mt-0.5 animate-spin" />
+                  <div>
+                    <p className="font-medium">Downloading from MCPEDL…</p>
+                    <p className="text-xs text-yellow-200/80 mt-1">
+                      Waiting for MCPEDL metadata, then downloading the pack. Large maps can take several minutes.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  onClick={handleMcpedlImport}
+                  disabled={importingMcpedl || !mcpedlUrlValid}
+                  className="btn btn-primary flex-1"
+                >
+                  {importingMcpedl ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Downloading...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4" />
+                      Download
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={() => setShowMcpedlModal(false)}
+                  disabled={importingMcpedl}
                   className="btn btn-secondary disabled:opacity-30"
                 >
                   Cancel

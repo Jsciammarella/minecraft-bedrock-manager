@@ -154,14 +154,14 @@ Each server detail page has a live console capped at the last **200** lines, plu
 
 Never commit `.env`. Values saved in the UI override these environment variables.
 
-The Docker image runs as root because it writes the data volume, copies Phantom, and spawns Bedrock, Java, and Phantom children on the host network. Native installs run as `mcmanager`.
+The Docker image runs as root because it writes the data volume, copies Phantom, and spawns Bedrock, Java, and Phantom children on the host network. Native installs run as `mcmanager`. Docker Compose also starts `mc-curseforge-fetch`, a small Ubuntu 26.04 helper for CurseForge and MCPEDL URL imports. It listens on `127.0.0.1:37851` only.
 
 Docker follows the host timezone via `/etc/localtime`. Do not set `TZ` in Compose unless you need to override the host.
 
 ## Everyday operation
 
 ```bash
-docker compose logs -f mc-manager   # follow manager logs
+docker compose logs -f mc-manager mc-curseforge-fetch   # follow manager and CurseForge fetch logs
 docker compose restart mc-manager   # restart the manager
 docker compose down                 # stop it without deleting data
 sudo ./scripts/upgrade.sh --yes     # pull, rebuild, keep volumes and .env
