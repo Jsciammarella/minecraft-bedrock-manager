@@ -62,16 +62,27 @@ function CreateServer() {
     }
   };
 
+  const firstIpv4 = ipv4Choices[0]?.port;
+  const pairedIpv6 = (ipv4Port) => {
+    const preferred = Number(ipv4Port) - 1000;
+    return ipv6Choices.find((item) => item.port === preferred)?.port || ipv6Choices[0]?.port;
+  };
+
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => {
       const next = { ...prev, [name]: value };
       if (name === 'port') {
-        const v4 = parseInt(value, 10);
-        const preferredV6 = v4 - 1000;
-        const match = ipv6Available.find((item) => item.port === preferredV6)
-          || ipv6Available[0];
-        if (match) next.ipv6Port = String(match.port);
+        const v4 = value === '' ? firstIpv4 : parseInt(value, 10);
+        if (v4) {
+          next.port = String(v4);
+          const match = pairedIpv6(v4);
+          if (match) next.ipv6Port = String(match);
+        }
+      }
+      if (name === 'ipv6Port' && value === '') {
+        const match = pairedIpv6(prev.port) || ipv6Choices[0]?.port;
+        if (match) next.ipv6Port = String(match);
       }
       return next;
     });
