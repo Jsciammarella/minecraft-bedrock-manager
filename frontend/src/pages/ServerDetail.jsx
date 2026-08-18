@@ -1050,7 +1050,7 @@ function ServerDetail() {
                     <div key={mod.id} className="flex items-center gap-3 p-2 bg-mc-darker rounded-lg">
                       <div className="w-8 h-8 bg-mc-surfaceLight rounded flex items-center justify-center flex-shrink-0 overflow-hidden">
                         {thumb ? (
-                          <img src={thumb} alt="" className="w-full h-full object-cover" />
+                          <img src={thumb} alt="" className="mod-thumbnail-img" />
                         ) : (
                           <PackageIcon className="w-4 h-4 text-mc-textMuted" />
                         )}
@@ -1208,7 +1208,7 @@ function ServerDetail() {
                       >
                         <div className="w-10 h-10 bg-mc-surfaceLight rounded flex items-center justify-center flex-shrink-0 overflow-hidden">
                           {thumb ? (
-                            <img src={thumb} alt="" className="w-full h-full object-cover" />
+                            <img src={thumb} alt="" className="mod-thumbnail-img" />
                           ) : (
                             <PackageIcon className="w-4 h-4 text-mc-textMuted" />
                           )}
