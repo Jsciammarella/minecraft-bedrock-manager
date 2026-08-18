@@ -50,7 +50,14 @@ Native:
 sudo /opt/mc-manager/scripts/upgrade.sh --yes
 ```
 
-`upgrade.sh` asks the manager to stop running Bedrock servers so worlds can save, copies data to `upgrade-backups/`, fast-forwards git, adds any new `.env` keys without changing existing values, then rebuilds. Docker uses `docker compose up -d --build` and never `down -v`. Native runs `npm ci`, rebuilds the UI, and restarts `mc-manager`. Start game servers again from the dashboard after the health check succeeds.
+`upgrade.sh` asks the manager to stop running Bedrock servers so worlds can save, copies data to `upgrade-backups/`, keeps at most **two** timestamped backups, fast-forwards git, adds any new `.env` keys without changing existing values, then rebuilds. Pass `--no-backup` to skip the copy. Docker uses `docker compose up -d --build` and never `down -v`. Native runs `npm ci`, rebuilds the UI, and restarts `mc-manager`. Start game servers again from the dashboard after the health check succeeds.
+
+To test another branch or an exact release without recloning, pass `--branch` or `--tag`. The script fetches that ref, switches to it, then rebuilds. It will not force-reset a local branch that has diverged from origin. Backup and server shutdown happen before the checkout.
+
+```bash
+sudo ./scripts/upgrade.sh --branch release/0.2.1 --yes --mode docker
+sudo ./scripts/upgrade.sh --tag v0.2.0 --yes --mode docker
+```
 
 If you re-run `install-docker.sh` or `install-native.sh` in that same checkout, they detect `.env` and hand off to `upgrade.sh` instead of treating it as a new install.
 
@@ -218,7 +225,7 @@ Runtime state is not in Git:
 | `data/logs/` | Application logs |
 | `.env` | Local configuration |
 
-Stop active servers before a consistent backup. Restore the whole data directory or Docker volume together. `scripts/upgrade.sh` copies data to `upgrade-backups/<timestamp>/` unless you pass `--skip-backup`.
+Stop active servers before a consistent backup. Restore the whole data directory or Docker volume together. `scripts/upgrade.sh` copies data to `upgrade-backups/<timestamp>/` and keeps the two newest copies. Pass `--no-backup` to skip the copy.
 
 ## Known limitations
 

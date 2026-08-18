@@ -8,8 +8,10 @@
 # Usage:
 #   ./scripts/upgrade.sh
 #   ./scripts/upgrade.sh --yes
-#   ./scripts/upgrade.sh --skip-backup
+#   ./scripts/upgrade.sh --no-backup
 #   ./scripts/upgrade.sh --mode docker|native
+#   ./scripts/upgrade.sh --branch release/0.2.1 --yes --mode docker
+#   ./scripts/upgrade.sh --tag v0.2.0 --yes --mode docker
 # ============================================
 
 set -euo pipefail
@@ -19,10 +21,13 @@ APP_DIR="$(dirname "$SCRIPT_DIR")"
 # shellcheck source=manager-urls.sh
 source "${SCRIPT_DIR}/manager-urls.sh"
 BACKUP_ROOT="${APP_DIR}/upgrade-backups"
+KEEP_UPGRADE_BACKUPS=2
 ASSUME_YES=0
 SKIP_BACKUP=0
 RESUME=0
 MODE_OVERRIDE=""
+TARGET_BRANCH=""
+TARGET_TAG=""
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -41,9 +46,12 @@ again from the dashboard after the upgrade.
 
 Options:
   --yes            Do not prompt for confirmation
-  --skip-backup    Do not copy data to upgrade-backups/
+  --no-backup      Do not copy data to upgrade-backups/
+  --skip-backup    Same as --no-backup
   --mode docker    Force Docker Compose upgrade
   --mode native    Force native (systemd / Node) upgrade
+  --branch NAME    Fetch and check out a remote branch (for testing)
+  --tag NAME       Fetch and check out a release tag (detached HEAD)
   -h, --help       Show this help
 EOF
 }
@@ -52,10 +60,114 @@ log() { echo -e "${GREEN}$*${NC}"; }
 warn() { echo -e "${YELLOW}$*${NC}"; }
 die() { echo -e "${RED}$*${NC}" >&2; exit 1; }
 
+# Reject option-like names, path tricks, and shell metacharacters so the
+# value can be interpolated into git refspecs.
+validate_git_ref() {
+    local kind="$1"
+    local ref="$2"
+    [[ -n "${ref}" ]] || die "--${kind} requires a value."
+    if [[ "${ref}" == -* ]]; then
+        die "--${kind} '${ref}' must not start with a dash."
+    fi
+    case "${ref}" in
+        HEAD|FETCH_HEAD|ORIG_HEAD|MERGE_HEAD|CHERRY_PICK_HEAD)
+            die "--${kind} '${ref}' is not a valid ${kind} name."
+            ;;
+    esac
+    if [[ ! "${ref}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+        die "--${kind} '${ref}' contains invalid characters."
+    fi
+    if [[ "${ref}" == *..* || "${ref}" == *//* || "${ref}" == */ || "${ref}" == *. ]]; then
+        die "--${kind} '${ref}' is not a valid ${kind} name."
+    fi
+    if [[ "${ref}" == refs/* ]]; then
+        die "--${kind} '${ref}' must be a ${kind} name, not a raw refs/ path."
+    fi
+}
+
+require_origin() {
+    git remote get-url origin >/dev/null 2>&1 \
+        || die "The origin remote is required so this checkout can fetch updates."
+}
+
+current_branch_or_die() {
+    local name
+    name="$(git rev-parse --abbrev-ref HEAD)"
+    [[ "${name}" != "HEAD" ]] \
+        || die "Checkout is in a detached HEAD state. Check out a branch such as main, or pass --branch or --tag."
+    echo "${name}"
+}
+
+describe_checkout() {
+    local name
+    name="$(git rev-parse --abbrev-ref HEAD)"
+    if [[ "${name}" != "HEAD" ]]; then
+        echo "${name}"
+        return 0
+    fi
+    git describe --tags --exact-match 2>/dev/null \
+        || git rev-parse --short HEAD
+}
+
+# Fast-forward or create the local branch. Never force-reset a diverged branch.
+ensure_local_branch() {
+    local name="$1"
+    local local_sha remote_sha current
+    git show-ref --verify --quiet "refs/remotes/origin/${name}" \
+        || die "origin/${name} was not fetched. The remote branch may not exist."
+    remote_sha="$(git rev-parse "refs/remotes/origin/${name}")"
+    if ! git show-ref --verify --quiet "refs/heads/${name}"; then
+        git branch --track "${name}" "origin/${name}"
+        log "Created local branch ${name} tracking origin/${name}."
+        return 0
+    fi
+    local_sha="$(git rev-parse "refs/heads/${name}")"
+    if [[ "${local_sha}" == "${remote_sha}" ]]; then
+        return 0
+    fi
+    if git merge-base --is-ancestor "${local_sha}" "${remote_sha}"; then
+        current="$(git rev-parse --abbrev-ref HEAD)"
+        if [[ "${current}" == "${name}" ]]; then
+            git merge --ff-only "origin/${name}"
+        else
+            git update-ref "refs/heads/${name}" "${remote_sha}" "${local_sha}"
+        fi
+        log "Fast-forwarded local ${name} to origin/${name}."
+        return 0
+    fi
+    if git merge-base --is-ancestor "${remote_sha}" "${local_sha}"; then
+        die "Local branch ${name} is ahead of origin/${name}. Push or move those commits before upgrading."
+    fi
+    die "Local branch ${name} has diverged from origin/${name}. Refusing to overwrite local commits."
+}
+
+fetch_and_checkout_branch() {
+    local name="$1"
+    log "Fetching origin/${name}..."
+    git fetch origin "refs/heads/${name}:refs/remotes/origin/${name}" \
+        || die "Could not fetch branch '${name}' from origin."
+    ensure_local_branch "${name}"
+    git checkout "${name}"
+}
+
+fetch_and_checkout_tag() {
+    local name="$1"
+    log "Fetching tag ${name}..."
+    if git show-ref --verify --quiet "refs/tags/${name}"; then
+        if ! git fetch origin "refs/tags/${name}:refs/tags/${name}"; then
+            die "Local tag ${name} exists and differs from origin. Refusing to move an existing tag."
+        fi
+    else
+        git fetch origin "refs/tags/${name}:refs/tags/${name}" \
+            || die "Could not fetch tag '${name}' from origin."
+    fi
+    git checkout --detach "refs/tags/${name}"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --yes|-y) ASSUME_YES=1 ;;
-        --skip-backup) SKIP_BACKUP=1 ;;
+        --no-backup|--skip-backup) SKIP_BACKUP=1 ;;
         --resume) RESUME=1 ;;
         --mode)
             MODE_OVERRIDE="${2:-}"
@@ -63,11 +175,25 @@ while [[ $# -gt 0 ]]; do
                 || die "--mode must be docker or native"
             shift
             ;;
+        --branch)
+            TARGET_BRANCH="${2:-}"
+            validate_git_ref branch "${TARGET_BRANCH}"
+            shift
+            ;;
+        --tag)
+            TARGET_TAG="${2:-}"
+            validate_git_ref tag "${TARGET_TAG}"
+            shift
+            ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown option: $1" ;;
     esac
     shift
 done
+
+if [[ -n "${TARGET_BRANCH}" && -n "${TARGET_TAG}" ]]; then
+    die "Use --branch or --tag, not both."
+fi
 
 cd "$APP_DIR"
 
@@ -191,6 +317,23 @@ backup_docker() {
     warn "No running manager container or mc-data volume found; skipped data copy."
 }
 
+# Keep only the newest timestamped backup directories (YYYYMMDD-HHMMSS).
+prune_upgrade_backups() {
+    local keep="${KEEP_UPGRADE_BACKUPS}"
+    [[ -d "${BACKUP_ROOT}" ]] || return 0
+    local dir count=0
+    while IFS= read -r dir; do
+        [[ -n "${dir}" && -d "${dir}" ]] || continue
+        count=$((count + 1))
+        if (( count > keep )); then
+            log "Removing old upgrade backup $(basename "${dir}")"
+            rm -rf "${dir}"
+        fi
+    done < <(find "${BACKUP_ROOT}" -mindepth 1 -maxdepth 1 -type d \
+        -name '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]' \
+        | sort -r)
+}
+
 merge_new_env_keys() {
     local example="$APP_DIR/.env.example"
     local envfile="$APP_DIR/.env"
@@ -225,13 +368,16 @@ wait_for_health() {
 }
 
 MODE="$(detect_mode)"
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-[[ "$BRANCH" != "HEAD" ]] || die "Checkout is in a detached HEAD state. Check out a branch such as main."
 
 if (( RESUME )); then
     BACKUP_DIR="${MC_UPGRADE_BACKUP_DIR:-}"
-    log "Continuing upgrade with the scripts from ${BRANCH}..."
+    log "Continuing upgrade with the scripts from $(describe_checkout)..."
 else
+    require_origin
+    if [[ -z "${TARGET_BRANCH}" && -z "${TARGET_TAG}" ]]; then
+        TARGET_BRANCH="$(current_branch_or_die)"
+    fi
+
     STAMP="$(date +%Y%m%d-%H%M%S)"
     BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
 
@@ -239,6 +385,11 @@ else
     log "Minecraft Bedrock Server Manager in-place upgrade"
     echo "Install directory: $APP_DIR"
     echo "Detected mode:     $MODE"
+    if [[ -n "${TARGET_TAG}" ]]; then
+        echo "Target:            tag ${TARGET_TAG}"
+    else
+        echo "Target:            branch ${TARGET_BRANCH}"
+    fi
     echo
     echo "This keeps:"
     echo "  - .env"
@@ -246,7 +397,11 @@ else
     echo "  - data/ worlds, SQLite, mods, Git catalog clone, and player files (native installs)"
     echo
     echo "This will:"
-    echo "  - git pull --ff-only the current branch"
+    if [[ -n "${TARGET_TAG}" ]]; then
+        echo "  - fetch tag ${TARGET_TAG} and check it out (detached HEAD)"
+    else
+        echo "  - fetch and check out branch ${TARGET_BRANCH}"
+    fi
     echo "  - rebuild and restart the manager"
     echo "  - stop running Bedrock servers for the restart (start them again from the dashboard)"
     if (( SKIP_BACKUP )); then
@@ -254,11 +409,13 @@ else
     else
         echo "  - copy current data to ${BACKUP_DIR}"
     fi
+    echo "  - keep at most ${KEEP_UPGRADE_BACKUPS} timestamped copies under upgrade-backups/"
     echo
     echo "This will not:"
     echo "  - run docker compose down -v"
     echo "  - delete named volumes or data/"
     echo "  - overwrite existing .env values"
+    echo "  - force-reset a local branch that has diverged from origin"
 
     confirm || die "Upgrade cancelled."
 
@@ -282,12 +439,15 @@ else
     else
         BACKUP_DIR=""
     fi
+    prune_upgrade_backups
 
-    log "Fetching ${BRANCH}..."
-    git fetch origin "$BRANCH"
-    git pull --ff-only origin "$BRANCH"
+    if [[ -n "${TARGET_TAG}" ]]; then
+        fetch_and_checkout_tag "${TARGET_TAG}"
+    else
+        fetch_and_checkout_branch "${TARGET_BRANCH}"
+    fi
 
-    log "Reloading the upgrade script so the messages match this branch..."
+    log "Reloading the upgrade script so the messages match this checkout..."
     resume_cmd=(bash "$APP_DIR/scripts/upgrade.sh" --yes --resume --skip-backup)
     if [[ -n "$MODE_OVERRIDE" ]]; then
         resume_cmd+=(--mode "$MODE_OVERRIDE")
@@ -335,5 +495,5 @@ echo
 echo "Start Bedrock servers from the dashboard if they were running before the upgrade."
 if [[ -n "${BACKUP_DIR:-}" ]]; then
     echo "Backup kept at: $BACKUP_DIR"
-    echo "Remove old copies under upgrade-backups/ when you no longer need them."
+    echo "At most ${KEEP_UPGRADE_BACKUPS} timestamped copies are kept under upgrade-backups/."
 fi
