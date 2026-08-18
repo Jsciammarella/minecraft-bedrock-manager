@@ -874,6 +874,11 @@ async function run() {
     kind: 'remote',
     lan_broadcast: 1,
   }).native, false, 'remote servers must not use native LAN on 19132');
+  assert.equal(lanBroadcast.bindPortFor({
+    kind: 'remote',
+    port: 19134,
+    lan_proxy_port: 19200,
+  }), 19134, 'remote LAN proxy should reuse the local game port');
   assert.equal(udpGateway.validateRemoteHost('127.0.0.1'), '127.0.0.1');
   assert.equal(udpGateway.validateRemoteHost('[::1]'), '::1');
   assert.throws(() => udpGateway.validateRemoteHost('bad host'), /invalid characters/);
@@ -905,6 +910,7 @@ async function run() {
   assert.equal(Number(storedRemote.remote_ipv4_port), mockRemotePort);
   assert.equal(udpGateway.isActive(remoteCreated.id), false);
 
+  await serverManager.setLanBroadcast(remoteCreated.id, false);
   await serverManager.startServer(remoteCreated.id);
   assert.equal(serverManager.getServer(remoteCreated.id).status, 'running');
   assert.equal(udpGateway.isActive(remoteCreated.id), true);

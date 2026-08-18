@@ -72,6 +72,10 @@ function bindSocket(type, port, address) {
     socket.once('error', fail);
     socket.bind(port, address, () => {
       socket.removeListener('error', fail);
+      try {
+        socket.setRecvBufferSize(1024 * 1024);
+        socket.setSendBufferSize(1024 * 1024);
+      } catch { /* platform may not allow this */ }
       resolve(socket);
     });
   });
@@ -113,9 +117,11 @@ class UdpGateway {
       logger.error(`Remote gateway ${this.name} IPv4 error: ${err.message}`);
     });
     this.listen4.on('message', (msg, rinfo) => {
-      this.forward(this.listen4, 4, msg, rinfo).catch((err) => {
+      try {
+        this.forward(this.listen4, 4, msg, rinfo);
+      } catch (err) {
         logger.warn(`Remote gateway ${this.name} IPv4 forward failed: ${err.message}`);
-      });
+      }
     });
 
     if (this.localIpv6Port) {
@@ -125,9 +131,11 @@ class UdpGateway {
           logger.error(`Remote gateway ${this.name} IPv6 error: ${err.message}`);
         });
         this.listen6.on('message', (msg, rinfo) => {
-          this.forward(this.listen6, 6, msg, rinfo).catch((err) => {
+          try {
+            this.forward(this.listen6, 6, msg, rinfo);
+          } catch (err) {
             logger.warn(`Remote gateway ${this.name} IPv6 forward failed: ${err.message}`);
-          });
+          }
         });
       } catch (err) {
         logger.warn(`Remote gateway ${this.name} could not bind IPv6 ${this.localIpv6Port}: ${err.message}`);
@@ -143,7 +151,7 @@ class UdpGateway {
     );
   }
 
-  async forward(listenSocket, family, msg, rinfo) {
+  forward(listenSocket, family, msg, rinfo) {
     if (this.stopped) return;
     const key = `${family}|${rinfo.address}|${rinfo.port}`;
     let session = this.sessions.get(key);
@@ -153,6 +161,10 @@ class UdpGateway {
       }
       const upstream = this.upstreamFor(family);
       const sock = dgram.createSocket(upstream.type);
+      try {
+        sock.setRecvBufferSize(1024 * 1024);
+        sock.setSendBufferSize(1024 * 1024);
+      } catch { /* platform may not allow this */ }
       session = {
         sock,
         listenSocket,

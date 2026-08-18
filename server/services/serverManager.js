@@ -205,6 +205,48 @@ class ServerManager {
 
   stopLanBroadcastsForBedrockConnect() {
     require('./lanBroadcast').stopAll();
+    for (const server of this.getAllServers()) {
+      if (!this.isRemote(server) || server.status !== 'running') continue;
+      require('./udpGateway').start(server).catch((err) => {
+        logger.warn(`Remote gateway did not start after Bedrock Connect took LAN ports: ${err.message}`);
+      });
+    }
+  }
+
+  async startRemoteForwarding(serverId) {
+    const udpGateway = require('./udpGateway');
+    const lanBroadcast = require('./lanBroadcast');
+    const server = this.getServer(serverId);
+    if (!server || !this.isRemote(server)) return null;
+
+    const running = server.status === 'running' || server.status === 'starting';
+    if (!running) {
+      await udpGateway.stop(serverId);
+      lanBroadcast.stop(serverId);
+      return lanBroadcast.statusFor(server);
+    }
+
+    const useLanPhantom = Number(server.lan_broadcast) === 1 && !this.isBedrockConnectActive();
+    // Restart Phantom so remotes bind the game port instead of 19200, and so
+    // the Node NAT does not share that port.
+    lanBroadcast.stop(serverId);
+    await udpGateway.stop(serverId);
+
+    if (useLanPhantom) {
+      try {
+        await this.syncLanBroadcast(serverId);
+        const current = this.getServer(serverId);
+        const phantomPort = lanBroadcast.getProxyPort(serverId);
+        if (phantomPort && Number(phantomPort) === Number(current.port)) {
+          return lanBroadcast.statusFor(current);
+        }
+      } catch (err) {
+        logger.warn(`LAN Phantom for remote ${server.name}: ${err.message}`);
+      }
+    }
+
+    await udpGateway.start(this.getServer(serverId));
+    return lanBroadcast.statusFor(this.getServer(serverId));
   }
 
   async previewLanBroadcast(serverId) {
@@ -227,7 +269,7 @@ class ServerManager {
         lan: lanBroadcast.statusFor(server),
       };
     }
-    if (Number(server.port) === lanBroadcast.DISCOVERY_PORT) {
+    if (Number(server.port) === lanBroadcast.DISCOVERY_PORT && !this.isRemote(server)) {
       return {
         allowed: true,
         native: true,
@@ -285,6 +327,13 @@ class ServerManager {
       lanBroadcast.stop(serverId);
       db.prepare('UPDATE servers SET lan_broadcast = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(serverId);
       this.invalidateServerCache(serverId);
+      if (this.isRemote(server) && this.getServer(serverId)?.status === 'running') {
+        try {
+          await require('./udpGateway').start(this.getServer(serverId));
+        } catch (err) {
+          logger.warn(`Remote gateway did not start after LAN listing turned off: ${err.message}`);
+        }
+      }
       this.broadcastServerStatus(serverId);
       return { success: true, enabled: false, lan: lanBroadcast.statusFor(this.getServer(serverId)) };
     }
@@ -335,7 +384,11 @@ class ServerManager {
       return { success: true, enabled: true, native: true, lan: lanBroadcast.statusFor(this.getServer(serverId)) };
     }
 
-    await this.syncLanBroadcast(serverId);
+    if (this.isRemote(this.getServer(serverId))) {
+      await this.startRemoteForwarding(serverId);
+    } else {
+      await this.syncLanBroadcast(serverId);
+    }
     if (preview.conflict) await this.syncLanBroadcast(preview.conflict.serverId);
     this.broadcastServerStatus(serverId);
     return { success: true, enabled: true, lan: lanBroadcast.statusFor(this.getServer(serverId)) };
@@ -380,7 +433,9 @@ class ServerManager {
     const rows = db.prepare("SELECT id FROM servers WHERE lan_broadcast = 1 AND kind != 'bedrock_connect'").all();
     for (const row of rows) {
       try {
-        await this.syncLanBroadcast(row.id);
+        const server = this.getServer(row.id);
+        if (this.isRemote(server)) await this.startRemoteForwarding(row.id);
+        else await this.syncLanBroadcast(row.id);
       } catch (err) {
         logger.warn(`Could not restore LAN broadcast for server ${row.id}: ${err.message}`);
       }
@@ -663,16 +718,11 @@ class ServerManager {
     try {
       if (this.isRemote(this.getServer(serverId)) && this.getServer(serverId).status === 'running') {
         await this.restartRemoteGateway(serverId);
-      }
-    } catch (err) {
-      logger.warn(`Remote gateway did not restart after port change for ${server.name}: ${err.message}`);
-    }
-    try {
-      if (Number(this.getServer(serverId)?.lan_broadcast) === 1) {
+      } else if (Number(this.getServer(serverId)?.lan_broadcast) === 1) {
         await this.syncLanBroadcast(serverId);
       }
     } catch (err) {
-      logger.warn(`LAN broadcast did not restart after port change for ${server.name}: ${err.message}`);
+      logger.warn(`Forwarding did not restart after port change for ${server.name}: ${err.message}`);
     }
     return { success: true, port };
   }
@@ -855,14 +905,7 @@ class ServerManager {
     this.invalidateServerCache(server.id);
     this.broadcastServerStatus(server.id);
     try {
-      const current = this.getServer(server.id);
-      const lanBroadcast = require('./lanBroadcast');
-      const useLanPhantom = Number(current.lan_broadcast) === 1 && !this.isBedrockConnectActive();
-      // Phantom always binds UDP 19132. A userspace gateway on that same port
-      // would steal discovery pings and break RakNet joins.
-      if (!(useLanPhantom && Number(current.port) === lanBroadcast.DISCOVERY_PORT)) {
-        await udpGateway.start(current);
-      }
+      await this.startRemoteForwarding(server.id);
       db.prepare(`
         UPDATE servers
         SET status = ?, pending_restart = 0, pending_restart_reason = NULL,
@@ -872,9 +915,6 @@ class ServerManager {
       `).run('running', server.id);
       this.invalidateServerCache(server.id);
       this.broadcastServerStatus(server.id);
-      try { await this.syncLanBroadcast(server.id); } catch (err) {
-        logger.warn(`LAN broadcast after remote start failed for ${server.name}: ${err.message}`);
-      }
       logger.info(`Remote gateway started for ${server.name}`);
       return { success: true, message: 'Remote gateway starting...' };
     } catch (err) {
@@ -891,8 +931,7 @@ class ServerManager {
   async restartRemoteGateway(serverId) {
     const server = this.getServer(serverId);
     if (!server || !this.isRemote(server) || server.status !== 'running') return;
-    const udpGateway = require('./udpGateway');
-    await udpGateway.start(server);
+    await this.startRemoteForwarding(serverId);
   }
 
   async finishCreateServer(serverId, config) {
@@ -1239,6 +1278,7 @@ done
     const pty = this.ptySessions.get(sessionKey);
     if (this.isRemote(server)) {
       await require('./udpGateway').stop(serverId);
+      require('./lanBroadcast').stop(serverId);
     } else if (pty) {
       if (this.isBedrockConnect(server)) {
         try { pty.kill(); } catch { /* ignore */ }

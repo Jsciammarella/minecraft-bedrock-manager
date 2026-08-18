@@ -227,7 +227,17 @@ function dedicatedServerTarget(server) {
   return `${lan || '127.0.0.1'}:${server.port}`;
 }
 
-function start(server, { proxyPort } = {}) {
+function bindPortFor(server, preferred) {
+  if (server?.kind === 'remote') {
+    const gamePort = Number(server.port);
+    if (gamePort && gamePort !== DISCOVERY_PORT && !usedProxyPorts().includes(gamePort)) {
+      return gamePort;
+    }
+  }
+  return allocateProxyPort(preferred || server.lan_proxy_port);
+}
+
+function start(server, { proxyPort, targetOverride } = {}) {
   const key = Number(server.id);
   if (isActive(key)) return processes.get(key);
   lastErrors.delete(key);
@@ -237,8 +247,8 @@ function start(server, { proxyPort } = {}) {
     throw new Error('Phantom binary is not installed yet');
   }
 
-  const port = allocateProxyPort(proxyPort || server.lan_proxy_port);
-  const target = dedicatedServerTarget(server);
+  const port = bindPortFor(server, proxyPort || server.lan_proxy_port);
+  const target = targetOverride || dedicatedServerTarget(server);
   const args = [
     '-server', target,
     '-bind', '0.0.0.0',
@@ -288,7 +298,22 @@ function start(server, { proxyPort } = {}) {
 
 async function startAndWait(server, options = {}) {
   ensureBinary();
-  const session = start(server, options);
+  let targetOverride = options.targetOverride;
+  if (!targetOverride && server?.kind === 'remote' && server.remote_host) {
+    try {
+      const udpGateway = require('./udpGateway');
+      const resolved = await udpGateway.resolveRemote(server.remote_host);
+      const ip = resolved.address4 || resolved.address6;
+      if (ip) {
+        const wrapped = ip.includes(':') && !ip.startsWith('[') ? `[${ip}]` : ip;
+        targetOverride = `${wrapped}:${Number(server.remote_ipv4_port) || server.port}`;
+        logger.info(`Resolved remote ${server.name} to ${targetOverride}`);
+      }
+    } catch (err) {
+      logger.warn(`Could not pre-resolve remote host for ${server.name}: ${err.message}`);
+    }
+  }
+  const session = start(server, { ...options, targetOverride });
   await new Promise((resolve, reject) => {
     const onExit = (code) => {
       cleanup();
@@ -334,6 +359,7 @@ module.exports = {
   PROXY_PORT_START,
   PROXY_PORT_END,
   allocateProxyPort,
+  bindPortFor,
   binaryPath,
   bundledVersion,
   checkForUpdates,
