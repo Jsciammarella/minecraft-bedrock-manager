@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { modApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
+import ModTileTags from '../components/ModTileTags';
 import {
   ArrowLeft, Package, Upload, Search, Trash2, Plus, X,
   AlertCircle, Check, Loader2, Server, Download, Settings, ImagePlus
@@ -1100,7 +1101,7 @@ function LibraryTile({
       className={`card hover:border-mc-accent/30 transition-all duration-200 group ${
         expanded
           ? 'relative max-w-2xl w-full max-h-[90vh] overflow-y-auto animate-slide-up'
-          : 'cursor-pointer'
+          : 'cursor-pointer h-full flex flex-col'
       }`}
       onClick={expanded ? (event) => event.stopPropagation() : onOpen}
       role={expanded ? undefined : 'button'}
@@ -1123,7 +1124,7 @@ function LibraryTile({
         </button>
       )}
 
-      <div className={`bg-mc-darker rounded-lg mb-3 overflow-hidden relative ${expanded ? 'aspect-[16/9]' : 'aspect-video'}`}>
+      <div className={`bg-mc-darker rounded-lg mb-2 overflow-hidden ${expanded ? 'aspect-[16/9]' : 'aspect-video'}`}>
         {thumb ? (
           <img
             src={thumb}
@@ -1137,11 +1138,11 @@ function LibraryTile({
             <Package className={`${expanded ? 'w-12 h-12' : 'w-8 h-8'} text-mc-textMuted`} />
           </div>
         )}
-        <div className={`absolute top-2 flex flex-col gap-1 ${expanded ? 'left-2 items-start' : 'right-2 items-end'}`}>
-          {getTypeBadge(mod.type)}
-          {getSourceBadge(mod.source)}
-        </div>
       </div>
+      <ModTileTags>
+        {getTypeBadge(mod.type)}
+        {getSourceBadge(mod.source)}
+      </ModTileTags>
 
       <h3
         className={`font-semibold text-white mb-1 ${expanded ? 'text-xl pr-10' : 'text-sm truncate'}`}
@@ -1161,7 +1162,7 @@ function LibraryTile({
         )}
       </div>
 
-      <div className="flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
+      <div className={`flex items-center gap-2 ${expanded ? '' : 'mt-auto'}`} onClick={(event) => event.stopPropagation()}>
         <button
           onClick={onInstall}
           className={`btn btn-primary flex-1 ${expanded ? '' : 'text-xs'}`}
