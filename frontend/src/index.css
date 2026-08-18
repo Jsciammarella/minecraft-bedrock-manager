@@ -55,14 +55,14 @@
     @apply w-full h-full object-contain object-center;
   }
 
-  /* One reserved line under pack art; tags pack from the right and only
+  /* One reserved line under pack art; tags read left to right and only
      ellipsize when the full labels would wrap. */
   .mod-tile-tags {
-    @apply flex justify-end w-full overflow-hidden h-6 mb-2;
+    @apply flex justify-start w-full overflow-hidden h-6 mb-2;
   }
 
   .mod-tile-tags-row {
-    @apply flex flex-row-reverse flex-nowrap items-center gap-1 min-w-0 max-w-full;
+    @apply flex flex-nowrap items-center gap-1 min-w-0 max-w-full;
   }
 
   .mod-tile-tags-row .badge {
