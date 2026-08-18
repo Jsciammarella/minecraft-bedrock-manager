@@ -879,6 +879,17 @@ async function run() {
     port: 19134,
     lan_proxy_port: 19200,
   }), 19134, 'remote LAN proxy should reuse the local game port');
+  assert.equal(typeof lanBroadcast.killOrphanPhantoms(), 'number');
+  assert(Array.isArray(lanBroadcast.listPhantomPids()));
+  assert.equal(udpGateway.MAX_REMOTE_SERVERS, 10);
+  assert.throws(
+    () => serverManager.assertRemoteLocalPort(19132),
+    /reserved for LAN discovery/
+  );
+  assert.throws(
+    () => serverManager.assertRemoteLocalPort(19133, 'IPv6 port'),
+    /reserved for LAN discovery/
+  );
   assert.equal(udpGateway.validateRemoteHost('127.0.0.1'), '127.0.0.1');
   assert.equal(udpGateway.validateRemoteHost('[::1]'), '::1');
   assert.throws(() => udpGateway.validateRemoteHost('bad host'), /invalid characters/);
@@ -947,7 +958,7 @@ async function run() {
   assert.equal(udpGateway.isActive(remoteCreated.id), false);
   await new Promise((resolve) => mockRemote.close(resolve));
 
-  for (let i = 0; i < 5; i += 1) {
+  for (let i = 0; i < 10; i += 1) {
     const capPath = path.join(testRoot, `remote-cap-${i}`);
     fs.mkdirSync(capPath, { recursive: true });
     db.prepare(`
@@ -963,7 +974,7 @@ async function run() {
       remoteHost: '127.0.0.1',
       remoteIpv4Port: 19132,
     }),
-    /At most 5 remote servers/
+    /At most 10 remote servers/
   );
 
   console.log(JSON.stringify({

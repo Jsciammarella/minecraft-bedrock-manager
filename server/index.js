@@ -177,9 +177,19 @@ server.listen(PORT, '0.0.0.0', () => {
   autoUpdateScheduler.start();
   gitCatalogScheduler.start();
 
-  serverManager.restoreLanBroadcasts().catch((err) => {
-    logger.warn(`LAN broadcast restore failed: ${err.message}`);
-  });
+  try {
+    require('./services/lanBroadcast').reapOrphans();
+  } catch (err) {
+    logger.warn(`Could not reap leftover LAN proxies: ${err.message}`);
+  }
+  serverManager.relocateRemotesOffDiscoveryPorts()
+    .catch((err) => {
+      logger.warn(`Could not move remotes off LAN discovery ports: ${err.message}`);
+    })
+    .then(() => serverManager.restoreLanBroadcasts())
+    .catch((err) => {
+      logger.warn(`LAN broadcast restore failed: ${err.message}`);
+    });
   dnsProxy.sync().catch((err) => {
     logger.warn(`DNS proxy restore failed: ${err.message}`);
   });

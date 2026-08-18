@@ -3,7 +3,7 @@ const dns = require('dns').promises;
 const net = require('net');
 const logger = require('./logger');
 
-const MAX_REMOTE_SERVERS = 5;
+const MAX_REMOTE_SERVERS = 10;
 const IDLE_MS = 90 * 1000;
 const MAX_SESSIONS = 128;
 const SWEEP_MS = 15 * 1000;

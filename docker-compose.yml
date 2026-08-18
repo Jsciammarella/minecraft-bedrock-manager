@@ -10,6 +10,8 @@ services:
       dockerfile: Dockerfile
     container_name: mc-server-manager
     restart: unless-stopped
+    init: true
+    stop_grace_period: 25s
     # Linux host networking lets every managed Bedrock process bind its selected
     # UDP port directly on the host. No container recreation is required when a
     # server is added. Restrict these ports with the host firewall.

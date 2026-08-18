@@ -149,6 +149,13 @@ class ServerManager {
     return Boolean(server && server.kind === 'remote');
   }
 
+  assertRemoteLocalPort(port, label = 'IPv4 port') {
+    if (!portRanges.isDiscoveryPort(port)) return Number(port);
+    throw new Error(
+      `UDP port ${port} is reserved for LAN discovery. Choose another local ${label} for a remote server.`
+    );
+  }
+
   countRemoteServers() {
     return db.prepare("SELECT COUNT(*) AS count FROM servers WHERE kind = 'remote'").get()?.count || 0;
   }
@@ -231,6 +238,11 @@ class ServerManager {
     // the Node NAT does not share that port.
     lanBroadcast.stop(serverId);
     await udpGateway.stop(serverId);
+    lanBroadcast.killOrphanPhantoms();
+    if (useLanPhantom && !lanBroadcast.hasAnyActive()) {
+      await this.waitForUdpPort(lanBroadcast.DISCOVERY_PORT, 'ipv4', { attempts: 10, delayMs: 150 });
+    }
+    await this.waitForUdpPort(Number(server.port), 'ipv4', { attempts: 10, delayMs: 150 });
 
     if (useLanPhantom) {
       try {
@@ -417,6 +429,7 @@ class ServerManager {
     }
     if (lanBroadcast.isActive(serverId)) return lanBroadcast.statusFor(server);
     lanBroadcast.stop(serverId);
+    lanBroadcast.killOrphanPhantoms();
     const session = await lanBroadcast.startAndWait(server);
     db.prepare('UPDATE servers SET lan_proxy_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
       .run(session.proxyPort, serverId);
@@ -464,12 +477,66 @@ class ServerManager {
     return { success: true };
   }
 
-  async nextAvailablePort({ exclude = [] } = {}) {
+  async nextAvailablePort({ exclude = [], forRemote = false } = {}) {
     const skip = new Set(exclude.map(Number));
+    if (forRemote) {
+      skip.add(portRanges.DISCOVERY_IPV4);
+      skip.add(portRanges.DISCOVERY_IPV6);
+    }
     const { available } = await this.getAllPorts();
     const match = available.find(item => item.family !== 'ipv6' && !skip.has(item.port) && item.port !== portRanges.DISCOVERY_IPV6);
     if (!match) throw new Error('No available UDP ports are left in the manager ranges');
     return match.port;
+  }
+
+  async relocateRemotesOffDiscoveryPorts() {
+    const rows = db.prepare(`
+      SELECT id FROM servers
+      WHERE kind = 'remote'
+        AND (
+          port IN (?, ?) OR ipv6_port IN (?, ?)
+          OR pending_port IN (?, ?) OR pending_ipv6_port IN (?, ?)
+        )
+    `).all(
+      portRanges.DISCOVERY_IPV4, portRanges.DISCOVERY_IPV6,
+      portRanges.DISCOVERY_IPV4, portRanges.DISCOVERY_IPV6,
+      portRanges.DISCOVERY_IPV4, portRanges.DISCOVERY_IPV6,
+      portRanges.DISCOVERY_IPV4, portRanges.DISCOVERY_IPV6
+    );
+    for (const row of rows) {
+      const server = this.getServer(row.id);
+      if (!server) continue;
+      try {
+        if (portRanges.isDiscoveryPort(server.port) || Number(server.port) === portRanges.DISCOVERY_IPV6) {
+          const nextPort = await this.nextAvailablePort({
+            exclude: [server.port, server.ipv6_port],
+            forRemote: true,
+          });
+          await this.commitPortChange(server.id, nextPort);
+          logger.warn(`Moved remote ${server.name} off UDP ${server.port} onto ${nextPort}`);
+        }
+        const latest = this.getServer(server.id);
+        if (latest && portRanges.isDiscoveryPort(latest.ipv6_port)) {
+          const nextIpv6 = await this.allocateIpv6Port(latest.port, { excludeServerId: latest.id });
+          await this.commitIpv6PortChange(latest.id, nextIpv6);
+          logger.warn(`Moved remote ${latest.name} IPv6 off UDP ${latest.ipv6_port} onto ${nextIpv6}`);
+        }
+        db.prepare(`
+          UPDATE servers
+          SET pending_port = CASE WHEN pending_port IN (?, ?) THEN NULL ELSE pending_port END,
+            pending_ipv6_port = CASE WHEN pending_ipv6_port IN (?, ?) THEN NULL ELSE pending_ipv6_port END,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(
+          portRanges.DISCOVERY_IPV4, portRanges.DISCOVERY_IPV6,
+          portRanges.DISCOVERY_IPV4, portRanges.DISCOVERY_IPV6,
+          server.id
+        );
+        this.invalidateServerCache(server.id);
+      } catch (err) {
+        logger.warn(`Could not move remote ${server.name} off LAN discovery ports: ${err.message}`);
+      }
+    }
   }
 
   async previewBedrockConnect() {
@@ -647,8 +714,8 @@ class ServerManager {
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error('Port must be between 1 and 65535');
     }
-    if (this.isRemote(server) && port === BEDROCK_CONNECT_PORT) {
-      throw new Error('UDP port 19132 is reserved for LAN discovery. Choose another local IPv4 port for a remote server.');
+    if (this.isRemote(server) && portRanges.isDiscoveryPort(port)) {
+      this.assertRemoteLocalPort(port);
     }
     if (port === Number(server.port) && !server.pending_port) return { success: true, port };
     if (port === Number(server.ipv6_port) || port === Number(server.pending_ipv6_port)) {
@@ -692,6 +759,7 @@ class ServerManager {
     if (this.isBedrockConnect(server) && port !== BEDROCK_CONNECT_PORT) {
       throw new Error('Bedrock Connect must stay on UDP port 19132');
     }
+    if (this.isRemote(server)) this.assertRemoteLocalPort(port);
 
     const current = this.getServer(serverId);
     let ipv6Port = Number(current.ipv6_port) || null;
@@ -831,11 +899,12 @@ class ServerManager {
     if (!portRanges.isIpv4GamePort(port)) {
       throw new Error(`UDP port ${port} is not in the IPv4 game ranges`);
     }
-    if (ipv6Port != null && ipv6Port !== '' && Number(ipv6Port) === Number(port)) {
-      throw new Error('IPv4 and IPv6 ports must be different');
-    }
-    if (Number(port) === BEDROCK_CONNECT_PORT) {
-      throw new Error('UDP port 19132 is reserved for LAN discovery and Bedrock Connect. Choose another local IPv4 port for a remote server.');
+    this.assertRemoteLocalPort(port);
+    if (ipv6Port != null && ipv6Port !== '') {
+      this.assertRemoteLocalPort(ipv6Port, 'IPv6 port');
+      if (Number(ipv6Port) === Number(port)) {
+        throw new Error('IPv4 and IPv6 ports must be different');
+      }
     }
 
     const existing = db.prepare('SELECT * FROM servers WHERE port = ? OR ipv6_port = ? OR name = ?').get(port, port, name);
@@ -853,6 +922,7 @@ class ServerManager {
     await udpGateway.resolveRemote(remoteHost);
 
     const assignedIpv6 = await this.allocateIpv6Port(port, { requested: ipv6Port });
+    this.assertRemoteLocalPort(assignedIpv6, 'IPv6 port');
     if (assignedIpv6 === Number(port)) {
       throw new Error('IPv4 and IPv6 ports must be different');
     }
@@ -1279,6 +1349,7 @@ done
     if (this.isRemote(server)) {
       await require('./udpGateway').stop(serverId);
       require('./lanBroadcast').stop(serverId);
+      require('./lanBroadcast').killOrphanPhantoms();
     } else if (pty) {
       if (this.isBedrockConnect(server)) {
         try { pty.kill(); } catch { /* ignore */ }
@@ -1383,6 +1454,7 @@ done
     const wasBedrockConnect = this.isBedrockConnect(server);
     require('./lanBroadcast').stop(serverId);
     await require('./udpGateway').stop(serverId);
+    require('./lanBroadcast').killOrphanPhantoms();
 
     if (server.status === 'creating') {
       const job = this.provisionJobs.get(Number(serverId));
@@ -2630,6 +2702,7 @@ done
     if (!portRanges.isIpv6GamePort(port)) {
       throw new Error(`UDP port ${port} is not in the IPv6 game ranges`);
     }
+    if (this.isRemote(server)) this.assertRemoteLocalPort(port, 'IPv6 port');
     if (port === Number(server.port) || port === Number(server.pending_port)) {
       throw new Error('IPv4 and IPv6 ports must be different');
     }
@@ -2657,6 +2730,7 @@ done
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
     const port = parseInt(newPort, 10);
+    if (this.isRemote(server)) this.assertRemoteLocalPort(port, 'IPv6 port');
     if (port === Number(server.port)) {
       throw new Error('IPv4 and IPv6 ports must be different');
     }
@@ -2865,7 +2939,8 @@ done
     }
     this.ptySessions.clear();
     this.servers.clear();
-    try { require('./lanBroadcast').stopAll(); } catch { /* ignore */ }
+    try { require('./lanBroadcast').reapOrphans(); } catch { /* ignore */ }
+    try { require('./udpGateway').stopAll(); } catch { /* ignore */ }
     try { require('./dnsProxy').stop(); } catch { /* ignore */ }
   }
 }

@@ -287,6 +287,27 @@ PY
     fi
 }
 
+# Host networking means a leftover Phantom can keep UDP 19132 after an upgrade
+# or a crashed manager. Kill those by process name so Start does not fail and
+# Xbox does not show two LAN worlds.
+kill_stale_lan_proxies() {
+    local killed=0
+    for name in phantom-linux phantom-linux-arm7 phantom-linux-arm8 phantom-windows.exe; do
+        if pkill -x "${name}" 2>/dev/null; then
+            killed=1
+        fi
+    done
+    pkill -f '/data/phantom/phantom-' 2>/dev/null && killed=1 || true
+    pkill -f '/app/data/phantom/phantom-' 2>/dev/null && killed=1 || true
+    if (( killed )); then
+        sleep 1
+        pkill -9 -x phantom-linux 2>/dev/null || true
+        pkill -9 -x phantom-linux-arm7 2>/dev/null || true
+        pkill -9 -x phantom-linux-arm8 2>/dev/null || true
+        log "Cleared leftover Phantom LAN proxy processes."
+    fi
+}
+
 backup_native() {
     local dest="$1"
     mkdir -p "$dest" || return 1
@@ -426,6 +447,7 @@ else
 
     log "Stopping managed Bedrock servers (if the API is up)..."
     stop_managed_servers || true
+    kill_stale_lan_proxies || true
 
     if (( ! SKIP_BACKUP )); then
         log "Backing up configuration and data to ${BACKUP_DIR}"
@@ -464,6 +486,9 @@ merge_new_env_keys
 if [[ "$MODE" == "docker" ]]; then
     command -v docker >/dev/null 2>&1 || die "docker is required for a Docker upgrade."
     docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required."
+    log "Stopping the manager container so leftover LAN proxies can be reaped..."
+    docker compose -f "$APP_DIR/docker-compose.yml" stop mc-manager || true
+    kill_stale_lan_proxies || true
     log "Rebuilding and recreating the manager container (volumes are left in place)..."
     docker compose -f "$APP_DIR/docker-compose.yml" up -d --build
 else
@@ -471,6 +496,7 @@ else
         log "Stopping mc-manager.service..."
         sudo systemctl stop mc-manager || true
     fi
+    kill_stale_lan_proxies || true
     command -v node >/dev/null 2>&1 || die "Node.js 20.x is required for a native upgrade."
     log "Installing dependencies and rebuilding the UI..."
     npm ci

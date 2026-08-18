@@ -282,6 +282,7 @@ function ServerDetail() {
 
   const handleAction = async (action) => {
     setActions(prev => ({ ...prev, [action]: true }));
+    setError('');
     try {
       switch (action) {
         case 'start':
@@ -300,6 +301,7 @@ function ServerDetail() {
       await refresh();
     } catch (err) {
       console.error(`Failed to ${action} server:`, err);
+      setError(err.response?.data?.error || err.message || `Failed to ${action} server`);
     } finally {
       setActions(prev => ({ ...prev, [action]: false }));
     }

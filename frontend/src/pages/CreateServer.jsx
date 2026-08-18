@@ -4,6 +4,9 @@ import { serverApi, portApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import { ArrowLeft, Server, Loader2, Check, AlertCircle } from 'lucide-react';
 
+const MAX_REMOTE_SERVERS = 10;
+const LAN_DISCOVERY_PORTS = new Set([19132, 19133]);
+
 function CreateServer() {
   const navigate = useNavigate();
   const { refresh, servers } = useApi();
@@ -34,7 +37,8 @@ function CreateServer() {
 
   const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
   const ipv6Available = (ports.available || []).filter((item) => item.family === 'ipv6');
-  const ipv4Choices = ipv4Available.filter((item) => !remote || item.port !== 19132);
+  const ipv4Choices = ipv4Available.filter((item) => !remote || !LAN_DISCOVERY_PORTS.has(item.port));
+  const ipv6Choices = ipv6Available.filter((item) => !remote || !LAN_DISCOVERY_PORTS.has(item.port));
   const remoteCount = (servers || []).filter((server) => server.kind === 'remote').length;
 
   const loadPorts = async () => {
@@ -167,22 +171,26 @@ function CreateServer() {
                 role="switch"
                 aria-checked={remote}
                 aria-label="Create as a remote server"
-                disabled={remoteCount >= 5 && !remote}
+                disabled={remoteCount >= MAX_REMOTE_SERVERS && !remote}
                 onClick={() => {
-                  if (remoteCount >= 5 && !remote) return;
+                  if (remoteCount >= MAX_REMOTE_SERVERS && !remote) return;
                   setRemote((value) => {
                     const next = !value;
                     if (next) {
                       setFormData((prev) => {
-                        if (Number(prev.port) !== 19132) return prev;
-                        const fallback = ipv4Available.find((item) => item.port !== 19132);
-                        if (!fallback) return prev;
-                        const preferredV6 = fallback.port - 1000;
-                        const match = ipv6Available.find((item) => item.port === preferredV6)
-                          || ipv6Available[0];
+                        const v4 = Number(prev.port);
+                        const v6 = Number(prev.ipv6Port);
+                        const needsV4 = LAN_DISCOVERY_PORTS.has(v4);
+                        const needsV6 = LAN_DISCOVERY_PORTS.has(v6);
+                        if (!needsV4 && !needsV6) return prev;
+                        const fallback = ipv4Available.find((item) => !LAN_DISCOVERY_PORTS.has(item.port));
+                        const nextV4 = needsV4 && fallback ? fallback.port : v4;
+                        const preferredV6 = nextV4 - 1000;
+                        const match = ipv6Available.find((item) => item.port === preferredV6 && !LAN_DISCOVERY_PORTS.has(item.port))
+                          || ipv6Available.find((item) => !LAN_DISCOVERY_PORTS.has(item.port));
                         return {
                           ...prev,
-                          port: String(fallback.port),
+                          port: nextV4 ? String(nextV4) : prev.port,
                           ipv6Port: match ? String(match.port) : prev.ipv6Port,
                         };
                       });
@@ -191,7 +199,7 @@ function CreateServer() {
                   });
                   setError('');
                 }}
-                className={`toggle ${remote ? 'toggle-active' : 'toggle-inactive'} ${remoteCount >= 5 && !remote ? 'opacity-50 cursor-not-allowed' : ''}`}
+                className={`toggle ${remote ? 'toggle-active' : 'toggle-inactive'} ${remoteCount >= MAX_REMOTE_SERVERS && !remote ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 <span className={`toggle-thumb ${remote ? 'translate-x-6' : 'translate-x-1'}`} />
               </button>
@@ -201,12 +209,12 @@ function CreateServer() {
         {remote && (
           <p className="text-xs text-mc-textMuted -mt-4">
             This host listens on the local ports below and forwards UDP game traffic to another Bedrock server.
-            At most 5 remote servers. Extra latency is expected, especially over a VPN.
+            At most {MAX_REMOTE_SERVERS} remote servers. Extra latency is expected, especially over a VPN.
           </p>
         )}
-        {remoteCount >= 5 && !remote && (
+        {remoteCount >= MAX_REMOTE_SERVERS && !remote && (
           <p className="text-xs text-amber-300 -mt-4">
-            Remote server limit reached (5). Delete one before adding another.
+            Remote server limit reached ({MAX_REMOTE_SERVERS}). Delete one before adding another.
           </p>
         )}
 
@@ -246,7 +254,7 @@ function CreateServer() {
               required
             >
               <option value="">Select an available IPv6 port...</option>
-              {ipv6Available.map(({ port }) => (
+              {ipv6Choices.map(({ port }) => (
                 <option key={port} value={port}>{port}</option>
               ))}
           </select>

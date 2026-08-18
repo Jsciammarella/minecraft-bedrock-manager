@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   Server, Plus, Play, Square, RotateCcw, Terminal, Users, 
-  Clock, Trash2, Settings, Activity, RefreshCw, AlertTriangle, Radio, Loader2
+  Clock, Trash2, Settings, Activity, RefreshCw, AlertTriangle, Radio, Loader2, Search
 } from 'lucide-react';
 import { serverApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
@@ -14,6 +14,29 @@ function isBedrockConnect(server) {
 
 function isRemote(server) {
   return server?.kind === 'remote';
+}
+
+const STATUS_ORDER = { running: 0, starting: 1, creating: 2, stopped: 3 };
+
+function serverMatchesSearch(server, search) {
+  if (!search) return true;
+  return String(server.name || '').toLowerCase().includes(search.toLowerCase());
+}
+
+function compareServers(a, b, sortBy) {
+  if (sortBy === 'status') {
+    const delta = (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9);
+    if (delta) return delta;
+  } else if (sortBy === 'port') {
+    const delta = Number(a.port) - Number(b.port);
+    if (delta) return delta;
+  } else if (sortBy === 'type') {
+    const delta = (isRemote(a) ? 1 : 0) - (isRemote(b) ? 1 : 0);
+    if (delta) return delta;
+  } else if (isBedrockConnect(a) !== isBedrockConnect(b)) {
+    return isBedrockConnect(a) ? -1 : 1;
+  }
+  return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
 }
 
 function Dashboard() {
@@ -32,6 +55,10 @@ function Dashboard() {
   const [lanMessage, setLanMessage] = useState('');
   const [lanConflict, setLanConflict] = useState(null);
   const [lanRestartMode, setLanRestartMode] = useState('immediate');
+  const [actionError, setActionError] = useState('');
+  const [search, setSearch] = useState('');
+  const [filterType, setFilterType] = useState('all');
+  const [sortBy, setSortBy] = useState('name');
 
   const loadBcPreview = async () => {
     try {
@@ -48,6 +75,7 @@ function Dashboard() {
 
   const handleAction = async (serverId, action) => {
     setActions(prev => ({ ...prev, [`${serverId}-${action}`]: true }));
+    setActionError('');
     try {
       switch (action) {
         case 'start':
@@ -64,6 +92,7 @@ function Dashboard() {
       }
     } catch (err) {
       console.error(`Failed to ${action} server:`, err);
+      setActionError(err.response?.data?.error || err.message || `Failed to ${action} server`);
     } finally {
       setActions(prev => ({ ...prev, [`${serverId}-${action}`]: false }));
       refresh();
@@ -232,10 +261,14 @@ function Dashboard() {
   const bcDisabled = bcExists || bcPending || bcBusy;
   const bcRunning = servers.some(server => isBedrockConnect(server) && (server.status === 'running' || server.status === 'starting'));
   const buildingServers = servers.filter((server) => server.status === 'creating');
-  const sortedServers = [...servers].sort((a, b) => {
-    if (isBedrockConnect(a) !== isBedrockConnect(b)) return isBedrockConnect(a) ? -1 : 1;
-    return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
-  });
+  const visibleServers = [...servers]
+    .filter((server) => {
+      if (filterType === 'remote') return isRemote(server);
+      if (filterType === 'local') return !isRemote(server);
+      return true;
+    })
+    .filter((server) => serverMatchesSearch(server, search))
+    .sort((a, b) => compareServers(a, b, sortBy));
 
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto">
@@ -307,6 +340,11 @@ function Dashboard() {
           {lanError}
         </div>
       )}
+      {actionError && (
+        <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
+          {actionError}
+        </div>
+      )}
       {lanMessage && (
         <div className="mb-6 p-4 bg-green-500/10 border border-green-500/30 rounded-lg text-sm text-green-400">
           {lanMessage}
@@ -371,7 +409,7 @@ function Dashboard() {
       </div>
 
       {/* Server List */}
-      {sortedServers.length === 0 ? (
+      {servers.length === 0 ? (
         <div className="card text-center py-16">
           <Server className="w-16 h-16 text-mc-textMuted mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">No servers yet</h3>
@@ -395,8 +433,49 @@ function Dashboard() {
           </div>
         </div>
       ) : (
+        <>
+        <div className="card mb-6">
+          <div className="flex flex-col md:flex-row gap-4">
+            <div className="flex-1 relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-mc-textMuted" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="input pl-10"
+                placeholder="Search servers..."
+              />
+            </div>
+            <select
+              value={filterType}
+              onChange={(e) => setFilterType(e.target.value)}
+              className="input w-40"
+            >
+              <option value="all">All Types</option>
+              <option value="local">Local</option>
+              <option value="remote">Remote</option>
+            </select>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="input w-40"
+            >
+              <option value="name">Sort by name</option>
+              <option value="status">Sort by status</option>
+              <option value="port">Sort by port</option>
+              <option value="type">Sort by type</option>
+            </select>
+          </div>
+        </div>
+        {visibleServers.length === 0 ? (
+          <div className="card text-center py-16">
+            <Server className="w-16 h-16 text-mc-textMuted mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-white mb-2">No servers match</h3>
+            <p className="text-mc-textMuted">Try a different search or filter.</p>
+          </div>
+        ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {sortedServers.map((server) => {
+          {visibleServers.map((server) => {
             const lan = lanOf(server);
             const lanOn = Boolean(lan.native || lan.enabled);
             const isBuilding = server.status === 'creating';
@@ -602,6 +681,8 @@ function Dashboard() {
             );
           })}
         </div>
+        )}
+        </>
       )}
 
       {bcConflict && (

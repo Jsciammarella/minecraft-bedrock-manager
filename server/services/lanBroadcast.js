@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
-const { spawn } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const axios = require('axios');
 const logger = require('./logger');
 const connectHost = require('./connectHost');
@@ -201,18 +201,126 @@ function allocateProxyPort(preferred) {
   throw new Error('No LAN proxy ports remain in 19200-19299');
 }
 
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(1, ms));
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { /* spin */ }
+  }
+}
+
+function pidAlive(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function waitForPid(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && pidAlive(pid)) sleepSync(50);
+  return !pidAlive(pid);
+}
+
+function trackedPids() {
+  return new Set([...processes.values()].map((item) => item.child?.pid).filter(Boolean));
+}
+
+function listWindowsPhantomPids(image) {
+  try {
+    const out = execFileSync('tasklist', ['/FI', `IMAGENAME eq ${image}`, '/NH'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    if (/No tasks/i.test(out)) return [];
+    const pids = [];
+    for (const line of out.split(/\r?\n/)) {
+      const parts = line.trim().split(/\s+/);
+      const pid = Number(parts[1]);
+      if (Number.isInteger(pid) && pid > 0) pids.push(pid);
+    }
+    return pids;
+  } catch {
+    return [];
+  }
+}
+
+function listPhantomPids() {
+  const name = binaryName();
+  if (process.platform === 'win32') return listWindowsPhantomPids(name);
+
+  const pids = [];
+  let entries;
+  try {
+    entries = fs.readdirSync('/proc');
+  } catch {
+    return pids;
+  }
+  const bin = binaryPath();
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === process.pid) continue;
+    let comm = '';
+    let cmdline = '';
+    let exe = '';
+    try { comm = fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim(); } catch { continue; }
+    if (comm === 'node' || comm === 'npm' || comm === 'sh' || comm === 'bash') continue;
+    try { cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8'); } catch { /* ignore */ }
+    try { exe = fs.readlinkSync(`/proc/${pid}/exe`); } catch { /* ignore */ }
+    const isPhantom = comm === name
+      || comm.startsWith('phantom-')
+      || exe.includes('/data/phantom/')
+      || cmdline.includes(bin)
+      || cmdline.includes('/data/phantom/phantom-');
+    if (isPhantom) pids.push(pid);
+  }
+  return pids;
+}
+
 function stop(serverId) {
   const key = Number(serverId);
   const session = processes.get(key);
   lastErrors.delete(key);
   if (!session) return;
   session.stopping = true;
-  try { session.child.kill(); } catch { /* ignore */ }
+  const pid = session.child?.pid;
+  try { session.child.kill('SIGTERM'); } catch { /* ignore */ }
+  if (pid) waitForPid(pid, 1000);
+  if (pid && pidAlive(pid)) {
+    try { session.child.kill('SIGKILL'); } catch { /* ignore */ }
+    waitForPid(pid, 1000);
+  }
   processes.delete(key);
 }
 
 function stopAll() {
   for (const id of [...processes.keys()]) stop(id);
+}
+
+function killOrphanPhantoms() {
+  const keep = trackedPids();
+  const orphans = listPhantomPids().filter((pid) => !keep.has(pid) && pid !== process.pid);
+  if (!orphans.length) return 0;
+  logger.warn(`Reaping ${orphans.length} leftover Phantom process(es): ${orphans.join(', ')}`);
+  for (const pid of orphans) {
+    try { process.kill(pid, 'SIGTERM'); } catch { /* ignore */ }
+  }
+  for (const pid of orphans) {
+    if (waitForPid(pid, 800)) continue;
+    try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ }
+    waitForPid(pid, 800);
+  }
+  return orphans.length;
+}
+
+function reapOrphans() {
+  stopAll();
+  return killOrphanPhantoms();
 }
 
 function dedicatedServerTarget(server) {
@@ -369,7 +477,10 @@ module.exports = {
   hasAnyActive,
   installedVersion,
   isActive,
+  killOrphanPhantoms,
+  listPhantomPids,
   occupyDiscoveryPorts,
+  reapOrphans,
   releaseDiscoveryPorts,
   start,
   startAndWait,

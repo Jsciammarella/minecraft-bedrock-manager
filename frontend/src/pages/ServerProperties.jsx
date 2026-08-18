@@ -232,6 +232,12 @@ function ServerProperties() {
   for (const item of ipv6Available) {
     if (!ipv6Options.includes(item.port)) ipv6Options.push(item.port);
   }
+  const ipv4Select = isRemote
+    ? portOptions.filter((port) => port === Number(server?.port) || (port !== 19132 && port !== 19133))
+    : portOptions;
+  const ipv6Select = isRemote
+    ? ipv6Options.filter((port) => port === Number(server?.ipv6_port) || (port !== 19132 && port !== 19133))
+    : ipv6Options;
 
   return (
     <div className="p-4 md:p-6 max-w-3xl mx-auto">
@@ -253,7 +259,7 @@ function ServerProperties() {
       )}
       {isRemote && (
         <div className="mb-6 p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
-          Remote servers only allow changing local ports and the remote host and ports. Other settings stay disabled.
+          Remote servers only allow changing local ports and the remote host and ports. Other settings stay disabled and may not reflect the actual server properties on the remote system.
         </div>
       )}
 
@@ -284,14 +290,16 @@ function ServerProperties() {
                 disabled={isBC}
                 required
               >
-                {portOptions.map((port) => (
+                {ipv4Select.map((port) => (
                   <option key={port} value={port}>{port}</option>
                 ))}
               </select>
               <p className="mt-2 text-xs text-mc-textMuted">
                 {isBC
                   ? 'Bedrock Connect must stay on UDP 19132 so consoles can reach it.'
-                  : 'Only the current IPv4 port and other open IPv4 manager ports are shown. A new port applies after restart if the server is running.'}
+                  : isRemote
+                    ? 'Remote servers cannot use UDP 19132 or 19133. Those stay free for LAN discovery and Bedrock Connect.'
+                    : 'Only the current IPv4 port and other open IPv4 manager ports are shown. A new port applies after restart if the server is running.'}
               </p>
               {server?.pending_port && Number(server.pending_port) !== Number(server.port) && (
                 <p className="mt-1 text-xs text-amber-300">
@@ -310,7 +318,7 @@ function ServerProperties() {
                 required={!isBC}
               >
                 {isBC && !formData.ipv6_port && <option value="">19133</option>}
-                {ipv6Options.map((port) => (
+                {ipv6Select.map((port) => (
                   <option key={port} value={port}>{port}</option>
                 ))}
               </select>

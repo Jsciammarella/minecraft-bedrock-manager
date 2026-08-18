@@ -31,6 +31,11 @@ function isIpv6GamePort(port) {
   return inRanges(port, IPV6_GAME_RANGES);
 }
 
+function isDiscoveryPort(port) {
+  const value = Number(port);
+  return value === DISCOVERY_IPV4 || value === DISCOVERY_IPV6;
+}
+
 function preferredIpv6Port(ipv4Port) {
   const preferred = Number(ipv4Port) - IPV6_OFFSET;
   return isIpv6GamePort(preferred) ? preferred : null;
@@ -59,6 +64,7 @@ module.exports = {
   classifyFamily,
   ipv4Candidates,
   ipv6Candidates,
+  isDiscoveryPort,
   isIpv4GamePort,
   isIpv6GamePort,
   preferredIpv6Port,
