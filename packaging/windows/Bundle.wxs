@@ -21,7 +21,6 @@
         LogoFile="$(sys.SOURCEFILEDIR)theme\logo.png"
         LaunchTarget="http://localhost:3000"
         SuppressOptionsUI="yes" />
-      <Payload SourceFile="$(sys.SOURCEFILEDIR)theme\background.png" />
     </BootstrapperApplication>
 
     <util:RegistrySearch

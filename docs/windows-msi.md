@@ -36,7 +36,7 @@ From the repo root:
 powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\build-msi.ps1
 ```
 
-The installer is a single elevated `.exe` (`dist\windows\MinecraftBedrockManager-<version>.exe`) with the MSI packed inside. The setup UI uses the manager favicon and a dark theme with the card drawn as the window background (not a covering image, which hid the buttons). The success page shows `http://localhost:3000` and the computer’s LAN name. The packager always rebuilds the web UI so dashboard search and remote servers are included. Downloads are cached under `packaging\windows\cache\`.
+The installer is a single elevated `.exe` (`dist\windows\MinecraftBedrockManager-<version>.exe`) with the MSI packed inside. The setup UI uses the manager favicon, logo, and a solid dark window (a full-window background image hides the buttons in Burn). The success page shows `http://localhost:3000` and the computer’s LAN name. The packager always rebuilds the web UI so dashboard search and remote servers are included. Downloads are cached under `packaging\windows\cache\`.
 
 Useful switches:
 
