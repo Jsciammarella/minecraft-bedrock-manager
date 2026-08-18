@@ -55,14 +55,20 @@
     @apply w-full h-full object-contain object-center;
   }
 
-  /* One reserved line under pack art so every tile is the same height. */
+  /* One reserved line under pack art; tags pack from the right and only
+     ellipsize when the full labels would wrap. */
   .mod-tile-tags {
-    @apply flex flex-row-reverse flex-nowrap items-center justify-start gap-1
-           overflow-hidden h-6 mb-2;
+    @apply flex justify-end w-full overflow-hidden h-6 mb-2;
   }
 
-  .mod-tile-tags .badge {
-    @apply min-w-0 max-w-[32%] shrink overflow-hidden text-ellipsis whitespace-nowrap inline-block;
+  .mod-tile-tags-row {
+    @apply flex flex-row-reverse flex-nowrap items-center gap-1 min-w-0 max-w-full;
+  }
+
+  .mod-tile-tags-row .badge {
+    flex: 0 1 auto;
+    min-width: 0;
+    @apply overflow-hidden text-ellipsis whitespace-nowrap inline-block;
   }
   
   .btn-warning {
