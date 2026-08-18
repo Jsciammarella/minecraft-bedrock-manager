@@ -58,6 +58,7 @@ services:
       - CURSEFORGE_FETCH_WORKDIR=/tmp/mc-cf-import
     volumes:
       - ./server/scripts/fetch-curseforge-mod.py:/opt/cf-fetch/fetch-curseforge-mod.py:ro
+      - ./server/scripts/fetch-mcpedl-mod.py:/opt/cf-fetch/fetch-mcpedl-mod.py:ro
       - ./server/scripts/curseforge-fetch-server.py:/opt/cf-fetch/curseforge-fetch-server.py:ro
       - mc-cf-fetch:/tmp/mc-cf-import
     networks:

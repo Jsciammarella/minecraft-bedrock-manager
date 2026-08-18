@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP wrapper that runs fetch-curseforge-mod.py inside this Ubuntu image."""
+"""HTTP wrapper that runs catalog fetch scripts inside this Ubuntu image."""
 
 from __future__ import annotations
 
@@ -10,13 +10,24 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-SCRIPT = Path(__file__).with_name("fetch-curseforge-mod.py")
+SCRIPT_DIR = Path(__file__).resolve().parent
 BIND = os.environ.get("CURSEFORGE_FETCH_BIND", "127.0.0.1")
 PORT = int(os.environ.get("CURSEFORGE_FETCH_PORT", "37851"))
 TIMEOUT = int(os.environ.get("CURSEFORGE_FETCH_TIMEOUT", str(20 * 60)))
 ALLOWED_ROOT = Path(os.environ.get("CURSEFORGE_FETCH_WORKDIR", "/tmp/mc-cf-import")).resolve()
-ALLOWED_PREFIX = "https://www.curseforge.com/minecraft-bedrock"
 MAX_BODY = 16 * 1024
+SCRIPTS = (
+    ("https://www.curseforge.com/minecraft-bedrock", SCRIPT_DIR / "fetch-curseforge-mod.py"),
+    ("https://mcpedl.com", SCRIPT_DIR / "fetch-mcpedl-mod.py"),
+    ("https://www.mcpedl.com", SCRIPT_DIR / "fetch-mcpedl-mod.py"),
+)
+
+
+def _script_for_url(url: str) -> Path | None:
+    for prefix, script in SCRIPTS:
+        if url.startswith(prefix):
+            return script
+    return None
 
 
 def _safe_root(root: str) -> Path:
@@ -67,8 +78,9 @@ class Handler(BaseHTTPRequestHandler):
 
         url = str(body.get("url") or "").strip()
         root = str(body.get("root") or "").strip()
-        if not url.startswith(ALLOWED_PREFIX):
-            self._send_json(400, {"ok": False, "error": f'URL must start with "{ALLOWED_PREFIX}"'})
+        script = _script_for_url(url)
+        if script is None:
+            self._send_json(400, {"ok": False, "error": "URL is not a supported CurseForge or MCPEDL project address"})
             return
         try:
             work_root = _safe_root(root)
@@ -79,7 +91,7 @@ class Handler(BaseHTTPRequestHandler):
         print(f"Fetching {url} into {work_root}", flush=True)
         try:
             result = subprocess.run(
-                [sys.executable, str(SCRIPT), url, "--root", str(work_root)],
+                [sys.executable, str(script), url, "--root", str(work_root)],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -91,7 +103,7 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
         except subprocess.TimeoutExpired:
-            self._send_json(504, {"ok": False, "error": "CurseForge import timed out after 20 minutes"})
+            self._send_json(504, {"ok": False, "error": "Catalog import timed out after 20 minutes"})
             return
 
         if result.stderr:
@@ -111,12 +123,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    if not SCRIPT.is_file():
-        print(f"Missing fetch script: {SCRIPT}", file=sys.stderr)
+    missing = [str(script) for _, script in SCRIPTS if not script.is_file()]
+    if missing:
+        print(f"Missing fetch script(s): {', '.join(missing)}", file=sys.stderr)
         return 1
     ALLOWED_ROOT.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((BIND, PORT), Handler)
-    print(f"CurseForge fetch sidecar listening on {BIND}:{PORT}", flush=True)
+    print(f"Catalog fetch sidecar listening on {BIND}:{PORT}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

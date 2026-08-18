@@ -1,4 +1,4 @@
-# Ubuntu 26.04 helper for CurseForge URL imports.
+# Ubuntu 26.04 helper for CurseForge and MCPEDL URL imports.
 # Keeps the manager image on Debian bookworm. This sidecar matches the host
 # Python 3.14 / OpenSSL 3.5 stack that CurseForge accepts on sci-linux-01.
 # Ubuntu 24.04's Python 3.12 is served a Cloudflare challenge page.
@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /opt/cf-fetch
 COPY server/scripts/fetch-curseforge-mod.py ./
+COPY server/scripts/fetch-mcpedl-mod.py ./
 COPY server/scripts/curseforge-fetch-server.py ./
 
 EXPOSE 37851

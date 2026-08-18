@@ -8,6 +8,7 @@ const catalog = require('../services/catalogService');
 const gitCatalog = require('../services/gitCatalogClient');
 const packFiles = require('../services/packFiles');
 const curseforgeImporter = require('../services/curseforgeImporter');
+const mcpedlImporter = require('../services/mcpedlImporter');
 
 // Multer config for file uploads
 const uploadsDir = path.join(__dirname, '../../data/uploads');
@@ -95,6 +96,17 @@ router.post('/import-curseforge', async (req, res) => {
   res.setTimeout(20 * 60 * 1000);
   try {
     const result = await curseforgeImporter.importFromUrl(req.body?.url);
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/import-mcpedl', async (req, res) => {
+  req.setTimeout(20 * 60 * 1000);
+  res.setTimeout(20 * 60 * 1000);
+  try {
+    const result = await mcpedlImporter.importFromUrl(req.body?.url);
     res.status(201).json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });

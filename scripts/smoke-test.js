@@ -14,6 +14,7 @@ const packInstaller = require('../server/services/packInstaller');
 const settingsStore = require('../server/services/settingsStore');
 const modManager = require('../server/services/modManager');
 const curseforgeImporter = require('../server/services/curseforgeImporter');
+const mcpedlImporter = require('../server/services/mcpedlImporter');
 const connectHost = require('../server/services/connectHost');
 const portRanges = require('../server/services/portRanges');
 
@@ -824,6 +825,20 @@ async function run() {
   if (previousFetchUrl === undefined) delete process.env.CURSEFORGE_FETCH_URL;
   else process.env.CURSEFORGE_FETCH_URL = previousFetchUrl;
 
+  assert.equal(mcpedlImporter.isValidMcpedlUrl('https://mcpedl.com/useful-slime/'), true);
+  assert.equal(mcpedlImporter.isValidMcpedlUrl('https://www.mcpedl.com/useful-slime/'), true);
+  assert.equal(mcpedlImporter.isValidMcpedlUrl('https://example.com/useful-slime'), false);
+  await assert.rejects(
+    () => mcpedlImporter.importFromUrl('https://example.com/not-mcpedl'),
+    /must start with/
+  );
+  const validatedMcpedl = await mcpedlImporter.validateOnly('https://www.mcpedl.com/useful-slime/?ref=home');
+  assert.equal(validatedMcpedl.url, 'https://mcpedl.com/useful-slime');
+  await assert.rejects(
+    () => mcpedlImporter.validateOnly('https://mcpedl.com'),
+    /MCPEDL project URL|must start with/
+  );
+
   console.log(JSON.stringify({
     databaseMigration: 'ok',
     udpPortDetection: 'ok',
@@ -833,6 +848,7 @@ async function run() {
     dnsProxy: 'ok',
     bedrockConnectList: 'ok',
     curseforgeUrlImport: 'ok',
+    mcpedlUrlImport: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));
