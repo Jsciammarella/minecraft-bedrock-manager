@@ -1,15 +1,29 @@
 # Minecraft Bedrock Server Manager
 
-A one-stop self-hosted console for Minecraft Bedrock. One Linux host can run multiple dedicated servers, keep add-ons and worlds in a library, let consoles join through [Bedrock Connect](https://github.com/Pugmatt/BedrockConnect), optionally rewrite featured-server DNS, and list games on the LAN — without a cloud panel.
+A one-stop self-hosted console for Minecraft Bedrock. One Linux host, or a Windows PC with Docker Desktop, can run multiple dedicated servers, keep add-ons and worlds in a library, let consoles join through [Bedrock Connect](https://github.com/Pugmatt/BedrockConnect), optionally rewrite featured-server DNS, and list games on the LAN — without a cloud panel.
 
 > [!IMPORTANT]
 > This application does not currently provide login or role-based access control. Keep it on a trusted LAN or behind an authenticated reverse proxy. Do not expose the management port or DNS port `53` to the internet.
 
 ## Quick start
 
-Target: **Ubuntu 24.04 x86-64**. You need `git` and `sudo`. Clone with HTTPS if you do not have SSH keys for the Git host.
+Clone with HTTPS if you do not have SSH keys for the Git host.
 
-### Docker (recommended)
+### Windows (Docker Desktop)
+
+Install **[Docker Desktop for Windows](https://docs.docker.com/desktop/setup/install/windows-install/)** (Linux containers) and **[Git for Windows](https://git-scm.com/downloads/win)**. Start Docker Desktop and wait until it is running. Then in PowerShell:
+
+```powershell
+git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git; powershell -ExecutionPolicy Bypass -File .\minecraft-bedrock-manager\scripts\install-docker.ps1
+```
+
+Open `http://localhost:3000`. Use an Administrator PowerShell if you want the script to add Windows Firewall rules. Details: [docs/windows.md](docs/windows.md).
+
+This project does not ship a `setup.exe`. An unsigned installer would be blocked by SmartScreen; the PowerShell script after clone is the supported Windows install.
+
+### Linux (Ubuntu 24.04)
+
+You need `git` and `sudo`.
 
 ```bash
 git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git && sudo bash minecraft-bedrock-manager/scripts/install-docker.sh
@@ -18,6 +32,8 @@ git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git
 SSH clone instead: `git clone git@sci-gitlab-01.sciamfam.com:jamey/minecraft-bedrock-manager.git`.
 
 The script installs Docker Compose if needed, creates `.env` from `.env.example`, adds UFW rules (it does **not** enable UFW), then runs `docker compose up -d --build`. Open `http://<this-host>:3000`.
+
+Advanced **Ubuntu WSL** (Linux host networking, not the usual Windows path): [docs/wsl.md](docs/wsl.md).
 
 ### Native Ubuntu
 
@@ -32,13 +48,19 @@ The script installs Node.js **20.x**, build tools, Java, Git LFS, firewall rules
 - Create a Bedrock server from the dashboard. The tile shows **Building Server** while the official Linux zip downloads.
 - Use **Bedrock Connect** on the dashboard if consoles need a custom server list, then open **BedrockConnect** in the sidebar for DNS instructions.
 - Optional: **Mod Catalog → Settings** for CurseForge or a Git catalog.
-- Later updates: use `upgrade.sh` below. Never run `docker compose down -v`.
+- Later updates: use `upgrade.ps1` on Windows or `upgrade.sh` on Linux. Never run `docker compose down -v`.
 
 ### Update (keep production data)
 
 Do **not** re-run the install one-liner and do **not** clone into a new folder. A second clone can attach new Docker volumes and look like a blank install. Use the original checkout:
 
-Docker, from the directory you cloned into:
+Windows, from the directory you cloned into:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\upgrade.ps1 -Yes
+```
+
+Linux Docker:
 
 ```bash
 sudo ./scripts/upgrade.sh --yes
@@ -50,9 +72,9 @@ Native:
 sudo /opt/mc-manager/scripts/upgrade.sh --yes
 ```
 
-`upgrade.sh` asks the manager to stop running Bedrock servers so worlds can save, copies data to `upgrade-backups/`, fast-forwards git, adds any new `.env` keys without changing existing values, then rebuilds. Docker uses `docker compose up -d --build` and never `down -v`. Native runs `npm ci`, rebuilds the UI, and restarts `mc-manager`. Start game servers again from the dashboard after the health check succeeds.
+The upgrade asks the manager to stop running Bedrock servers so worlds can save, copies data to `upgrade-backups/`, fast-forwards git, adds any new `.env` keys without changing existing values, then rebuilds. Docker uses `docker compose up -d --build` and never `down -v`. Native runs `npm ci`, rebuilds the UI, and restarts `mc-manager`. Start game servers again from the dashboard after the health check succeeds.
 
-If you re-run `install-docker.sh` or `install-native.sh` in that same checkout, they detect `.env` and hand off to `upgrade.sh` instead of treating it as a new install.
+If you re-run the install script in that same checkout, it detects `.env` and hands off to upgrade instead of treating it as a new install.
 
 ---
 
@@ -64,7 +86,7 @@ Most home setups split this work across a dedicated-server zip, a DNS trick, a L
 - **Xbox, PlayStation, Windows, iOS, and Android** on the same LAN can also find a server under Friends → LAN Games when that server's LAN toggle is on.
 - **Nintendo Switch** (and any console that cannot type `IP:port`) uses Bedrock Connect on UDP `19132`, optionally with this host as the console's only DNS server.
 
-Host firewall rules, not Docker port mappings, control access. Production Docker uses Linux **host networking** so each Bedrock process binds its UDP port on the Ubuntu host as soon as it starts. Adding a server does not require editing Compose or recreating the container.
+Host firewall rules, not Docker port mappings, control access on Linux. Production Docker on Linux uses **host networking** so each Bedrock process binds its UDP port on the Ubuntu host as soon as it starts. Adding a server does not require editing Compose or recreating the container. Docker Desktop on Windows cannot use that mode; `install-docker.ps1` publishes the same UDP ranges from `docker-compose.wsl.yml` instead. See [docs/windows.md](docs/windows.md).
 
 ## Capabilities
 
@@ -154,7 +176,7 @@ Each server detail page has a live console capped at the last **200** lines, plu
 
 Never commit `.env`. Values saved in the UI override these environment variables.
 
-The Docker image runs as root because it writes the data volume, copies Phantom, and spawns Bedrock, Java, and Phantom children on the host network. Native installs run as `mcmanager`. Docker Compose also starts `mc-curseforge-fetch`, a small Ubuntu 26.04 helper for CurseForge and MCPEDL URL imports. It listens on `127.0.0.1:37851` only.
+The Docker image runs as root because it writes the data volume, copies Phantom, and spawns Bedrock, Java, and Phantom children. Native installs run as `mcmanager`. Docker Compose also starts `mc-curseforge-fetch`, a small Ubuntu 26.04 helper for CurseForge and MCPEDL URL imports. On Linux host networking it listens on `127.0.0.1:37851` only. On Docker Desktop the manager reaches it as `http://mc-curseforge-fetch:37851` on the Compose network; that port is not published to Windows.
 
 Docker follows the host timezone via `/etc/localtime`. Do not set `TZ` in Compose unless you need to override the host.
 
@@ -167,6 +189,8 @@ docker compose down                 # stop it without deleting data
 sudo ./scripts/upgrade.sh --yes     # pull, rebuild, keep volumes and .env
 ```
 
+On Docker Desktop / Windows, `install-docker.ps1` writes `COMPOSE_FILE=docker-compose.wsl.yml` into `.env` so these commands use the published-port stack. Never `docker compose down -v`.
+
 Native:
 
 ```bash
@@ -175,9 +199,9 @@ sudo journalctl -u mc-manager -f
 sudo ./scripts/upgrade.sh --yes --mode native
 ```
 
-If a release adds UDP ranges or DNS `53`, rerun `sudo ./scripts/configure-ubuntu-firewall.sh`. The firewall script adds UFW rules but does not enable UFW, so you cannot lock yourself out of SSH by accident.
+If a release adds UDP ranges or DNS `53`, rerun `sudo ./scripts/configure-ubuntu-firewall.sh` on Linux. The firewall script adds UFW rules but does not enable UFW, so you cannot lock yourself out of SSH by accident. On Windows, rerun `scripts\configure-windows-firewall.ps1` as Administrator.
 
-When upgrading an older **bridge-network** Docker deploy, run `docker compose down` (no `-v`) and `docker compose up -d --build` after the firewall rules so the container uses host networking. The named data volume is retained.
+On Linux, when upgrading an older **bridge-network** Docker deploy, run `docker compose down` (no `-v`) and `docker compose up -d --build` after the firewall rules so the container uses host networking. The named data volume is retained.
 
 ## Public API
 
@@ -251,7 +275,7 @@ npm test
 | `npm test` | Smoke tests (`scripts/smoke-test.js`) |
 | `docker compose -f docker-compose.dev.yml up --build` | Dev container with hot reload |
 
-Production image: `docker compose up -d --build` (Linux host networking). The image includes Git, Git LFS, `unzip`, and a Java runtime for Bedrock Connect.
+Production image: `docker compose up -d --build` (Linux host networking). On Docker Desktop, `install-docker.ps1` uses `docker-compose.wsl.yml` instead. The image includes Git, Git LFS, `unzip`, and a Java runtime for Bedrock Connect.
 
 Native package set if you are not using `install-native.sh`: `python3`, `make`, `g++`, `git`, `git-lfs`, `wget`, `tar`, `unzip`, `default-jre-headless`, Node.js 20.
 

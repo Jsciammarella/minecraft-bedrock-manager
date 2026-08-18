@@ -10,6 +10,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(dirname "$SCRIPT_DIR")"
+# shellcheck source=wsl.sh
+source "${SCRIPT_DIR}/wsl.sh"
 SKIP_FIREWALL=0
 SERVICE_USER="mcmanager"
 
@@ -43,8 +45,11 @@ It installs Node.js 20, build tools, Java, Git LFS, firewall rules, and a
 systemd unit that runs as mcmanager. The unit is written for this checkout
 path, so you can clone into /opt/mc-manager or any other directory.
 
+On Windows WSL2, enable systemd first and see docs/wsl.md. Clone into the
+Linux filesystem, not /mnt/c.
+
 Options:
-  --skip-firewall   Do not add UFW rules
+  --skip-firewall   Do not add UFW / Windows Firewall rules
   -h, --help        Show this help
 EOF
             exit 0
@@ -58,6 +63,21 @@ done
 [[ -f "${APP_DIR}/package.json" && -f "${APP_DIR}/server/index.js" ]] \
     || die "Run this from a Minecraft Bedrock Server Manager checkout."
 command -v apt-get >/dev/null 2>&1 || die "Native install currently supports apt-based Ubuntu hosts."
+
+if mc_is_wsl; then
+    if mc_is_docker_desktop_distro; then
+        die "This is Docker Desktop's internal WSL distro, not Ubuntu. Install Ubuntu from the Microsoft Store, run wsl --set-default Ubuntu, then clone and install there. See docs/wsl.md."
+    fi
+    warn "WSL detected. Enable systemd, open Windows Firewall, and set CONNECT_HOST. See docs/wsl.md."
+    case "${APP_DIR}" in
+        /mnt/[a-z]/*)
+            warn "This checkout is on /mnt/*. Clone into the Linux filesystem (for example /opt/mc-manager) for usable performance."
+            ;;
+    esac
+    if ! mc_systemd_running; then
+        die "Native install needs systemd in WSL. Add [boot] systemd=true to /etc/wsl.conf, then wsl --shutdown."
+    fi
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
@@ -104,10 +124,14 @@ npm ci
 npm --prefix frontend ci
 npm run build
 
-if [[ "${SKIP_FIREWALL}" -eq 0 ]]; then
-    "${APP_DIR}/scripts/configure-ubuntu-firewall.sh"
-else
-    warn "Skipped firewall configuration."
+mc_configure_firewall
+
+if mc_is_wsl; then
+    detected="$(mc_ensure_connect_host || true)"
+    if [[ -n "${detected}" ]]; then
+        log "Set CONNECT_HOST=${detected} (Windows LAN IPv4) so tiles are not a 172.x address."
+        CONNECT_HOST="${detected}"
+    fi
 fi
 
 if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then

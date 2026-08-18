@@ -1,6 +1,17 @@
+const fs = require('fs');
 const os = require('os');
 
 const SKIP_IFACE = /^(lo\b|Loopback|docker|br-|veth|cni|flannel|virbr|tunl|vEthernet \(WSL|vEthernet \(Default Switch|vEthernet \(Docker)/i;
+
+function isWsl() {
+  if (process.env.MC_WSL === '1') return true;
+  if (process.env.MC_WSL === '0') return false;
+  try {
+    return /microsoft|wsl/i.test(fs.readFileSync('/proc/version', 'utf8'));
+  } catch {
+    return false;
+  }
+}
 
 function configuredHost() {
   return String(process.env.CONNECT_HOST || process.env.PUBLIC_HOST || '').trim();
@@ -51,7 +62,8 @@ function scoreIPv4(ip) {
   if (parts[0] === 10) return 90;
   // Docker's default bridge is 172.17.0.0/16; compose networks often start at 172.18.
   if (parts[0] === 172 && parts[1] === 17) return 1;
-  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return 40;
+  // WSL NAT and Docker Desktop publish paths often land in 172.16/12. Prefer CONNECT_HOST.
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return isWsl() ? 1 : 40;
   return 50;
 }
 
@@ -130,4 +142,6 @@ module.exports = {
   managerHostname,
   resolve,
   stripHostPort,
+  isWsl,
+  scoreIPv4,
 };

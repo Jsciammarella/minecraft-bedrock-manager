@@ -18,6 +18,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(dirname "$SCRIPT_DIR")"
 # shellcheck source=manager-urls.sh
 source "${SCRIPT_DIR}/manager-urls.sh"
+# shellcheck source=wsl.sh
+source "${SCRIPT_DIR}/wsl.sh"
+mc_prepend_docker_cli_path
 BACKUP_ROOT="${APP_DIR}/upgrade-backups"
 ASSUME_YES=0
 SKIP_BACKUP=0
@@ -86,7 +89,7 @@ detect_mode() {
 
     local compose_running=0 systemd_active=0
     if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-        if docker compose -f "$APP_DIR/docker-compose.yml" ps -q mc-manager 2>/dev/null | grep -q .; then
+        if mc_compose ps -q mc-manager 2>/dev/null | grep -q .; then
             compose_running=1
         fi
     fi
@@ -174,8 +177,8 @@ backup_docker() {
     local dest="$1"
     mkdir -p "$dest" || return 1
     [[ -f "$APP_DIR/.env" ]] && cp -a "$APP_DIR/.env" "$dest/env"
-    if docker compose -f "$APP_DIR/docker-compose.yml" ps -aq mc-manager 2>/dev/null | grep -q .; then
-        docker compose -f "$APP_DIR/docker-compose.yml" cp mc-manager:/app/data "$dest/data" || return 1
+    if docker inspect mc-server-manager >/dev/null 2>&1; then
+        docker compose -f "$(mc_compose_file)" cp mc-manager:/app/data "$dest/data" || return 1
         return 0
     fi
     local volume
@@ -305,7 +308,18 @@ if [[ "$MODE" == "docker" ]]; then
     command -v docker >/dev/null 2>&1 || die "docker is required for a Docker upgrade."
     docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required."
     log "Rebuilding and recreating the manager container (volumes are left in place)..."
-    docker compose -f "$APP_DIR/docker-compose.yml" up -d --build
+    if mc_is_wsl; then
+        mc_ensure_connect_host >/dev/null || true
+        mc_ensure_manager_hostname >/dev/null || true
+        mc_ensure_tz >/dev/null || true
+    fi
+    compose_file="$(mc_compose_file)"
+    mc_ensure_compose_file_env "${compose_file}"
+    if [[ "$(basename "${compose_file}")" == "docker-compose.wsl.yml" ]]; then
+        mc_ensure_tz >/dev/null || true
+    fi
+    log "Compose file: ${compose_file}"
+    docker compose -f "${compose_file}" up -d --build
 else
     if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files mc-manager.service >/dev/null 2>&1; then
         log "Stopping mc-manager.service..."

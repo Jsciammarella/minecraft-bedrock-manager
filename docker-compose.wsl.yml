@@ -1,0 +1,88 @@
+# ============================================
+# Minecraft Bedrock Server Manager
+# Docker Compose for WSL / Docker Desktop
+# ============================================
+# Used by Docker Desktop on Windows (and WSL when host networking is unavailable).
+# Publishes the manager web port and the Bedrock UDP ranges so new game servers
+# do not require editing this file. Do not publish the fetch sidecar.
+# Do not bind /etc/localtime here: that path does not exist on Windows. Set TZ in .env.
+#
+# Linux hosts should keep using docker-compose.yml (network_mode: host).
+
+services:
+  mc-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mc-server-manager
+    hostname: ${MANAGER_HOSTNAME:-mc-server-manager}
+    restart: unless-stopped
+    user: "0:0"
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=${PORT:-3000}
+      - CURSEFORGE_FETCH_URL=http://mc-curseforge-fetch:37851
+      - CURSEFORGE_FETCH_WORKDIR=/tmp/mc-cf-import
+      - CURSEFORGE_API_KEY=${CURSEFORGE_API_KEY:-}
+      - GIT_CATALOG_ENABLED=${GIT_CATALOG_ENABLED:-}
+      - GIT_CATALOG_URL=${GIT_CATALOG_URL:-}
+      - GIT_CATALOG_BRANCH=${GIT_CATALOG_BRANCH:-main}
+      - GIT_CATALOG_USERNAME=${GIT_CATALOG_USERNAME:-}
+      - GIT_CATALOG_TOKEN=${GIT_CATALOG_TOKEN:-}
+      - GIT_CATALOG_SUBDIR=${GIT_CATALOG_SUBDIR:-}
+      - GIT_CATALOG_SYNC_HOURS=${GIT_CATALOG_SYNC_HOURS:-2}
+      - CONNECT_HOST=${CONNECT_HOST:-}
+      - TZ=${TZ:-}
+      - AUTO_UPDATE_CHECK_INTERVAL=${AUTO_UPDATE_CHECK_INTERVAL:-86400}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}/tcp"
+      - "18132-18199:18132-18199/udp"
+      - "19132-19199:19132-19199/udp"
+      - "19200-19299:19200-19299/udp"
+      - "24565-24665:24565-24665/udp"
+      - "25565-25665:25565-25665/udp"
+      - "29000-29100:29000-29100/udp"
+      - "30000-30100:30000-30100/udp"
+    volumes:
+      - mc-data:/app/data
+      - mc-logs:/app/data/logs
+      - mc-cf-fetch:/tmp/mc-cf-import
+    depends_on:
+      mc-curseforge-fetch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  mc-curseforge-fetch:
+    build:
+      context: .
+      dockerfile: Dockerfile.curseforge-fetch
+    container_name: mc-curseforge-fetch
+    restart: unless-stopped
+    user: "0:0"
+    environment:
+      - CURSEFORGE_FETCH_BIND=0.0.0.0
+      - CURSEFORGE_FETCH_PORT=37851
+      - CURSEFORGE_FETCH_WORKDIR=/tmp/mc-cf-import
+      - TZ=${TZ:-}
+    volumes:
+      - mc-cf-fetch:/tmp/mc-cf-import
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:37851/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  mc-data:
+    driver: local
+  mc-logs:
+    driver: local
+  mc-cf-fetch:
+    driver: local

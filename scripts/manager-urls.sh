@@ -29,6 +29,12 @@ _manager_is_usable_ipv4() {
     return 0
 }
 
+_manager_is_wsl() {
+    grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null && return 0
+    grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null && return 0
+    return 1
+}
+
 _manager_score_ipv4() {
     local ip="$1"
     local a b
@@ -40,7 +46,11 @@ _manager_score_ipv4() {
     elif (( a == 172 && b == 17 )); then
         echo 1
     elif (( a == 172 && b >= 16 && b <= 31 )); then
-        echo 40
+        if _manager_is_wsl; then
+            echo 1
+        else
+            echo 40
+        fi
     else
         echo 50
     fi
@@ -129,11 +139,23 @@ detect_manager_fqdn() {
     echo "$fqdn"
 }
 
+_manager_configured_connect_host() {
+    local value="${CONNECT_HOST:-}"
+    if [[ -z "$value" && -n "${APP_DIR:-}" && -f "${APP_DIR}/.env" ]]; then
+        value="$(grep -E '^CONNECT_HOST=' "${APP_DIR}/.env" | tail -1 | cut -d= -f2- | tr -d '[:space:]' | tr -d '"' | tr -d "'")"
+    fi
+    _manager_is_usable_ipv4 "$value" || return 1
+    echo "$value"
+}
+
 print_manager_connect_urls() {
     local port="${1:-${PORT:-3000}}"
     local host ip fqdn
     host="$(detect_manager_hostname)"
-    ip="$(detect_manager_lan_ipv4)"
+    ip="$(_manager_configured_connect_host || true)"
+    if [[ -z "$ip" ]]; then
+        ip="$(detect_manager_lan_ipv4)"
+    fi
     fqdn="$(detect_manager_fqdn "$host")"
 
     echo

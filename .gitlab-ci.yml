@@ -7,6 +7,11 @@ verify:
     CI_TEST_IMAGE: "minecraft-bedrock-manager-ci:$CI_COMMIT_SHA"
   script:
     - bash -n scripts/*.sh
+    - |
+      if docker compose version >/dev/null 2>&1; then
+        docker compose -f docker-compose.yml config >/dev/null
+        docker compose -f docker-compose.wsl.yml config >/dev/null
+      fi
     - docker build --tag "$CI_TEST_IMAGE" .
     - docker build --tag "$CI_TEST_IMAGE-cf-fetch" -f Dockerfile.curseforge-fetch .
     - docker run --rm --entrypoint node --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" "$CI_TEST_IMAGE" scripts/smoke-test.js

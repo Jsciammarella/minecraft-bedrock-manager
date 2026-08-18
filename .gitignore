@@ -37,6 +37,10 @@ temp/
 Thumbs.db
 desktop.ini
 
+# Python sidecar / fetch scripts
+**/__pycache__/
+*.pyc
+
 # Test output
 npm-debug.log*
 yarn-debug.log*

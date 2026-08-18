@@ -10,6 +10,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(dirname "$SCRIPT_DIR")"
+# shellcheck source=wsl.sh
+source "${SCRIPT_DIR}/wsl.sh"
+mc_prepend_docker_cli_path
 SKIP_FIREWALL=0
 
 GREEN='\033[0;32m'
@@ -33,8 +36,15 @@ This script is meant to be run with sudo from a git checkout:
   git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git
   sudo bash minecraft-bedrock-manager/scripts/install-docker.sh
 
+On Windows, use PowerShell instead (Docker Desktop must already be installed):
+
+  git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git
+  powershell -ExecutionPolicy Bypass -File .\minecraft-bedrock-manager\scripts\install-docker.ps1
+
+See docs/windows.md. Advanced Ubuntu WSL: docs/wsl.md.
+
 Options:
-  --skip-firewall   Do not add UFW rules
+  --skip-firewall   Do not add UFW / Windows Firewall rules
   -h, --help        Show this help
 EOF
             exit 0
@@ -46,7 +56,19 @@ done
 
 [[ "${EUID}" -eq 0 ]] || die "Run this script with sudo."
 [[ -f "${APP_DIR}/docker-compose.yml" ]] || die "Run this from a Minecraft Bedrock Server Manager checkout."
-[[ "$(uname -s)" == "Linux" ]] || die "Docker production uses Linux host networking. Install on Ubuntu 24.04."
+[[ "$(uname -s)" == "Linux" ]] || die "This script is for Ubuntu. On Windows use scripts/install-docker.ps1 with Docker Desktop (docs/windows.md)."
+
+if mc_is_wsl; then
+    if mc_is_docker_desktop_distro; then
+        die "This is Docker Desktop's internal WSL distro, not Ubuntu. Install Ubuntu from the Microsoft Store, run wsl --set-default Ubuntu, then clone and install there. See docs/wsl.md."
+    fi
+    log "WSL detected. See docs/wsl.md for Docker Desktop vs Docker Engine and Windows Firewall."
+    case "${APP_DIR}" in
+        /mnt/[a-z]/*)
+            warn "This checkout is on /mnt/*. Clone into the Linux home directory for usable Docker performance."
+            ;;
+    esac
+fi
 
 if [[ "$(uname -m)" != "x86_64" && "$(uname -m)" != "amd64" ]]; then
     warn "This project targets Linux x86-64. Continuing anyway."
@@ -59,11 +81,28 @@ if command -v apt-get >/dev/null 2>&1; then
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
+    mc_prepend_docker_cli_path
+fi
+if ! command -v docker >/dev/null 2>&1; then
+    if mc_is_wsl && mc_docker_desktop_present; then
+        die "Docker Desktop is present but the docker CLI is not in this distro. Enable the distro under Docker Desktop → Settings → Resources → WSL."
+    fi
+    if mc_is_wsl && ! mc_systemd_running; then
+        die "Docker is not installed. Enable systemd in /etc/wsl.conf (see docs/wsl.md) or install Docker Desktop with the WSL backend."
+    fi
     command -v apt-get >/dev/null 2>&1 || die "Docker is not installed and this host is not apt-based."
     log "Installing Docker..."
     apt-get install -y docker.io
     apt-get install -y docker-compose-v2 || apt-get install -y docker-compose-plugin || true
-    systemctl enable --now docker
+    if mc_systemd_running; then
+        systemctl enable --now docker
+    else
+        die "Docker was installed but systemd is not running, so the daemon cannot start. Enable systemd (docs/wsl.md) or use Docker Desktop."
+    fi
+fi
+
+if mc_docker_is_desktop; then
+    log "Using Docker Desktop. Game UDP ports are published from docker-compose.wsl.yml."
 fi
 
 docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required (docker compose)."
@@ -85,14 +124,31 @@ source "${APP_DIR}/.env"
 set +a
 export PORT="${PORT:-3000}"
 
-if [[ "${SKIP_FIREWALL}" -eq 0 ]]; then
-    "${APP_DIR}/scripts/configure-ubuntu-firewall.sh"
-else
-    warn "Skipped firewall configuration."
+mc_configure_firewall
+
+if mc_is_wsl; then
+    detected="$(mc_ensure_connect_host || true)"
+    if [[ -n "${detected}" ]]; then
+        log "Set CONNECT_HOST=${detected} (Windows LAN IPv4) so tiles are not a 172.x address."
+        CONNECT_HOST="${detected}"
+    fi
+    hostname_set="$(mc_ensure_manager_hostname || true)"
+    if [[ -n "${hostname_set}" ]]; then
+        log "Set MANAGER_HOSTNAME=${hostname_set} so the sidebar matches this WSL distro."
+    fi
 fi
 
 log "Building and starting the manager..."
-docker compose up -d --build
+compose_file="$(mc_compose_file)"
+mc_ensure_compose_file_env "${compose_file}"
+if [[ "$(basename "${compose_file}")" == "docker-compose.wsl.yml" ]]; then
+    tz_set="$(mc_ensure_tz || true)"
+    if [[ -n "${tz_set}" ]]; then
+        log "Set TZ=${tz_set} (docker-compose.wsl.yml cannot mount /etc/localtime on Windows)."
+    fi
+fi
+log "Compose file: ${compose_file}"
+docker compose -f "${compose_file}" up -d --build
 
 log "Install complete."
 # shellcheck source=manager-urls.sh

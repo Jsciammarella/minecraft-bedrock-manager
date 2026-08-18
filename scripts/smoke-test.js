@@ -350,6 +350,14 @@ async function run() {
     if (previousConnectHost == null) delete process.env.CONNECT_HOST;
     else process.env.CONNECT_HOST = previousConnectHost;
   }
+  const previousWsl = process.env.MC_WSL;
+  process.env.MC_WSL = '0';
+  assert.equal(connectHost.scoreIPv4('172.18.0.4'), 40);
+  process.env.MC_WSL = '1';
+  assert.equal(connectHost.scoreIPv4('172.18.0.4'), 1);
+  assert.equal(connectHost.isWsl(), true);
+  if (previousWsl == null) delete process.env.MC_WSL;
+  else process.env.MC_WSL = previousWsl;
   const localConnectHost = connectHost.resolve({ headers: { host: 'localhost:3000' } });
   assert.match(localConnectHost, /^(?:\d{1,3}\.){3}\d{1,3}$/, 'localhost requests should still advertise an IPv4');
   assert.equal(
