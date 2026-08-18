@@ -1,6 +1,6 @@
 # Minecraft Bedrock Server Manager
 
-A one-stop self-hosted console for Minecraft Bedrock. One Linux host can run multiple dedicated servers, keep add-ons and worlds in a library, let consoles join through [Bedrock Connect](https://github.com/Pugmatt/BedrockConnect), optionally rewrite featured-server DNS, and list games on the LAN — without a cloud panel.
+A one-stop self-hosted console for Minecraft Bedrock. One Linux host can run multiple dedicated servers, **forward play to a Bedrock server on another host** (LAN, Tailscale, or similar), keep add-ons and worlds in a library, let consoles join through [Bedrock Connect](https://github.com/Pugmatt/BedrockConnect), optionally rewrite featured-server DNS, and list games on the LAN — without a cloud panel.
 
 > [!IMPORTANT]
 > This application does not currently provide login or role-based access control. Keep it on a trusted LAN or behind an authenticated reverse proxy. Do not expose the management port or DNS port `53` to the internet.
@@ -30,6 +30,7 @@ The script installs Node.js **20.x**, build tools, Java, Git LFS, firewall rules
 ### After install
 
 - Create a Bedrock server from the dashboard. The tile shows **Building Server** while the official Linux zip downloads.
+- Use the **Remote** toggle on Create Server to advertise a Bedrock world that already runs on another pingable host.
 - Use **Bedrock Connect** on the dashboard if consoles need a custom server list, then open **BedrockConnect** in the sidebar for DNS instructions.
 - Optional: **Mod Catalog → Settings** for CurseForge or a Git catalog.
 - Later updates: use `upgrade.sh` below. Never run `docker compose down -v`.
@@ -65,11 +66,12 @@ If you re-run `install-docker.sh` or `install-native.sh` in that same checkout, 
 
 ## A one-stop Bedrock host
 
-Most home setups split this work across a dedicated-server zip, a DNS trick, a LAN proxy, and a folder of `.mcaddon` files. This manager keeps that in one UI:
+Most home setups split this work across a dedicated-server zip, a DNS trick, a LAN proxy, and a folder of `.mcaddon` files. This manager keeps that in one UI, including a path most Bedrock panels do not offer: listing a world that is not running on this host.
 
 - **PC and mobile** join with the tile address (`LAN-IPv4:game-port`).
 - **Xbox, PlayStation, Windows, iOS, and Android** on the same LAN can also find a server under Friends → LAN Games when that server's LAN toggle is on.
 - **Nintendo Switch** (and any console that cannot type `IP:port`) uses Bedrock Connect on UDP `19132`, optionally with this host as the console's only DNS server.
+- **Another host's Bedrock server** can appear as a normal tile and LAN game on *this* machine. Players still connect here; UDP is forwarded to the remote IP and ports you configure.
 
 Host firewall rules, not Docker port mappings, control access. Production Docker uses Linux **host networking** so each Bedrock process binds its UDP port on the Ubuntu host as soon as it starts. Adding a server does not require editing Compose or recreating the container.
 
@@ -86,6 +88,31 @@ Minecraft Bedrock Dedicated Server is licensed by Mojang/Microsoft and is **not*
 The process is `bedrock_server` with `LD_LIBRARY_PATH=.`. In Docker, instance directories live in the `mc-data` volume at `/app/data/servers/<server-name>`.
 
 Dashboard tiles show `version • IP:port` using this host's LAN IPv4 so consoles do not depend on home DNS. `CONNECT_HOST` is used only when it is already an IPv4. Hostnames are ignored. Docker bridge addresses such as `172.17.0.2` are not advertised. The sidebar shows the machine hostname.
+
+Search, type filter (local or remote), and sort sit above the tiles.
+
+### Remote servers
+
+A remote server is a local UDP front door for a Bedrock Dedicated Server that already runs somewhere else — another PC on the LAN, a box on Tailscale, or any host this machine can ping. This manager does not start or stop that remote process. It listens on local ports here, advertises the world like a normal tile, and forwards RakNet traffic to the address you enter.
+
+On **Create Server**, turn **Remote** on (to the right of the name). You set:
+
+| Field | Meaning |
+| --- | --- |
+| Server name | Tile name on this manager |
+| Local IPv4 / IPv6 ports | Where *this* host listens. **Not** UDP `19132` or `19133` — those stay free for LAN discovery and Bedrock Connect |
+| Remote IP or hostname | The other Bedrock host (IPv4, IPv6, or a hostname such as a Tailscale name) |
+| Remote IPv4 / IPv6 ports | The game ports on that host. Those *may* be `19132` / `19133` |
+
+At most **10** remotes. Extra latency is expected: every packet takes an extra hop through this host, and a VPN adds more. Direct play to the other box will always feel snappier. The Xbox LAN path has been playable in practice.
+
+Start and stop on the tile control the local forwarder, not Minecraft on the far side. If the remote Bedrock process is down, the LAN name can still appear and joins fail. Version, players, mods, gamemode, difficulty, auto-update, and created time show as N/A. Properties besides local ports and the remote host/ports stay disabled and **do not** reflect the real `server.properties` on the other machine.
+
+With LAN listing on (the default for a new remote), consoles find it under Friends → LAN Games on this host. The game port on the tile is the local port, not `19132`. Remotes never use native LAN on `19132`. If Bedrock Connect is occupying `19132`, LAN listing pauses like any other server; PC and Bedrock Connect list joins still use the local game port.
+
+Remotes appear in the Bedrock Connect in-game list with this host's LAN IPv4 and the local game port. They do not get a live console, mods, warned restarts, or player management.
+
+An upgrade or restart should not require recreating a remote. Start it again from the dashboard after `upgrade.sh` finishes.
 
 ### Players and access
 
@@ -110,15 +137,15 @@ Bedrock needs a **distinct** IPv4 UDP port (`server-port`) and IPv6 UDP port (`s
 
 New servers default to the next free IPv4 port. IPv6 defaults to 1000 below that IPv4 port when it is free. **Port Manager** can filter IPv4, IPv6, or all. Dropdowns combine the database with a live host UDP bind check so occupied ports are not offered.
 
-You can change a regular server's ports on its Properties page. Changes apply on the next restart unless Bedrock Connect creation moved IPv4 `19132` immediately.
+You can change a regular server's ports on its Properties page. Changes apply on the next restart unless Bedrock Connect creation moved IPv4 `19132` immediately. Remote servers can change local and remote ports there, but they cannot take local `19132` or `19133`.
 
 ### Console LAN listing
 
 Consoles look for LAN games by pinging UDP `19132` (and `19133` for IPv6). Current Bedrock Dedicated Server (1.26.30+) sends empty RakNet pongs unless `enable-lan-visibility=true`, so the manager leaves that on. To keep listing under the per-server **LAN** toggle, it occupies `19132`/`19133` while each dedicated server starts, then runs [Phantom](https://github.com/jhead/phantom) only for servers whose LAN toggle is on.
 
-Direct joins still use the tile address (`LAN-IPv4:game-port`), for example `10.0.1.142:19134`, not `19132`. A server whose game port is already `19132` is visible on the LAN without Phantom. Nintendo Switch is **not** supported by this method.
+Direct joins still use the tile address (`LAN-IPv4:game-port`), for example `10.0.1.142:19134`, not `19132`. A **local** dedicated server whose game port is already `19132` is visible on the LAN without Phantom. Remote servers are never placed on `19132`, so they always use Phantom for console LAN listing. Nintendo Switch is **not** supported by this method.
 
-Phantom (MIT) ships under `vendor/phantom/` (currently `v0.5.3`) and is copied into `data/phantom/` on first use. Proxied game traffic uses UDP `19200-19299` to this host's LAN IPv4. Several Phantom processes can share `19132`.
+Phantom (MIT) ships under `vendor/phantom/` (currently `v0.5.3`) and is copied into `data/phantom/` on first use. Proxied game traffic for a local dedicated server uses UDP `19200-19299`. A remote with LAN listing on reuses that remote's local game port as the Phantom bind port so Xbox and PC share one proxy. Several Phantom processes can share discovery on `19132`.
 
 ### Bedrock Connect
 
@@ -126,7 +153,7 @@ Consoles cannot add a custom Bedrock `IP:port`. [Bedrock Connect](https://github
 
 Bedrock Connect always uses UDP `19132` (IPv4) and `19133` (IPv6). If another managed server occupies `19132`, the manager asks you to move it (immediate restart or five-minute warned restart). The JAR is started as `java -jar BedrockConnect-1.0-SNAPSHOT.jar nodb=true port=19132 bindip=0.0.0.0 featured_servers=false custom_servers=custom_servers.json`. A current release is bundled under `vendor/bedrock-connect/` so first install does not need GitHub. The manager checks GitHub daily and can store newer JARs. Auto-update on the Properties page works the same as a normal server.
 
-The in-game list is filled automatically from this manager: every dedicated server appears with this host's LAN IPv4 and that server's game port. Featured servers (Hive, Mineville, and the rest) are hidden because those redirects only land on Bedrock Connect itself. Creating, deleting, or changing a server's port rewrites `custom_servers.json` and restarts Bedrock Connect if it is running, so consoles see the new list. Players can still add extra addresses in the Bedrock Connect UI.
+The in-game list is filled automatically from this manager: every dedicated server **and every remote** appears with this host's LAN IPv4 and that tile's local game port. Featured servers (Hive, Mineville, and the rest) are hidden because those redirects only land on Bedrock Connect itself. Creating, deleting, or changing a server's port rewrites `custom_servers.json` and restarts Bedrock Connect if it is running, so consoles see the new list. Players can still add extra addresses in the Bedrock Connect UI.
 
 **Bedrock Connect and LAN listing cannot share `19132`/`19133` while Bedrock Connect is running.** Starting it stops every Phantom process. The dashboard header shows that LAN proxy is paused. A stopped or removed Bedrock Connect instance does not block LAN listing.
 
@@ -234,6 +261,7 @@ Stop active servers before a consistent backup. Restore the whole data directory
 - Official Bedrock zip download can fail; the manager will not pretend a stub is a real server unless `ALLOW_STUB_SERVER=1`.
 - Player bans are manager-enforced from observed connections.
 - LAN listing does not support Nintendo Switch and cannot share UDP `19132`/`19133` with a **running** Bedrock Connect instance.
+- Remote servers add a UDP hop (and VPN delay if you use one). They do not start the far-side Bedrock process, and they cannot bind local `19132`/`19133`. Cap is 10 remotes.
 - Devices that use this host as DNS lose internet if the manager is offline and DNS is not set back to automatic.
 
 ## Build, develop, and fork
