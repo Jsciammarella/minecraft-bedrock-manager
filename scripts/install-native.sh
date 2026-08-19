@@ -3,7 +3,7 @@
 # One-step native Ubuntu install for Minecraft Bedrock Server Manager
 # ============================================
 # Usage:
-#   sudo git clone <repo> /opt/mc-manager && sudo bash /opt/mc-manager/scripts/install-native.sh
+#   sudo env GIT_LFS_SKIP_SMUDGE=1 git clone <repo> /opt/mc-manager && sudo bash /opt/mc-manager/scripts/install-native.sh
 # ============================================
 
 set -euo pipefail
@@ -31,12 +31,12 @@ Install Minecraft Bedrock Server Manager as a native systemd service.
 
 This script is meant to be run with sudo from a git checkout:
 
-  git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git
+  GIT_LFS_SKIP_SMUDGE=1 git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git
   sudo bash minecraft-bedrock-manager/scripts/install-native.sh
 
 Preferred (avoids systemd ProtectHome issues under /home):
 
-  sudo git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git /opt/mc-manager
+  sudo env GIT_LFS_SKIP_SMUDGE=1 git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git /opt/mc-manager
   sudo bash /opt/mc-manager/scripts/install-native.sh
 
 It installs Node.js 20, build tools, Java, Git LFS, firewall rules, and a

@@ -29,6 +29,10 @@ MODE_OVERRIDE=""
 TARGET_BRANCH=""
 TARGET_TAG=""
 
+# Linux upgrades never need Windows release installers. If Git LFS is installed
+# on the host, keep checkout from smudging dist/windows/*.exe automatically.
+export GIT_LFS_SKIP_SMUDGE=1
+
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'

@@ -1,5 +1,11 @@
 stages:
   - verify
+  - release
+
+variables:
+  # Linux builds do not need the Windows installer. The release job pulls its
+  # selected installer explicitly after checkout.
+  GIT_LFS_SKIP_SMUDGE: "1"
 
 verify:
   stage: verify
@@ -12,3 +18,13 @@ verify:
     - docker run --rm --entrypoint node --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" "$CI_TEST_IMAGE" scripts/smoke-test.js
   after_script:
     - docker image rm --force "$CI_TEST_IMAGE" "$CI_TEST_IMAGE-cf-fetch" >/dev/null 2>&1 || true
+
+publish-github-release:
+  stage: release
+  variables:
+    GIT_DEPTH: "0"
+    GITHUB_REPOSITORY: "Jsciammarella/minecraft-bedrock-manager"
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
+  script:
+    - bash scripts/publish-github-release.sh

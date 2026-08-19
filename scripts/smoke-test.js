@@ -1064,7 +1064,7 @@ async function run() {
   assert.equal(got.msg.toString(), 'ping-remote');
   probe.close();
 
-  await assert.rejects(
+  assert.throws(
     () => serverManager.sendCommand(remoteCreated.id, 'list'),
     /do not accept console commands/
   );

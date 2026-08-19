@@ -3,7 +3,7 @@
 # One-step Docker install for Minecraft Bedrock Server Manager
 # ============================================
 # Usage:
-#   git clone <repo> && sudo bash <checkout>/scripts/install-docker.sh
+#   GIT_LFS_SKIP_SMUDGE=1 git clone <repo> && sudo bash <checkout>/scripts/install-docker.sh
 # ============================================
 
 set -euo pipefail
@@ -30,7 +30,7 @@ Install Minecraft Bedrock Server Manager with Docker Compose.
 
 This script is meant to be run with sudo from a git checkout:
 
-  git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git
+  GIT_LFS_SKIP_SMUDGE=1 git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git
   sudo bash minecraft-bedrock-manager/scripts/install-docker.sh
 
 Options:

@@ -12,17 +12,17 @@ Target: **Ubuntu 24.04 x86-64**. You need `git` and `sudo`. Clone with HTTPS if 
 ### Docker (recommended)
 
 ```bash
-git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git && sudo bash minecraft-bedrock-manager/scripts/install-docker.sh
+GIT_LFS_SKIP_SMUDGE=1 git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git && sudo bash minecraft-bedrock-manager/scripts/install-docker.sh
 ```
 
-SSH clone instead: `git clone git@sci-gitlab-01.sciamfam.com:jamey/minecraft-bedrock-manager.git`.
+SSH clone instead: `GIT_LFS_SKIP_SMUDGE=1 git clone git@sci-gitlab-01.sciamfam.com:jamey/minecraft-bedrock-manager.git`.
 
 The script installs Docker Compose if needed, creates `.env` from `.env.example`, adds UFW rules (it does **not** enable UFW), then runs `docker compose up -d --build`. Open `http://<this-host>:3000`.
 
 ### Native Ubuntu
 
 ```bash
-sudo git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git /opt/mc-manager && sudo bash /opt/mc-manager/scripts/install-native.sh
+sudo env GIT_LFS_SKIP_SMUDGE=1 git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manager.git /opt/mc-manager && sudo bash /opt/mc-manager/scripts/install-native.sh
 ```
 
 The script installs Node.js **20.x**, build tools, Java, Git LFS, firewall rules, and a `mcmanager` systemd service for that checkout. Open `http://<this-host>:3000`.
@@ -31,7 +31,7 @@ The script installs Node.js **20.x**, build tools, Java, Git LFS, firewall rules
 
 A native Windows x64 installer (no WSL, no Docker) lives on a separate packaging path and does **not** change the Linux Docker or native installers. The manager web UI is the same on Linux and Windows.
 
-Download the latest `MinecraftBedrockManager-0.2.3_*.exe` from [`dist/windows/`](dist/windows/) in this repository, or build it. See [docs/windows-msi.md](docs/windows-msi.md).
+Download the latest `MinecraftBedrockManager-*.exe` from the GitHub Releases page, or build it. The repository copy under [`dist/windows/`](dist/windows/) uses Git LFS. See [docs/windows-msi.md](docs/windows-msi.md).
 
 ### After install
 
