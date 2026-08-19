@@ -8,7 +8,19 @@ const modManager = require('./modManager');
 const settingsStore = require('./settingsStore');
 
 const CURSEFORGE_API = 'https://api.curseforge.com';
-const MINECRAFT_BEDROCK_GAME_ID = 1132; // Minecraft Bedrock Edition
+// CurseForge game 1132 is not Minecraft Bedrock; searches against it return an empty catalog.
+const MINECRAFT_BEDROCK_GAME_ID = 78022;
+const BEDROCK_CLASS_IDS = {
+  addons: 4984,
+  maps: 6913,
+  'texture-packs': 6929,
+  scripts: 6940,
+  skins: 6925,
+};
+const BEDROCK_CLASS_SLUGS = Object.fromEntries(
+  Object.entries(BEDROCK_CLASS_IDS).map(([slug, id]) => [String(id), slug])
+);
+const MINECRAFT_BEDROCK_ADDONS_CLASS_ID = BEDROCK_CLASS_IDS.addons;
 
 class CurseForgeClient {
   constructor() {
@@ -57,21 +69,7 @@ class CurseForgeClient {
     };
 
     if (query) params.searchFilter = query;
-    try {
-      const taxonomy = await this.getApiTaxonomy();
-      const requested = options.category || 'addons';
-      const match = taxonomy.find(item =>
-        (item.slug || item.name?.toLowerCase().replace(/\s+/g, '-')) === requested
-      );
-      if (match?.isClass) params.classId = match.id;
-      else if (match) {
-        params.categoryId = match.id;
-        if (match.classId) params.classId = match.classId;
-      }
-    } catch (err) {
-      logger.warn(`Could not load CurseForge taxonomy: ${err.message}`);
-      params.classId = 9137;
-    }
+    await this.applyCategoryFilter(params, options.category);
 
     const headers = { 'X-API-Key': this.apiKey };
     const response = await axios.get(`${CURSEFORGE_API}/v1/mods/search`, { params, headers, timeout: 10000 });
@@ -86,17 +84,19 @@ class CurseForgeClient {
   async searchViaWeb(query, options) {
     // Fallback: scrape CurseForge web page
     const baseUrl = 'https://www.curseforge.com/minecraft-bedrock/search';
-    const browseClasses = new Set(['addons', 'maps', 'texture-packs', 'scripts', 'skins']);
-    const projectClass = browseClasses.has(options.category) ? options.category : 'addons';
     const params = new URLSearchParams({
-      class: projectClass,
       page: String(options.page || 1),
       pageSize: String(options.pageSize || 20),
       sortBy: options.sortBy || 'relevancy',
     });
 
     if (query) params.set('filter', query);
-    if (options.category && !browseClasses.has(options.category)) params.set('categories', options.category);
+    if (BEDROCK_CLASS_IDS[options.category]) {
+      params.set('class', options.category);
+    } else if (options.category) {
+      params.set('class', 'addons');
+      params.set('categories', options.category);
+    }
 
     try {
       const response = await axios.get(`${baseUrl}?${params}`, {
@@ -113,6 +113,29 @@ class CurseForgeClient {
         throw new Error('CurseForge blocks automated catalog requests. Set CURSEFORGE_API_KEY to enable the catalog.');
       }
       throw new Error(`CurseForge catalog is unavailable: ${err.message}`);
+    }
+  }
+
+  async applyCategoryFilter(params, category) {
+    const requested = String(category || '').trim();
+    if (!requested) return;
+
+    try {
+      const taxonomy = await this.getApiTaxonomy();
+      const match = taxonomy.find(item =>
+        (item.slug || item.name?.toLowerCase().replace(/\s+/g, '-')) === requested
+      );
+      if (match?.isClass) {
+        params.classId = match.id;
+      } else if (match) {
+        params.categoryId = match.id;
+        if (match.classId) params.classId = match.classId;
+      } else if (BEDROCK_CLASS_IDS[requested]) {
+        params.classId = BEDROCK_CLASS_IDS[requested];
+      }
+    } catch (err) {
+      logger.warn(`Could not load CurseForge taxonomy: ${err.message}`);
+      params.classId = BEDROCK_CLASS_IDS[requested] || MINECRAFT_BEDROCK_ADDONS_CLASS_ID;
     }
   }
 
@@ -242,6 +265,7 @@ class CurseForgeClient {
       { id: 'addons', name: 'Addons', description: 'Behavior and content addons' },
       { id: 'texture-packs', name: 'Texture Packs', description: 'Visual enhancements' },
       { id: 'maps', name: 'Maps', description: 'World maps and levels' },
+      { id: 'scripts', name: 'Scripts', description: 'Script addons' },
       { id: 'skins', name: 'Skins', description: 'Player skins' },
       { id: 'utility', name: 'Utility', description: 'Utility addons' },
       { id: 'vanilla', name: 'Vanilla+', description: 'Vanilla enhancements' },
@@ -255,22 +279,25 @@ class CurseForgeClient {
   // ========== PARSING HELPERS ==========
 
   formatResults(data) {
-    return data.map(item => ({
-      id: item.id,
-      curseforgeId: item.id,
-      fileId: item.mainFileId || item.latestFiles?.[0]?.id || null,
-      name: item.name,
-      slug: item.slug,
-      description: item.summary || item.description || '',
-      author: item.authors?.[0]?.name || item.author?.name || 'Unknown',
-      thumbnail: item.logo?.thumbnailUrl || item.logo?.url || item.thumbnailUrl || '',
-      downloads: item.downloadCount || 0,
-      dateUpdated: item.dateModified || item.dateUpdated,
-      type: this.inferTypeFromCategories(item.categories || []),
-      categories: item.categories || [],
-      projectClass: this.projectClassFromItem(item),
-      websiteUrl: item.links?.websiteUrl || `https://www.curseforge.com/minecraft-bedrock/addons/${item.slug}`,
-    }));
+    return data.map(item => {
+      const projectClass = this.projectClassFromItem(item);
+      return {
+        id: item.id,
+        curseforgeId: item.id,
+        fileId: item.mainFileId || item.latestFiles?.[0]?.id || null,
+        name: item.name,
+        slug: item.slug,
+        description: item.summary || item.description || '',
+        author: item.authors?.[0]?.name || item.author?.name || 'Unknown',
+        thumbnail: item.logo?.thumbnailUrl || item.logo?.url || item.thumbnailUrl || '',
+        downloads: item.downloadCount || 0,
+        dateUpdated: item.dateModified || item.dateUpdated,
+        type: this.inferTypeFromCategories(item.categories || []),
+        categories: item.categories || [],
+        projectClass,
+        websiteUrl: item.links?.websiteUrl || `https://www.curseforge.com/minecraft-bedrock/${projectClass}/${item.slug}`,
+      };
+    });
   }
 
   async downloadViaAPI(slug, projectClass, serverId, { modId, fileId }) {
@@ -319,7 +346,9 @@ class CurseForgeClient {
 
   projectClassFromItem(item) {
     const url = item.links?.websiteUrl || '';
-    return url.match(/\/minecraft-bedrock\/(addons|maps|texture-packs|scripts|skins)\//)?.[1] || 'addons';
+    const fromUrl = url.match(/\/minecraft-bedrock\/(addons|maps|texture-packs|scripts|skins)\//)?.[1];
+    if (fromUrl) return fromUrl;
+    return BEDROCK_CLASS_SLUGS[String(item.classId)] || 'addons';
   }
 
   parseSearchResults(html, page = 1, pageSize = 20) {
@@ -480,7 +509,7 @@ class CurseForgeClient {
   getCategoryId(category) {
     // This would map to actual CurseForge category IDs
     // For now return a generic value
-    return 9137;
+    return BEDROCK_CLASS_IDS[category] || MINECRAFT_BEDROCK_ADDONS_CLASS_ID;
   }
 }
 
