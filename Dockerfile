@@ -37,6 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     git \
     git-lfs \
+    iputils-ping \
     default-jre-headless \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

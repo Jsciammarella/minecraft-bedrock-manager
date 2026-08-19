@@ -149,6 +149,8 @@ function detectArchName() {
   return '';
 }
 
+let pingMissingLogged = false;
+
 function pingHost(host, timeoutMs = 2000) {
   const target = String(host || '').trim();
   if (!target || target.startsWith('-')) return Promise.resolve(false);
@@ -161,7 +163,15 @@ function pingHost(host, timeoutMs = 2000) {
   return execFileAsync('ping', args, {
     timeout: timeoutMsClamped + 1500,
     windowsHide: true,
-  }).then(() => true).catch(() => false);
+  }).then(() => true).catch((err) => {
+    if (!pingMissingLogged && err && err.code === 'ENOENT') {
+      pingMissingLogged = true;
+      try {
+        require('./logger').warn('ping is not installed; remote reachability stays Offline until iputils-ping is available');
+      } catch { /* logger optional in tests */ }
+    }
+    return false;
+  });
 }
 
 module.exports = {
