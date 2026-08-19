@@ -14,13 +14,20 @@ function Layout() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [hostName, setHostName] = useState('');
+  const [managerVersion, setManagerVersion] = useState('');
   const { servers, loading } = useApi();
   const { connected } = useSocket();
 
   useEffect(() => {
     publicApi.health()
-      .then((res) => setHostName(String(res.data?.hostname || '').trim()))
-      .catch(() => setHostName(''));
+      .then((res) => {
+        setHostName(String(res.data?.hostname || '').trim());
+        setManagerVersion(String(res.data?.version || '').trim().replace(/^v\.?\s*/i, ''));
+      })
+      .catch(() => {
+        setHostName('');
+        setManagerVersion('');
+      });
   }, []);
 
   useEffect(() => {
@@ -124,6 +131,11 @@ function Layout() {
             </button>
           )}
         </div>
+        {showLabels && managerVersion && (
+          <p className="mt-2 text-xs text-mc-textMuted" title={`Manager version ${managerVersion}`}>
+            v. {managerVersion}
+          </p>
+        )}
       </div>
 
       {renderNav(showLabels)}

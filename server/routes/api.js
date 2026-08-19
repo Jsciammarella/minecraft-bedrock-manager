@@ -1,4 +1,5 @@
 const express = require('express');
+const { version: managerVersion } = require('../../package.json');
 const router = express.Router();
 const serverManager = require('../services/serverManager');
 const connectHost = require('../services/connectHost');
@@ -89,6 +90,7 @@ router.get('/health', (req, res) => {
     uptime: process.uptime(),
     hostname: connectHost.managerHostname(),
     lanIp: connectHost.detectLanIPv4() || null,
+    version: managerVersion,
   });
 });
 
