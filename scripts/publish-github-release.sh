@@ -8,7 +8,6 @@ set -euo pipefail
 
 readonly github_repository="${GITHUB_REPOSITORY:-Jsciammarella/minecraft-bedrock-manager}"
 readonly release_tag="${RELEASE_TAG:-${CI_COMMIT_TAG:-}}"
-readonly gh_image="${GITHUB_CLI_IMAGE:-ghcr.io/cli/cli:latest}"
 
 if [[ -z "${GITHUB_RELEASE_TOKEN:-}" ]]; then
   echo "GITHUB_RELEASE_TOKEN is required" >&2
@@ -28,9 +27,14 @@ fi
 readonly release_version="${BASH_REMATCH[1]}"
 readonly github_remote="ci-github-release"
 readonly github_url="https://github.com/${github_repository}.git"
+askpass_file=""
+publisher_helper="$(mktemp)"
+cp scripts/publish-github-release.py "$publisher_helper"
 
 cleanup() {
   git remote remove "$github_remote" >/dev/null 2>&1 || true
+  [[ -z "$askpass_file" ]] || rm -f "$askpass_file"
+  [[ -z "$publisher_helper" ]] || rm -f "$publisher_helper"
 }
 trap cleanup EXIT
 
@@ -74,7 +78,6 @@ case "$1" in
   *Password*) printf '%s\n' "$GITHUB_RELEASE_TOKEN" ;;
 esac
 EOF
-trap 'rm -f "$askpass_file"; cleanup' EXIT
 
 export GIT_ASKPASS="$askpass_file"
 export GIT_TERMINAL_PROMPT=0
@@ -84,21 +87,5 @@ export GIT_TERMINAL_PROMPT=0
 git lfs fetch --all origin
 git lfs push --all "$github_remote"
 
-run_gh() {
-  docker run --rm \
-    --env GH_TOKEN="$GITHUB_RELEASE_TOKEN" \
-    --env GH_REPO="$github_repository" \
-    --volume "${CI_PROJECT_DIR:-$PWD}:/repo:ro" \
-    --workdir /repo \
-    "$gh_image" "$@"
-}
-
-if ! run_gh release view "$release_tag" >/dev/null 2>&1; then
-  run_gh release create "$release_tag" \
-    --verify-tag \
-    --title "$release_tag" \
-    --generate-notes
-fi
-
-run_gh release upload "$release_tag" "$installer" --clobber
+python3 "$publisher_helper" "$github_repository" "$release_tag" "$installer"
 echo "Published $installer to GitHub release $release_tag"
