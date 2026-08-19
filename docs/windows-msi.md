@@ -68,6 +68,8 @@ To publish, keep exactly one final installer matching the release version in `di
 - creates the matching GitHub Release if necessary; and
 - attaches the `.exe` as a downloadable release asset.
 
+To backfill an existing tag, run a pipeline from the GitLab UI on a branch containing this automation and add a pipeline variable such as `RELEASE_TAG=v0.2.3`. The same version and single-installer checks apply.
+
 The documented Linux clone commands and the upgrade script set `GIT_LFS_SKIP_SMUDGE=1`, so Docker and native Linux systems do not download Windows installers. Developer clones keep normal LFS behavior and receive the installer when Git LFS is installed.
 
 ## Install and use

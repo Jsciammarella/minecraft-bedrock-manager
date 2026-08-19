@@ -31,7 +31,7 @@ The script installs Node.js **20.x**, build tools, Java, Git LFS, firewall rules
 
 A native Windows x64 installer (no WSL, no Docker) lives on a separate packaging path and does **not** change the Linux Docker or native installers. The manager web UI is the same on Linux and Windows.
 
-Download the latest `MinecraftBedrockManager-*.exe` from the GitHub Releases page, or build it. The repository copy under [`dist/windows/`](dist/windows/) uses Git LFS. See [docs/windows-msi.md](docs/windows-msi.md).
+Download the latest `MinecraftBedrockManager-*.exe` from [GitHub Releases](https://github.com/Jsciammarella/minecraft-bedrock-manager/releases), or build it. The repository copy under [`dist/windows/`](dist/windows/) uses Git LFS. See [docs/windows-msi.md](docs/windows-msi.md).
 
 ### After install
 
