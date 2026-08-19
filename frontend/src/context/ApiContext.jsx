@@ -28,10 +28,14 @@ export function ApiProvider({ children }) {
 
     const handleStatusChange = (event) => {
       const detail = event.detail || {};
-      if (detail.serverId != null && detail.status) {
+      if (detail.serverId != null && (detail.status || detail.remoteReachable !== undefined)) {
         setServers((prev) => prev.map((server) => (
           String(server.id) === String(detail.serverId)
-            ? { ...server, status: detail.status }
+            ? {
+                ...server,
+                ...(detail.status ? { status: detail.status } : {}),
+                ...(detail.remoteReachable !== undefined ? { remoteReachable: detail.remoteReachable } : {}),
+              }
             : server
         )));
       }
@@ -53,12 +57,14 @@ export function ApiProvider({ children }) {
     };
   }, [fetchServers]);
 
-  const hasCreating = servers.some((server) => server.status === 'creating');
+  const hasTransient = servers.some((server) => (
+    server.status === 'creating' || server.status === 'starting'
+  ));
   useEffect(() => {
-    if (!hasCreating) return undefined;
+    if (!hasTransient) return undefined;
     const interval = setInterval(fetchServers, 2000);
     return () => clearInterval(interval);
-  }, [fetchServers, hasCreating]);
+  }, [fetchServers, hasTransient]);
 
   const refresh = useCallback(() => {
     setLoading(true);

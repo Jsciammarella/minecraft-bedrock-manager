@@ -1,11 +1,21 @@
 const ANSI_RE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+const ANSI_OSC_RE = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
+const ANSI_CHAR_RE = /\u001b[@-Z\\-_]/g;
+const CSI_8BIT_RE = /\u009b[\d;]*[A-Za-z]/g;
+const BARE_SGR_RE = /\[(?:\d{1,3}(?:;\d{1,3})*)?m/g;
 const LIST_HEADER_RE = /There are\s+(\d+)\s*\/\s*(\d+)\s+players online:?/i;
 const LIST_NONE_RE = /No players currently online/i;
 const JOIN_RE = /Player (?:connected|spawned):\s*([^\r\n]+)/gi;
 const LEAVE_RE = /Player disconnected:\s*([^\r\n]+)/gi;
 
 function stripAnsi(text) {
-  return String(text || '').replace(ANSI_RE, '').replace(/\r/g, '');
+  return String(text || '')
+    .replace(ANSI_OSC_RE, '')
+    .replace(ANSI_RE, '')
+    .replace(ANSI_CHAR_RE, '')
+    .replace(CSI_8BIT_RE, '')
+    .replace(BARE_SGR_RE, '')
+    .replace(/\r/g, '');
 }
 
 function normalizeUsername(value) {

@@ -8,6 +8,7 @@ const logger = require('./logger');
 const settingsStore = require('./settingsStore');
 const portRanges = require('./portRanges');
 const playerPresence = require('./playerPresence');
+const platform = require('./platform');
 const execAsync = promisify(exec);
 
 const BASE_DIR = path.join(__dirname, '../../data/servers');
@@ -205,9 +206,15 @@ class ServerManager {
       return {
         ...server,
         lan: { ...lan, enabled: false, active: false, native: false, error: null },
+        remoteReachable: null,
       };
     }
-    return { ...server, lan };
+    const remotePing = require('./remotePing');
+    return {
+      ...server,
+      lan,
+      remoteReachable: this.isRemote(server) ? remotePing.reachable(server.id) : null,
+    };
   }
 
   stopLanBroadcastsForBedrockConnect() {
@@ -986,10 +993,12 @@ class ServerManager {
       this.invalidateServerCache(server.id);
       this.broadcastServerStatus(server.id);
       logger.info(`Remote gateway started for ${server.name}`);
+      this.startRemotePing(server.id);
       return { success: true, message: 'Remote gateway starting...' };
     } catch (err) {
       this.ptySessions.delete(sessionKey);
       await udpGateway.stop(server.id);
+      this.stopRemotePing(server.id);
       db.prepare('UPDATE servers SET status = ?, started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run('stopped', server.id);
       this.invalidateServerCache(server.id);
@@ -1051,8 +1060,9 @@ class ServerManager {
 
   async resolveBedrockDownloadUrl(version) {
     const axios = require('axios');
+    const needles = platform.bedrockDownloadNeedles();
     const headers = {
-      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'User-Agent': needles.userAgent,
       Accept: 'text/html,application/xhtml+xml,application/json',
     };
     try {
@@ -1061,11 +1071,11 @@ class ServerManager {
         timeout: 20000,
       });
       const links = api.data?.result?.links || api.data?.links || [];
-      const linux = links.find(item =>
-        /serverBedrockLinux/i.test(item.downloadType || '')
-        || /bin-linux/i.test(item.downloadUrl || item.url || '')
+      const match = links.find(item =>
+        needles.typeRe.test(item.downloadType || '')
+        || needles.urlRe.test(item.downloadUrl || item.url || '')
       );
-      const url = linux?.downloadUrl || linux?.url;
+      const url = match?.downloadUrl || match?.url;
       if (url) return url;
     } catch (err) {
       logger.warn(`Bedrock download API lookup failed: ${err.message}`);
@@ -1077,7 +1087,7 @@ class ServerManager {
       maxRedirects: 5,
     });
     const html = String(page.data || '');
-    const matches = [...html.matchAll(/https:\/\/www\.minecraft\.net\/bedrockdedicatedserver\/bin-linux\/bedrock-server-[0-9.]+\.zip/g)]
+    const matches = [...html.matchAll(needles.pageRe)]
       .map(match => match[0]);
     if (version && version !== 'latest') {
       const pinned = matches.find(url => url.includes(version));
@@ -1088,6 +1098,9 @@ class ServerManager {
   }
 
   async downloadServer(targetDir, version) {
+    if (platform.isWindows) {
+      return this.downloadServerWindows(targetDir, version);
+    }
     logger.info(`Downloading Minecraft Bedrock server to ${targetDir}`);
     const zipPath = path.join(targetDir, 'bedrock_server.zip');
     try {
@@ -1118,7 +1131,64 @@ class ServerManager {
     }
   }
 
+  async downloadServerWindows(targetDir, version) {
+    logger.info(`Downloading Minecraft Bedrock server to ${targetDir}`);
+    const zipPath = path.join(targetDir, 'bedrock_server.zip');
+    try {
+      const downloadUrl = await this.resolveBedrockDownloadUrl(version);
+      logger.info(`Fetching Bedrock Dedicated Server from ${downloadUrl}`);
+      const axios = require('axios');
+      const response = await axios.get(downloadUrl, {
+        responseType: 'arraybuffer',
+        timeout: 180000,
+        maxRedirects: 5,
+        headers: { 'User-Agent': platform.WINDOWS_UA },
+      });
+      fs.writeFileSync(zipPath, Buffer.from(response.data));
+      if (!fs.existsSync(zipPath) || fs.statSync(zipPath).size < 1000000) {
+        throw new Error('Download failed or file too small');
+      }
+      await platform.unzipArchive(zipPath, targetDir);
+      try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+      const serverBin = platform.bedrockBinaryPath(targetDir);
+      if (!fs.existsSync(serverBin)) {
+        throw new Error(`Archive did not contain ${platform.bedrockBinaryName()}`);
+      }
+    } catch (err) {
+      logger.warn(`Direct download failed: ${err.message}`);
+      try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+      if (String(process.env.ALLOW_STUB_SERVER || '') === '1') {
+        await this.createStubServer(targetDir);
+        return;
+      }
+      throw err;
+    }
+  }
+
   async createStubServer(targetDir) {
+    if (platform.isWindows) {
+      const serverBin = path.join(targetDir, 'bedrock_server.cmd');
+      fs.writeFileSync(serverBin, `@echo off\r
+REM Minecraft Bedrock Server Stub\r
+REM This is a placeholder - install the actual server binary\r
+echo [Bedrock Server] Starting server...\r
+echo [Bedrock Server] Server started on port %PORT%\r
+:loop\r
+set /p line=\r
+if /I "%line%"=="stop" (\r
+  echo [Bedrock Server] Server stopped\r
+  exit /b 0\r
+)\r
+echo [Bedrock Server] Command received: %line%\r
+goto loop\r
+`);
+      const worldDir = path.join(targetDir, 'worlds', 'new_world');
+      fs.mkdirSync(worldDir, { recursive: true });
+      fs.writeFileSync(path.join(worldDir, 'level.dat'), '');
+      fs.mkdirSync(path.join(targetDir, 'user_data'), { recursive: true });
+      logger.info(`Created stub server at ${targetDir}`);
+      return;
+    }
     // Create minimal server structure for testing/development
     const serverBin = path.join(targetDir, 'bedrock_server');
     
@@ -1170,7 +1240,7 @@ done
     const sessionKey = this.sessionKey(server.id);
     try {
       const { spawn: spawnPty } = require('node-pty');
-      const pty = spawnPty('java', [
+      const pty = spawnPty(platform.javaCommand(), [
         '-jar', installed.jarPath,
         ...list.spawnArgs(server.data_path),
       ], {
@@ -1219,6 +1289,7 @@ done
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
     if (server.status === 'running') throw new Error('Server already running');
+    if (server.status === 'starting') throw new Error('Server is already starting');
     if (server.status === 'creating') throw new Error('Server is still being built');
 
     if (server.pending_port) {
@@ -1241,7 +1312,7 @@ done
       return this.startRemoteServer(current);
     }
 
-    const serverBin = path.join(serverPath, 'bedrock_server');
+    const serverBin = platform.bedrockBinaryPath(serverPath);
 
     // Check if binary exists
     if (!fs.existsSync(serverBin)) {
@@ -1255,7 +1326,7 @@ done
       this.writeRuntimeServerProperties(current);
       const packInstaller = require('./packInstaller');
       await packInstaller.activateServerPacks(current);
-      fs.chmodSync(serverBin, '755');
+      platform.chmodIfNeeded(serverBin);
 
       const lanBroadcast = require('./lanBroadcast');
       const nativeLan = Number(current.port) === lanBroadcast.DISCOVERY_PORT;
@@ -1265,16 +1336,13 @@ done
       const discoveryGuards = nativeLan ? [] : await lanBroadcast.occupyDiscoveryPorts();
       try {
         const { spawn: spawnPty } = require('node-pty');
-        const pty = spawnPty(serverBin, [], {
+        const spawnSpec = platform.bedrockSpawn(serverBin);
+        const pty = spawnPty(spawnSpec.file, spawnSpec.args, {
           name: 'xterm-color',
           cols: 120,
           rows: 30,
           cwd: serverPath,
-          env: {
-            ...process.env,
-            LD_LIBRARY_PATH: `${serverPath}:.`,
-            PORT: String(current.port),
-          },
+          env: platform.bedrockSpawnEnv(serverPath, current.port),
         });
 
         this.ptySessions.set(sessionKey, pty);
@@ -1347,6 +1415,7 @@ done
 
     const pty = this.ptySessions.get(sessionKey);
     if (this.isRemote(server)) {
+      this.stopRemotePing(serverId);
       await require('./udpGateway').stop(serverId);
       require('./lanBroadcast').stop(serverId);
       require('./lanBroadcast').killOrphanPhantoms();
@@ -1575,6 +1644,7 @@ done
       );
       this.invalidateServerCache(serverId);
       if (server.status === 'running') {
+        this.startRemotePing(serverId);
         await this.restartRemoteGateway(serverId);
         try { await this.syncLanBroadcast(serverId); } catch (err) {
           logger.warn(`LAN broadcast did not restart after remote target change: ${err.message}`);
@@ -1884,7 +1954,11 @@ done
       const src = path.join(serverPath, dir);
       const dst = path.join(backupPath, dir);
       if (fs.existsSync(src)) {
-        await execAsync(`cp -r "${src}" "${dst}"`);
+        if (platform.isWindows) {
+          platform.copyDirSync(src, dst);
+        } else {
+          await execAsync(`cp -r "${src}" "${dst}"`);
+        }
       }
     }
 
@@ -2512,7 +2586,7 @@ done
   }
 
   observePlayerTraffic(serverId, data) {
-    const text = String(data);
+    const text = playerPresence.stripAnsi(data);
     this.appendConsoleBuffer(serverId, text);
 
     let changed = false;
@@ -2863,20 +2937,30 @@ done
   }
 
   calculateUptime(startTime) {
-    const start = new Date(startTime);
-    const now = new Date();
-    const diff = now - start;
-    
+    const start = this.parseSqliteUtc(startTime);
+    const diff = Math.max(0, Date.now() - start.getTime());
+    if (!Number.isFinite(diff)) return '0m';
+
     const days = Math.floor(diff / (1000 * 60 * 60 * 24));
     const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-    
+
     if (days > 0) return `${days}d ${hours}h ${minutes}m`;
     if (hours > 0) return `${hours}h ${minutes}m`;
     return `${minutes}m`;
   }
 
+  parseSqliteUtc(value) {
+    if (value instanceof Date) return value;
+    const text = String(value || '').trim();
+    if (!text) return new Date(NaN);
+    if (/Z$/i.test(text) || /[+-]\d{2}:\d{2}$/.test(text)) return new Date(text);
+    return new Date(text.replace(' ', 'T') + 'Z');
+  }
+
   async detectArchitecture() {
+    const windowsArch = platform.detectArchName();
+    if (windowsArch) return windowsArch;
     try {
       const { stdout } = await execAsync('uname -m');
       return stdout.trim();
@@ -2893,11 +2977,12 @@ done
     existing.forEach(listener => pty.removeListener('data', listener));
 
     pty.on('data', (data) => {
-      this.observePlayerTraffic(serverId, data);
+      const text = playerPresence.stripAnsi(data);
+      this.observePlayerTraffic(serverId, text);
       if (global.io) {
         global.io.to(`server-${serverId}`).emit('server-output', {
           serverId,
-          data
+          data: text
         });
       }
     });
@@ -2911,6 +2996,19 @@ done
     });
   }
 
+  startRemotePing(serverId) {
+    const server = this.getServer(serverId);
+    if (!server || !this.isRemote(server)) return;
+    require('./remotePing').start(server, {
+      onChange: () => this.broadcastServerStatus(serverId),
+    });
+    this.broadcastServerStatus(serverId);
+  }
+
+  stopRemotePing(serverId) {
+    require('./remotePing').stop(serverId);
+  }
+
   // ========== BROADCAST ==========
 
   broadcastServerStatus(serverId) {
@@ -2922,7 +3020,8 @@ done
           serverId,
           name: server.name,
           status: server.status,
-          uptime: server.started_at ? this.calculateUptime(server.started_at) : '0m'
+          uptime: server.started_at ? this.calculateUptime(server.started_at) : '0m',
+          remoteReachable: require('./remotePing').reachable(serverId),
         });
       }
     }
@@ -2941,6 +3040,7 @@ done
     this.servers.clear();
     try { require('./lanBroadcast').reapOrphans(); } catch { /* ignore */ }
     try { require('./udpGateway').stopAll(); } catch { /* ignore */ }
+    try { require('./remotePing').stopAll(); } catch { /* ignore */ }
     try { require('./dnsProxy').stop(); } catch { /* ignore */ }
   }
 }

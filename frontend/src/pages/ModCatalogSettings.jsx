@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { modApi } from '../services/api';
+import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
 import {
   ArrowLeft, Save, Loader2, Check, AlertCircle, RefreshCw, Eye, EyeOff, GitBranch
 } from 'lucide-react';
@@ -10,11 +11,12 @@ function ModCatalogSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [showCurseforgeKey, setShowCurseforgeKey] = useState(false);
   const [showGitToken, setShowGitToken] = useState(false);
+  const { status, setStatus, startSync } = useGitCatalogSync();
+  const wasSyncing = useRef(false);
 
   const [curseforgeApiKey, setCurseforgeApiKey] = useState('');
   const [curseforgeConfigured, setCurseforgeConfigured] = useState(false);
@@ -35,6 +37,26 @@ function ModCatalogSettings() {
     loadSettings();
   }, []);
 
+  useEffect(() => {
+    if (wasSyncing.current && !status.running) {
+      setGitLastSync(status.lastSync || '');
+      setGitModCount(status.modCount || 0);
+      if (status.error) {
+        setError(status.error);
+      } else if (status.lastSync) {
+        setSuccess(`Git catalog synced (${status.modCount || 0} mods)`);
+        setTimeout(() => setSuccess(''), 3000);
+      }
+    }
+    wasSyncing.current = Boolean(status.running);
+  }, [status]);
+
+  const applyGitSync = (data) => {
+    if (data?.git?.sync) setStatus((prev) => ({ ...prev, ...data.git.sync }));
+    setGitLastSync(data?.git?.lastSync || data?.git?.sync?.lastSync || '');
+    setGitModCount(data?.git?.modCount ?? data?.git?.sync?.modCount ?? 0);
+  };
+
   const loadSettings = async () => {
     try {
       const res = await modApi.catalogSettings();
@@ -46,8 +68,7 @@ function ModCatalogSettings() {
       setGitUsername(data.git?.username || '');
       setGitTokenSet(Boolean(data.git?.tokenSet));
       setGitSubdir(data.git?.subdir || '');
-      setGitLastSync(data.git?.lastSync || '');
-      setGitModCount(data.git?.modCount || 0);
+      applyGitSync(data);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to load catalog settings');
     } finally {
@@ -79,19 +100,15 @@ function ModCatalogSettings() {
       const data = res.data;
       setCurseforgeConfigured(Boolean(data.curseforge?.configured));
       setGitTokenSet(Boolean(data.git?.tokenSet));
-      setGitLastSync(data.git?.lastSync || '');
-      setGitModCount(data.git?.modCount || 0);
+      applyGitSync(data);
       setCurseforgeApiKey('');
       setGitToken('');
       setClearCurseforgeApiKey(false);
       setClearGitToken(false);
-
-      if (data.gitSyncError) {
-        setError(`Settings saved, but Git sync failed: ${data.gitSyncError}`);
-      } else {
-        setSuccess('Catalog settings saved');
-        setTimeout(() => setSuccess(''), 3000);
-      }
+      setSuccess(data.git?.sync?.running
+        ? 'Catalog settings saved. Git catalog is syncing in the background.'
+        : 'Catalog settings saved');
+      setTimeout(() => setSuccess(''), 4000);
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to save settings');
     } finally {
@@ -120,21 +137,22 @@ function ModCatalogSettings() {
   };
 
   const handleSync = async () => {
-    setSyncing(true);
+    if (!status.canSync || status.running) return;
     setError('');
     setSuccess('');
     try {
-      const res = await modApi.syncGitCatalog();
-      setGitLastSync(res.data.lastSync || '');
-      setGitModCount(res.data.modCount || 0);
-      setSuccess(`Git catalog synced (${res.data.modCount || 0} mods)`);
-      setTimeout(() => setSuccess(''), 3000);
+      await startSync();
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Git sync failed');
-    } finally {
-      setSyncing(false);
     }
   };
+
+  const syncDisabled = !status.canSync || status.running;
+  const syncTitle = status.running
+    ? 'Git catalog is syncing'
+    : !status.canSync
+      ? 'Save settings with the Git catalog enabled and an access token to sync'
+      : 'Sync Git catalog now';
 
   if (loading) {
     return (
@@ -349,17 +367,25 @@ function ModCatalogSettings() {
           <div className="flex flex-wrap items-center gap-3 mt-4 p-3 bg-mc-darker rounded-lg">
             <GitBranch className="w-4 h-4 text-mc-textMuted" />
             <p className="text-xs text-mc-textMuted flex-1">
-              {gitLastSync
-                ? `${gitModCount} mods • last sync ${new Date(gitLastSync).toLocaleString()}`
-                : 'Not synced yet'}
+              {status.running
+                ? 'Syncing in the background. You can leave this page; the catalog refresh icon will keep spinning until it finishes.'
+                : gitLastSync
+                  ? `${gitModCount} mods • last sync ${new Date(gitLastSync).toLocaleString()}`
+                  : 'Not synced yet'}
             </p>
             <button type="button" onClick={handleTest} disabled={!gitEnabled || testing || !gitUrl} className="btn btn-secondary text-sm">
               {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
               Test Connection
             </button>
-            <button type="button" onClick={handleSync} disabled={syncing || !gitEnabled || !gitUrl} className="btn btn-secondary text-sm">
-              {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-              Sync Now
+            <button
+              type="button"
+              onClick={handleSync}
+              disabled={syncDisabled}
+              title={syncTitle}
+              className="btn btn-secondary text-sm"
+            >
+              {status.running ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              {status.running ? 'Syncing...' : 'Sync Now'}
             </button>
           </div>
           </div>

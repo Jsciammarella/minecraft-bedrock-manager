@@ -27,6 +27,12 @@ sudo git clone https://sci-gitlab-01.sciamfam.com/jamey/minecraft-bedrock-manage
 
 The script installs Node.js **20.x**, build tools, Java, Git LFS, firewall rules, and a `mcmanager` systemd service for that checkout. Open `http://<this-host>:3000`.
 
+### Windows
+
+A native Windows x64 installer (no WSL, no Docker) lives on a separate packaging path and does **not** change the Linux Docker or native installers. The manager web UI is the same on Linux and Windows.
+
+Download the latest `MinecraftBedrockManager-0.2.3_*.exe` from [`dist/windows/`](dist/windows/) in this repository, or build it. See [docs/windows-msi.md](docs/windows-msi.md).
+
 ### After install
 
 - Create a Bedrock server from the dashboard. The tile shows **Building Server** while the official Linux zip downloads.
@@ -122,7 +128,7 @@ Per-server allowlists, operator permissions, and bans. Scan running servers (Bed
 
 Upload `.mcpack`, `.mcaddon`, `.mcworld`, `.mctemplate`, `.mcstructure`, and `.zip` files into the mod library, then install them onto a server. Archives are extracted: behavior/resource packs go into the correct folders and world pack JSON is updated; worlds and templates replace `level-name`; structure files go into the world's `structures/` folder.
 
-**Mod Catalog** can search CurseForge (an API key is recommended) and an optional Git repository of packs. Configure those on **Mod Catalog → Settings**. Git URL, branch, token, Test, and Sync stay disabled until **Enable Git catalog** is on. See [docs/git-mod-catalog.md](docs/git-mod-catalog.md) for the repository layout.
+**Mod Catalog** can search CurseForge (an API key is recommended) and an optional Git repository of packs. Configure those on **Mod Catalog → Settings**. Git URL, branch, token, and Test stay disabled until **Enable Git catalog** is on. **Sync Now** stays disabled until the Git catalog is enabled and an access token has been saved. See [docs/git-mod-catalog.md](docs/git-mod-catalog.md) for the repository layout.
 
 ### Ports
 
@@ -289,6 +295,8 @@ npm test
 Production image: `docker compose up -d --build` (Linux host networking). The image includes Git, Git LFS, `unzip`, and a Java runtime for Bedrock Connect.
 
 Native package set if you are not using `install-native.sh`: `python3`, `make`, `g++`, `git`, `git-lfs`, `wget`, `tar`, `unzip`, `default-jre-headless`, Node.js 20.
+
+Windows MSI packaging (optional, Windows packager only): [docs/windows-msi.md](docs/windows-msi.md).
 
 Keep runtime data, worlds, add-on packages, logs, and `.env` out of commits. See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues using [SECURITY.md](SECURITY.md), not a public issue.
 

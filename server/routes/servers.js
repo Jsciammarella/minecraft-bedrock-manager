@@ -12,9 +12,16 @@ router.get('/', async (req, res) => {
   try {
     const servers = serverManager.getAllServers();
     await serverManager.refreshRunningOnlinePlayers();
+    const installedByServer = modManager.getInstalledModIdsByServer();
     const result = await Promise.all(servers.map(async (s) => {
       const stats = await serverManager.getServerStats(s.id);
-      return connectHost.attach({ ...s, stats, lan: stats.lan }, req);
+      return connectHost.attach({
+        ...s,
+        stats,
+        lan: stats.lan,
+        remoteReachable: stats.remoteReachable,
+        installedModIds: installedByServer[String(s.id)] || [],
+      }, req);
     }));
     res.json(result);
   } catch (err) {
@@ -92,7 +99,14 @@ router.get('/:id', async (req, res) => {
     const onlinePlayers = await serverManager.getOnlinePlayers(req.params.id);
     const installedMods = await modManager.getInstalledMods(req.params.id);
     
-    res.json(connectHost.attach({ ...server, stats, lan: stats.lan, onlinePlayers, installedMods }, req));
+    res.json(connectHost.attach({
+      ...server,
+      stats,
+      lan: stats.lan,
+      remoteReachable: stats.remoteReachable,
+      onlinePlayers,
+      installedMods,
+    }, req));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -1,0 +1,71 @@
+<?ifndef Version ?>
+  <?define Version = "0.2.3" ?>
+<?endif ?>
+<?ifndef BundleVersion ?>
+  <?define BundleVersion = $(var.Version) ?>
+<?endif ?>
+<?ifndef DisplayVersion ?>
+  <?define DisplayVersion = $(var.Version) ?>
+<?endif ?>
+
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Bundle
+    Name="Minecraft Bedrock Manager"
+    Manufacturer="Minecraft Bedrock Manager"
+    Version="$(var.BundleVersion)"
+    UpgradeCode="C4D8E2A1-7B59-4F3C-9E16-2A80D5B47C91"
+    IconSourceFile="$(sys.SOURCEFILEDIR)theme\favicon.ico"
+    Compressed="yes">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+        LicenseUrl=""
+        Theme="hyperlinkLicense"
+        ThemeFile="$(sys.SOURCEFILEDIR)theme\HyperlinkTheme.xml"
+        LocalizationFile="$(sys.SOURCEFILEDIR)theme\HyperlinkTheme.wxl"
+        LogoFile="$(sys.SOURCEFILEDIR)theme\logo.png"
+        LaunchTarget="http://localhost:3000"
+        SuppressOptionsUI="yes" />
+    </BootstrapperApplication>
+
+    <util:RegistrySearch
+      Id="ComputerNameSearch"
+      Variable="TcpHostname"
+      Root="HKLM"
+      Key="SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName"
+      Value="ComputerName"
+      Result="value" />
+    <util:RegistrySearch
+      Id="DnsHostnameSearch"
+      Variable="TcpHostname"
+      Root="HKLM"
+      Key="SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
+      Value="Hostname"
+      Result="value" />
+    <util:RegistrySearch
+      Id="DnsDomainFallbackSearch"
+      Variable="TcpDomain"
+      Root="HKLM"
+      Key="SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
+      Value="Domain"
+      Result="value" />
+    <util:RegistrySearch
+      Id="DnsDomainSearch"
+      Variable="TcpDomain"
+      Root="HKLM"
+      Key="SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
+      Value="NV Domain"
+      Result="value" />
+
+    <Chain>
+      <MsiPackage
+        Id="MgrMsi"
+        SourceFile="$(var.MsiPath)"
+        Compressed="yes"
+        Vital="yes"
+        Visible="no"
+        ForcePerMachine="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

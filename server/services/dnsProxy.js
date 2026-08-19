@@ -74,9 +74,15 @@ class DnsProxy {
 
   bindError(err, address) {
     if (err && (err.code === 'EACCES' || err.code === 'EPERM')) {
+      if (process.platform === 'win32') {
+        return `Cannot bind ${address}:53. Run the manager as the Windows service (LocalSystem), or leave DNS off if another program owns port 53.`;
+      }
       return `Cannot bind ${address}:53. Docker already runs as root; a native install needs CAP_NET_BIND_SERVICE.`;
     }
     if (err && err.code === 'EADDRINUSE') {
+      if (process.platform === 'win32') {
+        return `Port 53 is already in use on ${address}. Windows often uses it for Internet Connection Sharing or another DNS service. Stop that service or leave this DNS proxy off.`;
+      }
       return `Port 53 is already in use on ${address}. Stop the other DNS service or bind conflict before enabling this proxy.`;
     }
     return err?.message || 'Failed to start the DNS proxy';

@@ -4,6 +4,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const axios = require('axios');
 const logger = require('./logger');
+const platform = require('./platform');
 
 const execFileAsync = promisify(execFile);
 
@@ -210,7 +211,7 @@ function installedJar(serverDir) {
 
 async function assertJavaAvailable() {
   try {
-    await execFileAsync('java', ['-version'], { timeout: 8000, windowsHide: true });
+    await execFileAsync(platform.javaCommand(), ['-version'], { timeout: 8000, windowsHide: true });
   } catch (err) {
     const text = [err.stderr, err.stdout, err.message].filter(Boolean).join('\n');
     if (/version/i.test(text)) return;

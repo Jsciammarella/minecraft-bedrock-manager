@@ -176,7 +176,7 @@ function CreateServer() {
           </div>
           <div className="flex-shrink-0 pb-1">
             <div className="flex items-center gap-3">
-              <span className="text-sm font-medium text-mc-text">Remote</span>
+              <span className="text-sm font-medium text-mc-text">Remote server</span>
               <button
                 type="button"
                 role="switch"

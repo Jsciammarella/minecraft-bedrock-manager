@@ -11,6 +11,7 @@ const db = require('../server/db/connection');
 const serverManager = require('../server/services/serverManager');
 const curseforge = require('../server/services/curseforgeClient');
 const gitCatalog = require('../server/services/gitCatalogClient');
+const catalogService = require('../server/services/catalogService');
 const packInstaller = require('../server/services/packInstaller');
 const settingsStore = require('../server/services/settingsStore');
 const modManager = require('../server/services/modManager');
@@ -77,6 +78,51 @@ async function run() {
     'an OS-bound UDP port was incorrectly reported as available'
   );
   await new Promise(resolve => blocker.close(resolve));
+
+  const platform = require('../server/services/platform');
+  assert.equal(
+    platform.bedrockBinaryName(),
+    process.platform === 'win32' ? 'bedrock_server.exe' : 'bedrock_server'
+  );
+  const needles = platform.bedrockDownloadNeedles();
+  if (process.platform === 'win32') {
+    assert.ok(needles.typeRe.test('serverBedrockWindows'));
+    assert.ok(!needles.typeRe.test('serverBedrockLinux'));
+    assert.ok(needles.urlRe.test('https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-1.21.0.zip'));
+  } else {
+    assert.ok(needles.typeRe.test('serverBedrockLinux'));
+    assert.ok(!needles.typeRe.test('serverBedrockWindows'));
+    assert.ok(needles.urlRe.test('https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.21.0.zip'));
+    assert.ok(!needles.urlRe.test('https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-1.21.0.zip'));
+  }
+  if (!process.env.MC_MANAGER_JAVA && !process.env.JAVA_HOME) {
+    assert.equal(platform.javaCommand(), process.platform === 'win32' ? 'java.exe' : 'java');
+  }
+  const chmodProbe = path.join(testRoot, 'chmod-probe');
+  fs.writeFileSync(chmodProbe, 'ok');
+  platform.chmodIfNeeded(chmodProbe);
+  assert.equal(await platform.pingHost('127.0.0.1'), true, 'loopback ICMP ping should succeed');
+  assert.equal(await platform.pingHost('-n'), false, 'ping must not accept option-like hosts');
+  const remotePingProbe = require('../server/services/remotePing');
+  assert.equal(
+    await remotePingProbe.probeBedrock('127.0.0.1', 9, 400),
+    false,
+    'a closed UDP port should report the remote Bedrock server as offline'
+  );
+
+  if (process.platform === 'win32') {
+    const zipPath = path.join(testRoot, 'win-extract.zip');
+    fs.writeFileSync(zipPath, zipStore({ 'hello.txt': 'unzip-ok' }));
+    const destDir = path.join(testRoot, 'win-extract');
+    await platform.unzipArchive(zipPath, destDir);
+    assert.equal(
+      fs.readFileSync(path.join(destDir, 'hello.txt'), 'utf8'),
+      'unzip-ok'
+    );
+    const listed = await platform.listZipEntries(zipPath);
+    assert.ok(listed.some((name) => name.endsWith('hello.txt')));
+  }
+
   assert.equal(
     await serverManager.isUdpPortAvailable(blockedPort),
     true,
@@ -327,6 +373,50 @@ async function run() {
   assert(lfsEntry, 'LFS pack folder was not parsed');
   assert(!lfsEntry.thumbnailPath, 'LFS pointer thumbnail should be ignored until the real file is pulled');
 
+  const previousGitToken = process.env.GIT_CATALOG_TOKEN;
+  delete process.env.GIT_CATALOG_TOKEN;
+  settingsStore.remove(settingsStore.KEYS.GIT_TOKEN);
+  try {
+    const catalogSettings = catalogService.getSettings();
+    assert.equal(typeof catalogSettings.git.sync.running, 'boolean', 'catalog settings should include git sync status');
+    assert.equal(gitCatalog.isConfigured(), true, 'git catalog should be configured after saving URL and enabled');
+    assert.equal(gitCatalog.canSync(), false, 'sync should require a saved token, not only enabled+URL');
+    assert.equal(catalogSettings.git.sync.canSync, false, 'settings payload should hide Sync Now without a token');
+    assert.equal(gitCatalog.getSyncStatus().running, false);
+
+    settingsStore.set(settingsStore.KEYS.GIT_TOKEN, 'smoke-token');
+    assert.equal(gitCatalog.canSync(), true, 'sync should be allowed after a token is saved');
+    settingsStore.remove(settingsStore.KEYS.GIT_TOKEN);
+    assert.equal(gitCatalog.canSync(), false, 'removing the saved token should disable sync');
+  } finally {
+    if (previousGitToken == null) delete process.env.GIT_CATALOG_TOKEN;
+    else process.env.GIT_CATALOG_TOKEN = previousGitToken;
+    settingsStore.remove(settingsStore.KEYS.GIT_TOKEN);
+  }
+
+  const originalConfigured = gitCatalog.isConfigured.bind(gitCatalog);
+  const originalSync = gitCatalog.sync.bind(gitCatalog);
+  let syncStarts = 0;
+  gitCatalog.isConfigured = () => true;
+  gitCatalog.sync = async () => {
+    syncStarts += 1;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    return { success: true, lastSync: new Date().toISOString(), modCount: 3 };
+  };
+  try {
+    const first = gitCatalog.startSync('overlap-a');
+    const second = gitCatalog.startSync('overlap-b');
+    assert.equal(first, second, 'overlapping syncs should share one in-flight job');
+    assert.equal(gitCatalog.getSyncStatus().running, true, 'sync status should show running');
+    const result = await first;
+    assert.equal(syncStarts, 1, 'in-flight sync should not start a second git job');
+    assert.equal(result.modCount, 3);
+    assert.equal(gitCatalog.getSyncStatus().running, false, 'sync status should clear after completion');
+  } finally {
+    gitCatalog.isConfigured = originalConfigured;
+    gitCatalog.sync = originalSync;
+  }
+
   if (spawnSync('bash', ['-c', 'true']).status === 0) {
     const upgradeScript = path.join(__dirname, 'upgrade.sh');
     const runUpgrade = (args) => spawnSync('bash', [upgradeScript, ...args], {
@@ -440,6 +530,11 @@ async function run() {
     VALUES (?, ?, 'addon', '', ?, 'upload')
   `).run('Smoke Addon', `smoke-addon-${suffix}`, addonZip);
   await modManager.installModToServer(packServer.lastInsertRowid, packMod.lastInsertRowid);
+  const installedByServer = modManager.getInstalledModIdsByServer();
+  assert(
+    (installedByServer[String(packServer.lastInsertRowid)] || []).includes(packMod.lastInsertRowid),
+    'installedModIds should include the pack just installed'
+  );
   const placedBp = path.join(packServerPath, 'behavior_packs', `addon_${packMod.lastInsertRowid}_aaaaaaaa`);
   const placedRp = path.join(packServerPath, 'resource_packs', `addon_${packMod.lastInsertRowid}_cccccccc`);
   assert(fs.existsSync(path.join(placedBp, 'manifest.json')), 'behavior pack was not extracted');
@@ -726,6 +821,12 @@ async function run() {
   assert.equal(joinEvents.length, 2);
   assert.equal(joinEvents[0].username, 'SneezyPuma42904');
   assert.equal(joinEvents[0].xuid, '2533274790000000');
+  assert.equal(
+    playerPresence.stripAnsi('\u001b[38;5;15mlist\u001b[m\n\u001b[38;5;15m[2026-08-18 14:03:00:897 INFO] Player Spawned: SneezyPuma42904\u001b[m'),
+    'list\n[2026-08-18 14:03:00:897 INFO] Player Spawned: SneezyPuma42904'
+  );
+  assert.equal(serverManager.calculateUptime('2099-01-01 00:00:00'), '0m');
+  assert.match(serverManager.calculateUptime('2000-01-01 00:00:00'), /\d/);
   const leaveEvents = playerPresence.parsePresenceEvents(
     'Player disconnected: SneezyPuma42904, xuid: 2533274790000000, Pfid: abc'
   );
@@ -902,7 +1003,19 @@ async function run() {
   });
   const mockRemotePort = mockRemote.address().port;
   const received = new Promise((resolve) => {
-    mockRemote.once('message', (msg, rinfo) => resolve({ msg, rinfo }));
+    mockRemote.on('message', (msg, rinfo) => {
+      if (msg && msg[0] === 0x01) {
+        const pong = Buffer.alloc(1 + 8 + 8 + 16);
+        pong[0] = 0x1c;
+        msg.copy(pong, 1, 1, 9);
+        pong.writeBigUInt64BE(1n, 9);
+        Buffer.from('00ffff00fefefefefdfdfdfd12345678', 'hex').copy(pong, 17);
+        mockRemote.send(pong, rinfo.port, rinfo.address);
+        return;
+      }
+      mockRemote.send(msg, rinfo.port, rinfo.address);
+      if (msg.toString() === 'ping-remote') resolve({ msg, rinfo });
+    });
   });
 
   const remoteCreated = await serverManager.createServer({
@@ -925,6 +1038,16 @@ async function run() {
   await serverManager.startServer(remoteCreated.id);
   assert.equal(serverManager.getServer(remoteCreated.id).status, 'running');
   assert.equal(udpGateway.isActive(remoteCreated.id), true);
+  const remotePing = require('../server/services/remotePing');
+  let reachable = null;
+  for (let i = 0; i < 20; i += 1) {
+    reachable = remotePing.reachable(remoteCreated.id);
+    if (reachable === true) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  assert.equal(reachable, true, 'a started remote gateway should report the Bedrock pong as online');
+  const remoteStats = await serverManager.getServerStats(remoteCreated.id);
+  assert.equal(remoteStats.remoteReachable, true);
 
   const probe = dgram.createSocket('udp4');
   await new Promise((resolve, reject) => {
@@ -956,6 +1079,7 @@ async function run() {
 
   await serverManager.stopServer(remoteCreated.id);
   assert.equal(udpGateway.isActive(remoteCreated.id), false);
+  assert.equal(remotePing.reachable(remoteCreated.id), null, 'stopped remotes should not keep pinging');
   await new Promise((resolve) => mockRemote.close(resolve));
 
   for (let i = 0; i < 10; i += 1) {
@@ -988,6 +1112,7 @@ async function run() {
     curseforgeUrlImport: 'ok',
     remoteGateway: 'ok',
     mcpedlUrlImport: 'ok',
+    windowsPlatformAdapter: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));

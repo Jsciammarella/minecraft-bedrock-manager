@@ -8,15 +8,14 @@ const modManager = require('./modManager');
 const packInstaller = require('./packInstaller');
 const packFiles = require('./packFiles');
 const gitCatalog = require('./gitCatalogClient');
+const platform = require('./platform');
 
 const SCRIPT_PATH = path.join(__dirname, '../scripts/fetch-curseforge-mod.py');
 const MODS_DIR = path.join(__dirname, '../../data/mods');
 const THUMBS_DIR = path.join(MODS_DIR, 'thumbs');
 const CURSEFORGE_PREFIX = 'https://www.curseforge.com/minecraft-bedrock';
 const IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
-const PYTHON_BINS = process.platform === 'win32'
-  ? ['python', 'python3', 'py']
-  : ['python3', 'python'];
+const PYTHON_BINS = platform.pythonBins();
 
 function normalizeUrl(url) {
   return String(url || '').trim();
@@ -39,6 +38,9 @@ function canonicalProjectUrl(url) {
 }
 
 function pythonMissingError() {
+  if (process.platform === 'win32') {
+    return new Error('Python 3 is required to import CurseForge URLs. The Windows installer bundles it under runtime\\python.');
+  }
   return new Error('Python 3 is required to import CurseForge URLs. Install python3 and try again.');
 }
 

@@ -248,7 +248,11 @@ function ServerProperties() {
         </button>
         <div>
           <h1 className="text-2xl font-bold text-white">Server Properties</h1>
-          <p className="text-mc-textMuted mt-1">{server?.name} — Configure all server settings</p>
+          <p className="text-mc-textMuted mt-1">
+            {isRemote
+              ? `${server?.name} — Local ports and remote host`
+              : `${server?.name} — Configure all server settings`}
+          </p>
         </div>
       </div>
 
@@ -259,7 +263,7 @@ function ServerProperties() {
       )}
       {isRemote && (
         <div className="mb-6 p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
-          Remote servers only allow changing local ports and the remote host and ports. Other settings stay disabled and may not reflect the actual server properties on the remote system.
+          Remote servers only allow changing local ports and the remote host and ports. Gameplay settings, mods, and updates are not available from this manager.
         </div>
       )}
 
@@ -278,10 +282,10 @@ function ServerProperties() {
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* General Settings */}
-        <Section title="General Settings">
+        <Section title={isRemote ? 'Local Ports' : 'General Settings'}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-mc-text mb-2">IPv4 Port</label>
+              <label className="block text-sm font-medium text-mc-text mb-2">{isRemote ? 'Local IPv4 Port' : 'IPv4 Port'}</label>
               <select
                 name="port"
                 value={formData.port}
@@ -298,7 +302,7 @@ function ServerProperties() {
                 {isBC
                   ? 'Bedrock Connect must stay on UDP 19132 so consoles can reach it.'
                   : isRemote
-                    ? 'Remote servers cannot use UDP 19132 or 19133. Those stay free for LAN discovery and Bedrock Connect.'
+                    ? 'This host listens here and forwards UDP to the remote server. UDP 19132 and 19133 stay free for LAN discovery and Bedrock Connect.'
                     : 'Only the current IPv4 port and other open IPv4 manager ports are shown. A new port applies after restart if the server is running.'}
               </p>
               {server?.pending_port && Number(server.pending_port) !== Number(server.port) && (
@@ -308,7 +312,7 @@ function ServerProperties() {
               )}
             </div>
             <div>
-              <label className="block text-sm font-medium text-mc-text mb-2">IPv6 Port</label>
+              <label className="block text-sm font-medium text-mc-text mb-2">{isRemote ? 'Local IPv6 Port' : 'IPv6 Port'}</label>
               <select
                 name="ipv6_port"
                 value={formData.ipv6_port}
@@ -325,7 +329,9 @@ function ServerProperties() {
               <p className="mt-2 text-xs text-mc-textMuted">
                 {isBC
                   ? 'Bedrock Connect uses UDP 19133 for IPv6 discovery.'
-                  : 'Must be a different number from the IPv4 port. Defaults to 1000 below IPv4 when that port is free. A new port applies after restart if the server is running.'}
+                  : isRemote
+                    ? 'Must be a different number from the local IPv4 port. A new port applies after restart if the gateway is running.'
+                    : 'Must be a different number from the IPv4 port. Defaults to 1000 below IPv4 when that port is free. A new port applies after restart if the server is running.'}
               </p>
               {server?.pending_ipv6_port && Number(server.pending_ipv6_port) !== Number(server.ipv6_port) && (
                 <p className="mt-1 text-xs text-amber-300">
@@ -333,20 +339,32 @@ function ServerProperties() {
                 </p>
               )}
             </div>
-            {isRemote && (
+            {!isRemote && (
               <>
-                <FormField label="Remote IP or Hostname" name="remote_host" value={formData.remote_host} onChange={handleChange} type="text" required />
-                <FormField label="Remote IPv4 Port" name="remote_ipv4_port" value={formData.remote_ipv4_port} onChange={handleChange} type="number" min="1" max="65535" required />
-                <FormField label="Remote IPv6 Port" name="remote_ipv6_port" value={formData.remote_ipv6_port} onChange={handleChange} type="number" min="1" max="65535" required />
+                <FormField label="Server Description" name="server_description" value={formData.server_description} onChange={handleChange} type="text" disabled={settingsLocked} />
+                <FormField label="Server MOTD" name="server_motd" value={formData.server_motd} onChange={handleChange} type="text" disabled={settingsLocked} />
+                <FormField label="Max Players" name="max_players" value={formData.max_players} onChange={handleChange} type="number" min="1" max="1000" disabled={settingsLocked} />
+                <FormField label="Level Seed" name="level_seed" value={formData.level_seed} onChange={handleChange} type="text" placeholder="Leave empty for random" disabled={settingsLocked} />
               </>
             )}
-            <FormField label="Server Description" name="server_description" value={formData.server_description} onChange={handleChange} type="text" disabled={settingsLocked} />
-            <FormField label="Server MOTD" name="server_motd" value={formData.server_motd} onChange={handleChange} type="text" disabled={settingsLocked} />
-            <FormField label="Max Players" name="max_players" value={formData.max_players} onChange={handleChange} type="number" min="1" max="1000" disabled={settingsLocked} />
-            <FormField label="Level Seed" name="level_seed" value={formData.level_seed} onChange={handleChange} type="text" placeholder="Leave empty for random" disabled={settingsLocked} />
           </div>
         </Section>
 
+        {isRemote && (
+          <Section title="Remote Target">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <FormField label="Remote IP or Hostname" name="remote_host" value={formData.remote_host} onChange={handleChange} type="text" required />
+              <FormField label="Remote IPv4 Port" name="remote_ipv4_port" value={formData.remote_ipv4_port} onChange={handleChange} type="number" min="1" max="65535" required />
+              <FormField label="Remote IPv6 Port" name="remote_ipv6_port" value={formData.remote_ipv6_port} onChange={handleChange} type="number" min="1" max="65535" required />
+            </div>
+            <p className="mt-3 text-xs text-mc-textMuted">
+              This manager must be able to ping the host. Changing the target while the gateway is running restarts forwarding.
+            </p>
+          </Section>
+        )}
+
+        {!isRemote && (
+        <>
         {/* Game Settings */}
         <Section title="Game Settings">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -447,6 +465,8 @@ function ServerProperties() {
             )}
           </div>
         </Section>
+        </>
+        )}
 
         {/* Submit */}
         <div className="flex items-center gap-3 pt-4 border-t border-mc-surfaceLight">

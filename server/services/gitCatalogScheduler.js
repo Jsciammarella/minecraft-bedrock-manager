@@ -34,7 +34,7 @@ class GitCatalogScheduler {
   async syncSafe(reason) {
     if (!gitCatalog.isConfigured()) return;
     try {
-      const result = await gitCatalog.sync();
+      const result = await gitCatalog.startSync(reason);
       logger.info(`Git catalog ${reason} sync complete (${result.modCount} mods)`);
     } catch (err) {
       logger.warn(`Git catalog ${reason} sync failed: ${err.message}`);

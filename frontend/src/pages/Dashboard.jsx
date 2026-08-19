@@ -16,6 +16,26 @@ function isRemote(server) {
   return server?.kind === 'remote';
 }
 
+function getRemoteReachableBadge(server) {
+  if (!isRemote(server) || server.status !== 'running' || typeof server.remoteReachable !== 'boolean') {
+    return null;
+  }
+  if (server.remoteReachable) {
+    return (
+      <span className="badge badge-success">
+        <span className="w-1.5 h-1.5 bg-green-400 rounded-full mr-1.5" />
+        Remote Online
+      </span>
+    );
+  }
+  return (
+    <span className="badge badge-danger">
+      <span className="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5" />
+      Remote Offline
+    </span>
+  );
+}
+
 const STATUS_ORDER = { running: 0, starting: 1, creating: 2, stopped: 3 };
 
 function serverMatchesSearch(server, search) {
@@ -537,11 +557,14 @@ function Dashboard() {
                       )}
                     </div>
                     <p className="text-xs text-mc-textMuted" title={connectLabel}>
-                      v{isRemote(server) ? 'N/A' : server.version} • <span className={connectLabel === 'Phantom Proxy' ? 'text-sky-300' : 'font-mono text-mc-text'}>{connectLabel}</span>
+                      {isRemote(server) ? 'remote' : `v${server.version}`} • <span className={connectLabel === 'Phantom Proxy' ? 'text-sky-300' : 'font-mono text-mc-text'}>{connectLabel}</span>
                     </p>
                   </div>
                 </div>
-                {getStatusBadge(server.status)}
+                <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                  {getStatusBadge(server.status)}
+                  {getRemoteReachableBadge(server)}
+                </div>
               </div>
 
               {isBuilding && (
@@ -611,7 +634,13 @@ function Dashboard() {
                     Building...
                   </button>
                 )}
-                {server.status !== 'running' && server.status !== 'creating' && (
+                {server.status === 'starting' && (
+                  <button disabled className="btn btn-primary flex-1 text-sm">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Starting...
+                  </button>
+                )}
+                {server.status !== 'running' && server.status !== 'creating' && server.status !== 'starting' && (
                   <button
                     onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'start'); }}
                     disabled={actions[`${server.id}-start`]}
