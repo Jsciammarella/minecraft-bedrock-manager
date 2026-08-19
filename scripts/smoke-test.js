@@ -103,6 +103,12 @@ async function run() {
   platform.chmodIfNeeded(chmodProbe);
   assert.equal(await platform.pingHost('127.0.0.1'), true, 'loopback ICMP ping should succeed');
   assert.equal(await platform.pingHost('-n'), false, 'ping must not accept option-like hosts');
+  const remotePingProbe = require('../server/services/remotePing');
+  assert.equal(
+    await remotePingProbe.probeBedrock('127.0.0.1', 9, 400),
+    false,
+    'a closed UDP port should report the remote Bedrock server as offline'
+  );
 
   if (process.platform === 'win32') {
     const zipPath = path.join(testRoot, 'win-extract.zip');
@@ -997,7 +1003,19 @@ async function run() {
   });
   const mockRemotePort = mockRemote.address().port;
   const received = new Promise((resolve) => {
-    mockRemote.once('message', (msg, rinfo) => resolve({ msg, rinfo }));
+    mockRemote.on('message', (msg, rinfo) => {
+      if (msg && msg[0] === 0x01) {
+        const pong = Buffer.alloc(1 + 8 + 8 + 16);
+        pong[0] = 0x1c;
+        msg.copy(pong, 1, 1, 9);
+        pong.writeBigUInt64BE(1n, 9);
+        Buffer.from('00ffff00fefefefefdfdfdfd12345678', 'hex').copy(pong, 17);
+        mockRemote.send(pong, rinfo.port, rinfo.address);
+        return;
+      }
+      mockRemote.send(msg, rinfo.port, rinfo.address);
+      if (msg.toString() === 'ping-remote') resolve({ msg, rinfo });
+    });
   });
 
   const remoteCreated = await serverManager.createServer({
@@ -1027,7 +1045,7 @@ async function run() {
     if (reachable === true) break;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  assert.equal(reachable, true, 'a started remote gateway should report the loopback host as online');
+  assert.equal(reachable, true, 'a started remote gateway should report the Bedrock pong as online');
   const remoteStats = await serverManager.getServerStats(remoteCreated.id);
   assert.equal(remoteStats.remoteReachable, true);
 
