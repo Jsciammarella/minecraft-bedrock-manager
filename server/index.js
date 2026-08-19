@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
+const { version: managerVersion } = require('../package.json');
 const logger = require('./services/logger');
 const connectHost = require('./services/connectHost');
 const serverManager = require('./services/serverManager');
@@ -67,6 +68,7 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     hostname: connectHost.managerHostname(),
     lanIp: connectHost.detectLanIPv4() || null,
+    version: managerVersion,
   });
 });
 
