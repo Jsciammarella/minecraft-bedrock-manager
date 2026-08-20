@@ -1,8 +1,10 @@
 const curseforge = require('./curseforgeClient');
 const gitCatalog = require('./gitCatalogClient');
+const fileCatalog = require('./fileCatalogClient');
 const settingsStore = require('./settingsStore');
 
 const CATALOG_PAGE_SIZE = 40;
+const LOCAL_FETCH_SIZE = 10000;
 
 function clampPageSize(value) {
   const size = parseInt(value, 10);
@@ -15,7 +17,29 @@ function sourceStatus() {
   return {
     curseforge: settings.curseforge.configured,
     git: Boolean(settings.git.enabled && settings.git.url),
+    file: fileCatalog.isConfigured(),
   };
+}
+
+function configureError(source) {
+  if (source === 'git') {
+    return 'Git catalog is not configured. Add a repository in Catalog Settings.';
+  }
+  if (source === 'file') {
+    return 'File catalog is not configured. Enable a local folder, SMB share, or NFS path in Catalog Settings.';
+  }
+  return 'That catalog source is not configured.';
+}
+
+async function collectLocal(label, fn, source, errors) {
+  try {
+    const result = await fn();
+    return (result.results || []).map((item) => ({ ...item, source: item.source || label }));
+  } catch (err) {
+    errors.push({ source: label, error: err.message });
+    if (source === label) throw err;
+    return [];
+  }
 }
 
 async function searchMods(query = '', options = {}) {
@@ -26,31 +50,38 @@ async function searchMods(query = '', options = {}) {
   const available = sourceStatus();
   const errors = [];
   let curseforgeResult = { results: [], total: 0, page };
-  let gitResult = { results: [], total: 0, page };
 
-  if (source === 'git' && !available.git) {
-    throw new Error('Git catalog is not configured. Add a repository in Catalog Settings.');
+  if ((source === 'git' || source === 'file') && !available[source]) {
+    throw new Error(configureError(source));
   }
 
   const wantCurseforge = source === 'all' || source === 'curseforge';
   const wantGit = source === 'all' || source === 'git';
+  const wantFile = source === 'all' || source === 'file';
+  const local = [];
 
   if (wantGit && available.git) {
-    try {
-      const start = Math.max(0, (page - 1) * pageSize);
-      gitResult = await gitCatalog.searchMods(query, {
-        ...options,
-        page: source === 'git' ? page : 1,
-        pageSize: source === 'git' ? pageSize : start + pageSize,
-      });
-    } catch (err) {
-      errors.push({ source: 'git', error: err.message });
-      if (source === 'git') throw err;
-    }
+    local.push(...await collectLocal('git', () => gitCatalog.searchMods(query, {
+      ...options,
+      page: 1,
+      pageSize: LOCAL_FETCH_SIZE,
+    }), source, errors));
+  }
+  if (wantFile && available.file) {
+    local.push(...await collectLocal('file', () => fileCatalog.searchMods(query, {
+      ...options,
+      page: 1,
+      pageSize: LOCAL_FETCH_SIZE,
+    }), source, errors));
   }
 
-  if (source === 'git') {
-    return withMeta(gitResult, errors, available);
+  if (source === 'git' || source === 'file') {
+    const start = Math.max(0, (page - 1) * pageSize);
+    return withMeta({
+      results: local.slice(start, start + pageSize),
+      total: local.length,
+      page,
+    }, errors, available);
   }
 
   if (source === 'curseforge') {
@@ -63,11 +94,10 @@ async function searchMods(query = '', options = {}) {
     return withMeta(markSource(curseforgeResult, 'curseforge'), errors, available);
   }
 
-  const gitTotal = gitResult.total || 0;
   const start = Math.max(0, (page - 1) * pageSize);
-  const gitSlice = (gitResult.results || []).slice(start, start + pageSize);
-  const remaining = pageSize - gitSlice.length;
-  const cfOffset = Math.max(0, start - gitTotal);
+  const localSlice = local.slice(start, start + pageSize);
+  const remaining = pageSize - localSlice.length;
+  const cfOffset = Math.max(0, start - local.length);
 
   if (wantCurseforge) {
     try {
@@ -86,26 +116,27 @@ async function searchMods(query = '', options = {}) {
     }
   }
 
-  const cfResults = (curseforgeResult.results || []).map(item => ({ ...item, source: item.source || 'curseforge' }));
+  const cfResults = (curseforgeResult.results || []).map((item) => ({ ...item, source: item.source || 'curseforge' }));
+  const anyLocal = available.git || available.file;
 
   let warning;
-  if (!available.git && errors.some(item => item.source === 'curseforge')) {
-    warning = 'CurseForge is unavailable. Open Catalog Settings to add a Git repository or a CurseForge API key.';
-  } else if (!available.curseforge && !available.git && (curseforgeResult.results || []).length === 0) {
-    warning = 'No catalog sources are configured. Open Catalog Settings to add a Git repository or a CurseForge API key.';
+  if (!anyLocal && errors.some((item) => item.source === 'curseforge')) {
+    warning = 'CurseForge is unavailable. Open Catalog Settings to add a Git repository, file catalog, or CurseForge API key.';
+  } else if (!available.curseforge && !anyLocal && (curseforgeResult.results || []).length === 0 && local.length === 0) {
+    warning = 'No catalog sources are configured. Open Catalog Settings to add a Git repository, file catalog, or CurseForge API key.';
   }
 
   return withMeta({
-    results: [...gitSlice, ...cfResults],
-    total: gitTotal + (curseforgeResult.total || 0),
+    results: [...localSlice, ...cfResults],
+    total: local.length + (curseforgeResult.total || 0),
     page,
   }, errors, available, warning);
 }
 
 async function getCategories() {
   const categories = await curseforge.getCategories();
-  const seen = new Set(categories.map(item => item.id));
-  for (const extra of gitCatalog.getDiscoveredCategories()) {
+  const seen = new Set(categories.map((item) => item.id));
+  for (const extra of [...gitCatalog.getDiscoveredCategories(), ...fileCatalog.getDiscoveredCategories()]) {
     if (!seen.has(extra.id)) {
       categories.push(extra);
       seen.add(extra.id);
@@ -119,6 +150,9 @@ async function downloadMod(slug, body = {}) {
   if (source === 'git') {
     return gitCatalog.downloadMod(slug, body.serverId);
   }
+  if (source === 'file') {
+    return fileCatalog.downloadMod(slug, body.serverId, body.fileKind);
+  }
   return curseforge.downloadMod(
     slug,
     body.projectClass,
@@ -131,18 +165,27 @@ async function getDetails(slug, query = {}) {
   if (query.source === 'git') {
     return gitCatalog.getMod(slug) || null;
   }
+  if (query.source === 'file') {
+    return fileCatalog.getMod(slug, query.fileKind) || null;
+  }
   return curseforge.getModDetails(slug, query.projectClass);
 }
 
 function getSettings() {
   const settings = settingsStore.publicCatalogSettings();
   let gitModCount = 0;
+  let fileModCount = 0;
   if (settings.git.enabled && settings.git.url) {
     try {
       gitModCount = gitCatalog.loadEntries().length;
     } catch {
       gitModCount = 0;
     }
+  }
+  try {
+    fileModCount = fileCatalog.isConfigured() ? fileCatalog.loadEntries().length : 0;
+  } catch {
+    fileModCount = 0;
   }
   return {
     ...settings,
@@ -151,11 +194,56 @@ function getSettings() {
       modCount: gitModCount,
       sync: gitCatalog.getSyncStatus(),
     },
+    files: {
+      ...settings.files,
+      defaultLocalPath: fileCatalog.defaultLocalPath(),
+      modCount: fileModCount,
+    },
   };
+}
+
+function saveFileSettings(files = {}, body = {}) {
+  if (typeof files.enabled === 'boolean') {
+    settingsStore.set(settingsStore.KEYS.FILE_ENABLED, files.enabled ? '1' : '0');
+  }
+  const local = files.local || {};
+  if (typeof local.enabled === 'boolean') {
+    settingsStore.set(settingsStore.KEYS.FILE_LOCAL_ENABLED, local.enabled ? '1' : '0');
+  }
+  if (typeof local.path === 'string') {
+    fileCatalog.assertSafePath(local.path);
+    settingsStore.set(settingsStore.KEYS.FILE_LOCAL_PATH, local.path.trim());
+  }
+  const smb = files.smb || {};
+  if (typeof smb.enabled === 'boolean') {
+    settingsStore.set(settingsStore.KEYS.FILE_SMB_ENABLED, smb.enabled ? '1' : '0');
+  }
+  if (typeof smb.path === 'string') {
+    fileCatalog.assertSafePath(smb.path);
+    settingsStore.set(settingsStore.KEYS.FILE_SMB_PATH, smb.path.trim());
+  }
+  if (typeof smb.username === 'string') {
+    settingsStore.set(settingsStore.KEYS.FILE_SMB_USERNAME, smb.username.trim());
+  }
+  if (body.clearSmbPassword) {
+    settingsStore.remove(settingsStore.KEYS.FILE_SMB_PASSWORD);
+  } else if (typeof smb.password === 'string' && smb.password.trim()) {
+    settingsStore.set(settingsStore.KEYS.FILE_SMB_PASSWORD, smb.password.trim());
+  }
+  const nfs = files.nfs || {};
+  if (typeof nfs.enabled === 'boolean') {
+    settingsStore.set(settingsStore.KEYS.FILE_NFS_ENABLED, nfs.enabled ? '1' : '0');
+  }
+  if (typeof nfs.path === 'string') {
+    fileCatalog.assertSafePath(nfs.path);
+    settingsStore.set(settingsStore.KEYS.FILE_NFS_PATH, nfs.path.trim());
+  }
+  fileCatalog.invalidate();
 }
 
 function saveSettings(body = {}) {
   const git = body.git || {};
+  const files = body.files || {};
 
   if (typeof git.url === 'string' && git.url.trim()) {
     gitCatalog.assertRemoteUrl(git.url.trim());
@@ -191,6 +279,7 @@ function saveSettings(body = {}) {
     settingsStore.set(settingsStore.KEYS.GIT_TOKEN, git.token.trim());
   }
 
+  saveFileSettings(files, body);
   gitCatalog.entriesCache = null;
   return getSettings();
 }
@@ -205,10 +294,22 @@ async function testGitConnection(body = {}) {
   });
 }
 
+async function testFileConnection(body = {}) {
+  const config = settingsStore.getFileCatalogConfig();
+  const kind = String(body.kind || 'local').toLowerCase();
+  const current = config[kind] || {};
+  return fileCatalog.testConnection({
+    kind,
+    path: (body.path && String(body.path).trim()) || current.path,
+    username: (body.username && String(body.username).trim()) || current.username,
+    password: (body.password && String(body.password).trim()) || current.password,
+  });
+}
+
 function markSource(result, source) {
   return {
     ...result,
-    results: (result.results || []).map(item => ({ ...item, source: item.source || source })),
+    results: (result.results || []).map((item) => ({ ...item, source: item.source || source })),
   };
 }
 
@@ -218,6 +319,7 @@ function withMeta(result, errors, available, warning) {
     sources: {
       curseforge: { available: available.curseforge },
       git: { available: available.git },
+      file: { available: available.file },
     },
     errors,
     warning,
@@ -232,5 +334,6 @@ module.exports = {
   getSettings,
   saveSettings,
   testGitConnection,
+  testFileConnection,
   sourceStatus,
 };

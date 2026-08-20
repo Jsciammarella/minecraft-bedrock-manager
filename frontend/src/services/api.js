@@ -40,9 +40,14 @@ export const serverApi = {
 export const modApi = {
   getAll: () => api.get('/mods'),
   getById: (id) => api.get(`/mods/${id}`),
-  upload: (file, metadata, onProgress) => {
+  upload: (files, metadata, onProgress) => {
+    const list = (Array.isArray(files) ? files : [files]).filter(Boolean);
     const formData = new FormData();
-    formData.append('file', file);
+    if (list.length === 1) {
+      formData.append('file', list[0]);
+    } else {
+      list.forEach((file) => formData.append('files', file));
+    }
     if (metadata) Object.entries(metadata).forEach(([k, v]) => formData.append(k, v));
     return api.post('/mods/upload', formData, {
       timeout: 10 * 60 * 1000,
@@ -86,6 +91,7 @@ export const modApi = {
     projectClass: mod.projectClass,
     curseforgeId: mod.curseforgeId,
     fileId: mod.fileId,
+    fileKind: mod.fileKind,
     serverId,
   }),
   catalogDetails: (slug, projectClass, source) => api.get(`/mods/catalog/${encodeURIComponent(slug)}`, {
@@ -94,6 +100,7 @@ export const modApi = {
   catalogSettings: () => api.get('/mods/catalog/settings'),
   saveCatalogSettings: (data) => api.put('/mods/catalog/settings', data),
   testGitCatalog: (data) => api.post('/mods/catalog/git/test', data, { timeout: 45000 }),
+  testFileCatalog: (data) => api.post('/mods/catalog/file/test', data, { timeout: 45000 }),
   gitCatalogSyncStatus: () => api.get('/mods/catalog/git/status'),
   syncGitCatalog: () => api.post('/mods/catalog/git/sync'),
 };

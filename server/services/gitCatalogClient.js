@@ -8,6 +8,7 @@ const logger = require('./logger');
 const db = require('../db/connection');
 const packFiles = require('./packFiles');
 const platform = require('./platform');
+const modArchives = require('./modArchives');
 
 const execFileAsync = promisify(execFile);
 
@@ -205,19 +206,25 @@ class GitCatalogClient {
     }
     const mod = this.getMod(slug);
     if (!mod) throw new Error('Mod not found in the Git catalog');
-    if (!mod.filePath || !fs.existsSync(mod.filePath)) {
+    const packPaths = (mod.filePaths || (mod.filePath ? [mod.filePath] : []))
+      .filter((filePath) => filePath && fs.existsSync(filePath));
+    if (!packPaths.length) {
       throw new Error('Catalog entry is missing its downloadable file');
     }
-    if (this.isGitLfsPointer(mod.filePath)) {
+    if (packPaths.some((filePath) => this.isGitLfsPointer(filePath))) {
       this.startSync('download-lfs').catch(() => {});
       throw new Error('This pack is stored in Git LFS and is still syncing. Wait for the catalog sync to finish, then try again.');
     }
 
-    const filename = modManager.getAvailableFilename(
-      modManager.sanitizeFilename(path.basename(mod.filePath))
-    );
-    const destPath = path.join(__dirname, '../../data/mods', filename);
-    fs.copyFileSync(mod.filePath, destPath);
+    const copied = packPaths.map((filePath) => {
+      const filename = modManager.getAvailableFilename(
+        modManager.sanitizeFilename(path.basename(filePath))
+      );
+      const destPath = path.join(__dirname, '../../data/mods', filename);
+      fs.copyFileSync(filePath, destPath);
+      return destPath;
+    });
+    const destPath = copied[0];
 
     let storedSlug = mod.slug;
     const taken = db.prepare('SELECT id, source FROM mods WHERE slug = ?').get(storedSlug);
@@ -228,22 +235,25 @@ class GitCatalogClient {
     const existing = db.prepare('SELECT * FROM mods WHERE source = ? AND slug = ?').get('git', storedSlug)
       || db.prepare('SELECT * FROM mods WHERE source = ? AND slug = ?').get('git', mod.slug);
 
-    const fileSize = fs.statSync(destPath).size;
+    const fileSize = copied.reduce((sum, filePath) => sum + fs.statSync(filePath).size, 0);
+    const extraFiles = modArchives.serializeExtraFiles(modArchives.extraFilesFromPaths(copied, destPath));
     const thumbnail = mod.thumbnail
       || (mod.slug ? `/api/mods/catalog/git/thumbnail/${encodeURIComponent(mod.slug)}` : '');
 
     if (existing) {
-      if (existing.file_path && existing.file_path !== destPath && fs.existsSync(existing.file_path)) {
-        try { fs.unlinkSync(existing.file_path); } catch { /* ignore */ }
+      for (const archive of modArchives.archiveList(existing)) {
+        if (archive.path && !copied.includes(archive.path) && fs.existsSync(archive.path)) {
+          try { fs.unlinkSync(archive.path); } catch { /* ignore */ }
+        }
       }
       db.prepare(`
         UPDATE mods
         SET name = ?, type = ?, version = ?, description = ?, author = ?, thumbnail = ?,
-            file_path = ?, file_size = ?, downloaded_at = CURRENT_TIMESTAMP
+            file_path = ?, file_size = ?, extra_files = ?, downloaded_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `).run(
         mod.name, mod.type, mod.version || '1.0.0', mod.description || '',
-        mod.author || 'Unknown', thumbnail, destPath, fileSize, existing.id
+        mod.author || 'Unknown', thumbnail, destPath, fileSize, extraFiles, existing.id
       );
       if (serverId) await modManager.installModToServer(serverId, existing.id);
       logger.info(`Updated Git catalog mod in library: ${mod.slug}`);
@@ -251,8 +261,8 @@ class GitCatalogClient {
     }
 
     const result = db.prepare(`
-      INSERT INTO mods (name, slug, type, version, description, author, thumbnail, file_path, file_size, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'git')
+      INSERT INTO mods (name, slug, type, version, description, author, thumbnail, file_path, file_size, extra_files, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'git')
     `).run(
       mod.name,
       storedSlug,
@@ -262,7 +272,8 @@ class GitCatalogClient {
       mod.author || 'Unknown',
       thumbnail,
       destPath,
-      fileSize
+      fileSize,
+      extraFiles
     );
 
     if (serverId) await modManager.installModToServer(serverId, result.lastInsertRowid);
@@ -445,7 +456,9 @@ class GitCatalogClient {
     const addEntry = (entry) => {
       if (!entry) return;
       bySlug.set(entry.slug, entry);
-      if (entry.filePath) claimedFiles.add(this.normPath(entry.filePath));
+      for (const filePath of entry.filePaths || (entry.filePath ? [entry.filePath] : [])) {
+        claimedFiles.add(this.normPath(filePath));
+      }
     };
 
     const indexPath = path.join(rootDir, 'catalog.json');
@@ -461,18 +474,38 @@ class GitCatalogClient {
         const entry = this.parseModMetaFile(file, rootDir);
         if (entry) {
           if (!bySlug.has(entry.slug)) addEntry(entry);
-          else if (entry.filePath) claimedFiles.add(this.normPath(entry.filePath));
+          else {
+            for (const filePath of entry.filePaths || []) claimedFiles.add(this.normPath(filePath));
+          }
           claimedDirs.add(this.normPath(path.dirname(file)));
         }
       }
     }
 
+    const remaining = [];
     for (const file of this.walkFiles(rootDir)) {
       if (!PACK_EXTS.has(path.extname(file).toLowerCase())) continue;
       if (claimedFiles.has(this.normPath(file))) continue;
       if (claimedDirs.has(this.normPath(path.dirname(file)))) continue;
-      const entry = this.entryFromPackFile(file, rootDir);
-      if (entry && !bySlug.has(entry.slug)) addEntry(entry);
+      remaining.push(file);
+    }
+
+    const remainingByDir = new Map();
+    for (const file of remaining) {
+      const dir = path.dirname(file);
+      if (!remainingByDir.has(dir)) remainingByDir.set(dir, []);
+      remainingByDir.get(dir).push(file);
+    }
+    for (const [dir, files] of remainingByDir) {
+      if (files.length > 1 && !this.isClassOrRootDir(dir, rootDir)) {
+        const entry = this.entryFromPackFolder(dir, files, rootDir);
+        if (entry && !bySlug.has(entry.slug)) addEntry(entry);
+      } else {
+        for (const file of files) {
+          const entry = this.entryFromPackFile(file, rootDir);
+          if (entry && !bySlug.has(entry.slug)) addEntry(entry);
+        }
+      }
     }
 
     return [...bySlug.values()];
@@ -502,13 +535,37 @@ class GitCatalogClient {
     }
   }
 
+  collectDeclaredFiles(item) {
+    const refs = [];
+    const push = (value) => {
+      if (value == null || value === '') return;
+      if (Array.isArray(value)) {
+        value.forEach(push);
+        return;
+      }
+      if (typeof value === 'string' && value.trim()) refs.push(value.trim());
+    };
+    push(item.file);
+    push(item.files);
+    push(item.filename);
+    push(item.path);
+    return refs;
+  }
+
   normalizeDeclaredMod(item, rootDir, baseDir) {
     if (!item || typeof item !== 'object') return null;
     const name = String(item.name || item.title || '').trim();
-    const fileRel = item.file || item.filename || item.path || '';
-    const packPath = fileRel
-      ? this.safeJoin(baseDir, fileRel) || this.safeJoin(rootDir, fileRel)
-      : this.findPackInDir(baseDir);
+    const declaredFiles = this.collectDeclaredFiles(item);
+    const packPaths = [];
+    const seenPacks = new Set();
+    for (const rel of declaredFiles) {
+      const packPath = this.safeJoin(baseDir, rel) || this.safeJoin(rootDir, rel);
+      if (!packPath || seenPacks.has(this.normPath(packPath))) continue;
+      seenPacks.add(this.normPath(packPath));
+      packPaths.push(packPath);
+    }
+    if (!packPaths.length) packPaths.push(...this.findPacksInDir(baseDir));
+    const packPath = packPaths[0];
     if (!packPath) return null;
 
     const slug = this.slugify(item.slug || name || path.parse(packPath || '').name);
@@ -533,6 +590,7 @@ class GitCatalogClient {
       downloads: Number(item.downloads || 0) || 0,
       dateUpdated: item.updated || item.dateUpdated || this.mtimeIso(packPath || baseDir),
       filePath: packPath,
+      filePaths: packPaths,
       thumbnailPath,
       websiteUrl: item.websiteUrl || item.url || '',
     });
@@ -556,7 +614,33 @@ class GitCatalogClient {
       downloads: 0,
       dateUpdated: this.mtimeIso(filePath),
       filePath,
+      filePaths: [filePath],
       thumbnailPath: this.findThumbnailInDir(folder),
+      websiteUrl: '',
+    });
+  }
+
+  entryFromPackFolder(dir, files, rootDir) {
+    const slug = this.slugify(path.basename(dir));
+    if (!slug) return null;
+    const ordered = this.orderPackFiles(files);
+    const packPath = ordered[0];
+    const projectClass = this.classFromPath(dir, rootDir);
+    const type = this.typeFromPath(packPath, rootDir);
+    return this.toCatalogMod({
+      slug,
+      name: this.titleCase(path.basename(dir)),
+      type,
+      projectClass,
+      version: '1.0.0',
+      description: '',
+      author: 'Unknown',
+      categories: [projectClass],
+      downloads: 0,
+      dateUpdated: ordered.map((file) => this.mtimeIso(file)).sort().slice(-1)[0] || '',
+      filePath: packPath,
+      filePaths: ordered,
+      thumbnailPath: this.findThumbnailInDir(dir),
       websiteUrl: '',
     });
   }
@@ -581,6 +665,7 @@ class GitCatalogClient {
       version: entry.version || '1.0.0',
       websiteUrl: entry.websiteUrl || '',
       filePath: entry.filePath || null,
+      filePaths: entry.filePaths || (entry.filePath ? [entry.filePath] : []),
     };
   }
 
@@ -780,11 +865,42 @@ class GitCatalogClient {
   }
 
   findPackInDir(dir) {
-    if (!dir || !fs.existsSync(dir)) return null;
-    const files = fs.readdirSync(dir)
-      .map(name => path.join(dir, name))
-      .filter(file => fs.statSync(file).isFile() && PACK_EXTS.has(path.extname(file).toLowerCase()));
-    return files[0] || null;
+    return this.findPacksInDir(dir)[0] || null;
+  }
+
+  findPacksInDir(dir) {
+    if (!dir || !fs.existsSync(dir)) return [];
+    let names;
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return [];
+    }
+    return names
+      .map((name) => path.join(dir, name))
+      .filter((file) => {
+        try {
+          return fs.statSync(file).isFile() && PACK_EXTS.has(path.extname(file).toLowerCase());
+        } catch {
+          return false;
+        }
+      });
+  }
+
+  orderPackFiles(files) {
+    const rank = { '.mcaddon': 0, '.zip': 1, '.mcpack': 2, '.mcworld': 3, '.mctemplate': 4, '.mcstructure': 5 };
+    return [...files].sort((a, b) => {
+      const aRank = rank[path.extname(a).toLowerCase()] ?? 9;
+      const bRank = rank[path.extname(b).toLowerCase()] ?? 9;
+      return aRank - bRank || path.basename(a).localeCompare(path.basename(b));
+    });
+  }
+
+  isClassOrRootDir(dir, rootDir) {
+    const rel = path.relative(rootDir, dir);
+    if (!rel || rel === '.') return true;
+    const parts = rel.split(path.sep).filter(Boolean);
+    return parts.length === 1 && Boolean(TYPE_FROM_CLASS[parts[0].toLowerCase()]);
   }
 
   findThumbnailInDir(dir) {

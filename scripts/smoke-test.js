@@ -12,6 +12,7 @@ const serverManager = require('../server/services/serverManager');
 const curseforge = require('../server/services/curseforgeClient');
 const gitCatalog = require('../server/services/gitCatalogClient');
 const catalogService = require('../server/services/catalogService');
+const fileCatalog = require('../server/services/fileCatalogClient');
 const packInstaller = require('../server/services/packInstaller');
 const settingsStore = require('../server/services/settingsStore');
 const modManager = require('../server/services/modManager');
@@ -303,6 +304,8 @@ async function run() {
   fs.mkdirSync(path.join(gitRoot, 'addons', 'smoke-pack'), { recursive: true });
   fs.mkdirSync(path.join(gitRoot, 'maps'), { recursive: true });
   fs.writeFileSync(path.join(gitRoot, 'addons', 'indexed-pack.mcaddon'), 'pack');
+  fs.writeFileSync(path.join(gitRoot, 'addons', 'declared-combo.mcaddon'), 'pack');
+  fs.writeFileSync(path.join(gitRoot, 'maps', 'declared-combo.mcworld'), 'world');
   fs.writeFileSync(path.join(gitRoot, 'catalog.json'), JSON.stringify({
     version: 1,
     mods: [{
@@ -313,6 +316,14 @@ async function run() {
       author: 'Docs',
       categories: ['survival'],
       file: 'addons/indexed-pack.mcaddon',
+    }, {
+      name: 'Declared Combo',
+      slug: 'declared-combo',
+      type: 'addon',
+      description: 'From catalog.json file array',
+      author: 'Docs',
+      categories: ['survival'],
+      file: ['addons/declared-combo.mcaddon', 'maps/declared-combo.mcworld'],
     }],
   }));
   fs.writeFileSync(path.join(gitRoot, 'addons', 'smoke-pack', 'mod.json'), JSON.stringify({
@@ -321,9 +332,15 @@ async function run() {
     description: 'Folder metadata for a utility pack',
     author: 'Tester',
     categories: ['utility'],
+    file: ['smoke-pack.mcaddon', 'smoke-pack.mcworld'],
   }));
   fs.writeFileSync(path.join(gitRoot, 'addons', 'smoke-pack', 'smoke-pack.mcaddon'), 'pack');
+  fs.writeFileSync(path.join(gitRoot, 'addons', 'smoke-pack', 'smoke-pack.mcworld'), 'world');
   fs.writeFileSync(path.join(gitRoot, 'maps', 'demo-world.mcworld'), 'world');
+  const comboDir = path.join(gitRoot, 'addons', 'zelda-combo');
+  fs.mkdirSync(comboDir, { recursive: true });
+  fs.writeFileSync(path.join(comboDir, 'zelda-combo.mcpack'), 'pack');
+  fs.writeFileSync(path.join(comboDir, 'zelda-combo.mcworld'), 'world');
 
   const oceanDir = path.join(gitRoot, 'addons', 'oceanic-delight');
   fs.mkdirSync(oceanDir, { recursive: true });
@@ -344,6 +361,25 @@ async function run() {
   const oceanEntries = gitMods.filter(mod => /oceanic/i.test(`${mod.name} ${mod.slug}`));
   assert.equal(oceanEntries.length, 1, `expected one Oceanic Delight entry, got ${oceanEntries.map(mod => mod.name).join(', ')}`);
   assert.equal(oceanEntries[0].name, 'Oceanic Delight');
+  const smokePack = gitMods.find(mod => mod.slug === 'smoke-pack');
+  assert(smokePack, 'smoke-pack was not parsed');
+  assert.equal((smokePack.filePaths || []).length, 2, 'mod.json file array should keep both pack file types');
+  const declaredCombo = gitMods.find(mod => mod.slug === 'declared-combo');
+  assert(declaredCombo, 'catalog.json file array was not parsed');
+  assert.equal((declaredCombo.filePaths || []).length, 2, 'catalog.json file array should include both archives');
+  const comboPack = gitMods.find(mod => mod.slug === 'zelda-combo');
+  assert(comboPack, 'multi-file folder was not grouped');
+  assert.equal((comboPack.filePaths || []).length, 2, 'folder with a pack and a world should be one catalog entry');
+
+  const pickedCfFiles = curseforge.latestFilesByExtension([
+    { id: 1, fileName: 'old.mcaddon', fileDate: '2024-01-01T00:00:00Z' },
+    { id: 2, fileName: 'new.mcaddon', fileDate: '2025-06-01T00:00:00Z' },
+    { id: 3, fileName: 'map.mcworld', fileDate: '2024-12-01T00:00:00Z' },
+    { id: 4, fileName: 'readme.txt', fileDate: '2026-01-01T00:00:00Z' },
+  ]);
+  assert.equal(pickedCfFiles.length, 2, 'CurseForge should keep the latest file of each archive type');
+  assert.equal(pickedCfFiles.find(file => file.fileName.endsWith('.mcaddon')).id, 2);
+  assert.equal(pickedCfFiles.find(file => file.fileName.endsWith('.mcworld')).id, 3);
   assert(oceanEntries[0].thumbnailPath, 'mod.json folder thumbnail.png was not attached');
   assert(oceanEntries[0].thumbnail.includes('/api/mods/catalog/git/thumbnail/'), 'thumbnail URL was not set');
   assert(gitMods.filter(mod => gitCatalog.matchesQuery(mod, 'smoke')).length >= 1, 'Git catalog search did not match');
@@ -353,6 +389,15 @@ async function run() {
   );
   const sorted = gitCatalog.sortMods(gitMods, 'relevancy', 'smoke');
   assert.equal(sorted[0].slug, 'smoke-pack', 'Git catalog relevancy sort did not prefer the query match');
+
+  settingsStore.set(settingsStore.KEYS.FILE_ENABLED, '1');
+  settingsStore.set(settingsStore.KEYS.FILE_LOCAL_ENABLED, '1');
+  settingsStore.set(settingsStore.KEYS.FILE_LOCAL_PATH, gitRoot);
+  settingsStore.set(settingsStore.KEYS.FILE_SMB_ENABLED, '0');
+  settingsStore.set(settingsStore.KEYS.FILE_NFS_ENABLED, '0');
+  fileCatalog.invalidate();
+  const fileMods = fileCatalog.loadEntries();
+  assert(fileMods.some(mod => mod.source === 'file' && mod.slug === 'zelda-combo'), 'file catalog should index the local folder');
 
   const pointerDir = path.join(gitRoot, 'addons', 'lfs-pack');
   fs.mkdirSync(pointerDir, { recursive: true });
@@ -382,6 +427,8 @@ async function run() {
     assert.equal(gitCatalog.isConfigured(), true, 'git catalog should be configured after saving URL and enabled');
     assert.equal(gitCatalog.canSync(), false, 'sync should require a saved token, not only enabled+URL');
     assert.equal(catalogSettings.git.sync.canSync, false, 'settings payload should hide Sync Now without a token');
+    assert.equal(typeof catalogSettings.files.enabled, 'boolean', 'catalog settings should include the file catalog');
+    assert(catalogSettings.files.defaultLocalPath, 'file catalog should expose the default local path');
     assert.equal(gitCatalog.getSyncStatus().running, false);
 
     settingsStore.set(settingsStore.KEYS.GIT_TOKEN, 'smoke-token');
@@ -568,6 +615,65 @@ async function run() {
   assert.equal(fs.existsSync(importedWorld), false, 'imported world folder was not removed');
   assert.match(fs.readFileSync(path.join(packServerPath, 'server.properties'), 'utf8'), /^level-name=Bedrock level$/m);
   assert(fs.existsSync(path.join(packServerPath, 'worlds', 'Bedrock level')), 'original world should stay after map uninstall');
+
+  const comboAddon = path.join(testRoot, 'combo.mcaddon');
+  const comboWorld = path.join(testRoot, 'combo.mcworld');
+  fs.writeFileSync(comboAddon, zipStore({
+    'BP/manifest.json': JSON.stringify(bpManifest),
+    'RP/manifest.json': JSON.stringify(rpManifest),
+  }));
+  fs.writeFileSync(comboWorld, zipStore({
+    'level.dat': 'dummy-level',
+    'levelname.txt': 'Combo World\n',
+    'db/placeholder': 'x',
+  }));
+  const comboMod = db.prepare(`
+    INSERT INTO mods (name, slug, type, description, file_path, extra_files, source)
+    VALUES (?, ?, 'addon', '', ?, ?, 'upload')
+  `).run(
+    'Combo Pack',
+    `combo-${suffix}`,
+    comboAddon,
+    JSON.stringify([{ path: comboWorld, name: 'combo.mcworld', kind: 'world' }])
+  );
+  await modManager.installModToServer(packServer.lastInsertRowid, comboMod.lastInsertRowid);
+  const comboBp = path.join(packServerPath, 'behavior_packs', `addon_${comboMod.lastInsertRowid}_aaaaaaaa`);
+  const comboWorldDir = path.join(packServerPath, 'worlds', 'Combo World');
+  assert(fs.existsSync(path.join(comboBp, 'manifest.json')), 'multi-type addon was not extracted');
+  assert(fs.existsSync(path.join(comboWorldDir, 'level.dat')), 'multi-type world was not extracted');
+  await modManager.uninstallModFromServer(packServer.lastInsertRowid, comboMod.lastInsertRowid);
+  assert.equal(fs.existsSync(comboBp), false, 'multi-type addon should be removed');
+  assert.equal(fs.existsSync(comboWorldDir), false, 'multi-type world should be removed');
+  assert.match(fs.readFileSync(path.join(packServerPath, 'server.properties'), 'utf8'), /^level-name=Bedrock level$/m);
+
+  const uploadAddon = path.join(testRoot, `smoke-upload-${suffix}.mcaddon`);
+  const uploadWorld = path.join(testRoot, `smoke-upload-${suffix}.mcworld`);
+  fs.writeFileSync(uploadAddon, zipStore({
+    'BP/manifest.json': JSON.stringify(bpManifest),
+    'RP/manifest.json': JSON.stringify(rpManifest),
+  }));
+  fs.writeFileSync(uploadWorld, zipStore({
+    'level.dat': 'dummy-level',
+    'levelname.txt': 'Upload World\n',
+    'db/placeholder': 'x',
+  }));
+  let uploadedId = null;
+  try {
+    const uploaded = await modManager.uploadMod([
+      { originalname: `smoke-upload-${suffix}.mcaddon`, path: uploadAddon },
+      { originalname: `smoke-upload-${suffix}.mcworld`, path: uploadWorld },
+    ], { name: `Smoke Upload Combo ${suffix}`, description: 'multi-file upload' });
+    uploadedId = uploaded.id;
+    const uploadedRow = db.prepare('SELECT * FROM mods WHERE id = ?').get(uploadedId);
+    const uploadedExtras = JSON.parse(uploadedRow.extra_files || '[]');
+    assert.equal(uploadedExtras.length, 1, 'multi-file upload should store extra archives on one library mod');
+    assert(uploadedExtras[0].path && fs.existsSync(uploadedExtras[0].path), 'uploaded extra archive is missing');
+    assert.equal(uploadedRow.source, 'upload');
+  } finally {
+    if (uploadedId) {
+      await modManager.deleteMod(uploadedId);
+    }
+  }
 
   const zipAddon = path.join(testRoot, 'smoke-addon.zip');
   fs.writeFileSync(zipAddon, zipStore({

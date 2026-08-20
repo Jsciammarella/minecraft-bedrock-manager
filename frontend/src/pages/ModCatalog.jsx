@@ -5,7 +5,7 @@ import ModTileTags from '../components/ModTileTags';
 import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
 import {
   ArrowLeft, Search, Download, Package, AlertCircle, Check, Loader2,
-  ExternalLink, Star, Settings, GitBranch, RefreshCw, X
+  ExternalLink, Star, Settings, GitBranch, RefreshCw, X, Folder
 } from 'lucide-react';
 
 const CATALOG_PAGE_SIZE = 40;
@@ -18,7 +18,7 @@ function ModCatalog() {
   const [error, setError] = useState('');
   const [warning, setWarning] = useState('');
   const [success, setSuccess] = useState('');
-  const [sources, setSources] = useState({ curseforge: { available: false }, git: { available: false } });
+  const [sources, setSources] = useState({ curseforge: { available: false }, git: { available: false }, file: { available: false } });
 
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
@@ -137,9 +137,13 @@ function ModCatalog() {
     return <span className={`badge ${colors[type] || 'badge-info'}`}>{(type || 'addon').replace('_', ' ')}</span>;
   };
 
-  const getSourceBadge = (modSource) => {
+  const getSourceBadge = (modSource, fileKind) => {
     if (modSource === 'git') {
       return <span className="badge badge-success">Git</span>;
+    }
+    if (modSource === 'file') {
+      const label = fileKind === 'smb' ? 'SMB' : fileKind === 'nfs' ? 'NFS' : 'Local';
+      return <span className="badge badge-warning">{label}</span>;
     }
     return <span className="badge badge-info">CurseForge</span>;
   };
@@ -156,9 +160,11 @@ function ModCatalog() {
 
   const searchingLabel = source === 'git'
     ? 'Searching Git catalog...'
-    : source === 'curseforge'
-      ? 'Searching CurseForge...'
-      : 'Searching catalog...';
+    : source === 'file'
+      ? 'Searching file catalog...'
+      : source === 'curseforge'
+        ? 'Searching CurseForge...'
+        : 'Searching catalog...';
 
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto">
@@ -169,7 +175,7 @@ function ModCatalog() {
           </button>
           <div>
             <h1 className="text-2xl font-bold text-white">Mod Catalog</h1>
-            <p className="text-mc-textMuted mt-1">Browse and download from CurseForge and a Git catalog</p>
+            <p className="text-mc-textMuted mt-1">Browse and download from CurseForge, Git, and file catalogs</p>
           </div>
         </div>
         <div className="page-header-actions flex items-center gap-2">
@@ -242,6 +248,7 @@ function ModCatalog() {
               <option value="all">All Sources</option>
               <option value="curseforge">CurseForge</option>
               <option value="git">Git Repository</option>
+              <option value="file">File Catalog</option>
             </select>
             <select
               value={category}
@@ -283,7 +290,7 @@ function ModCatalog() {
           <Package className="w-16 h-16 text-mc-textMuted mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">No mods found</h3>
           <p className="text-mc-textMuted mb-6">
-            {sources.git?.available || sources.curseforge?.available
+            {sources.git?.available || sources.curseforge?.available || sources.file?.available
               ? 'Try adjusting your search or filters'
               : 'Configure a Git repository or CurseForge API key to populate the catalog'}
           </p>
@@ -347,7 +354,11 @@ function ModCatalog() {
             <h3 className="text-lg font-semibold text-white mb-2">Download Mod</h3>
             <p className="text-sm text-mc-textMuted mb-4">
               Download <strong className="text-white">{downloadModal.name}</strong> to your mod library
-              {downloadModal.source === 'git' ? ' from the Git catalog' : ' from CurseForge'}?
+              {downloadModal.source === 'git'
+                ? ' from the Git catalog'
+                : downloadModal.source === 'file'
+                  ? ' from the file catalog'
+                  : ' from CurseForge'}?
             </p>
             <div className="flex items-center gap-3">
               <button
@@ -481,13 +492,15 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
           <div className="w-full h-full flex items-center justify-center">
             {mod.source === 'git'
               ? <GitBranch className={`${expanded ? 'w-12 h-12' : 'w-8 h-8'} text-mc-textMuted`} />
-              : <Package className={`${expanded ? 'w-12 h-12' : 'w-8 h-8'} text-mc-textMuted`} />}
+              : mod.source === 'file'
+                ? <Folder className={`${expanded ? 'w-12 h-12' : 'w-8 h-8'} text-mc-textMuted`} />
+                : <Package className={`${expanded ? 'w-12 h-12' : 'w-8 h-8'} text-mc-textMuted`} />}
           </div>
         )}
       </div>
       <ModTileTags>
         {getTypeBadge(mod.type)}
-        {getSourceBadge(mod.source)}
+        {getSourceBadge(mod.source, mod.fileKind)}
       </ModTileTags>
 
       <h3
@@ -527,7 +540,7 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
             target="_blank"
             rel="noopener noreferrer"
             className={`btn btn-secondary ${expanded ? '' : 'text-xs p-2'}`}
-            title={mod.source === 'git' ? 'View source' : 'View on CurseForge'}
+            title={mod.source === 'git' ? 'View source' : mod.source === 'file' ? 'Open catalog folder' : 'View on CurseForge'}
           >
             <ExternalLink className={expanded ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
           </a>

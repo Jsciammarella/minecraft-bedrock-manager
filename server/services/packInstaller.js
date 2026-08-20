@@ -7,6 +7,7 @@ const db = require('../db/connection');
 const logger = require('./logger');
 const packFiles = require('./packFiles');
 const platform = require('./platform');
+const modArchives = require('./modArchives');
 
 const execFileAsync = promisify(execFile);
 const ARCHIVE_EXTS = new Set(packFiles.ARCHIVE_EXTS);
@@ -674,30 +675,58 @@ function placeWorld(server, mod, worldRoot) {
   }];
 }
 
-async function installModToServer(server, mod) {
-  if (isStructureMod(mod) && !isZipFile(mod.file_path)) {
-    return placeStructures(server, mod, [{
-      abs: mod.file_path,
-      rel: path.basename(mod.file_path),
+async function installOneArchive(server, mod, archivePath) {
+  const archiveMod = { ...mod, file_path: archivePath };
+  if (isStructureMod(archiveMod) && !isZipFile(archivePath)) {
+    return placeStructures(server, archiveMod, [{
+      abs: archivePath,
+      rel: path.basename(archivePath),
     }]);
   }
 
-  const tmp = await extractToTemp(mod.file_path, { nested: false });
+  const tmp = await extractToTemp(archivePath, { nested: false });
   try {
     const worldRoot = findWorldRoot(tmp);
-    if (worldRoot) return placeWorld(server, mod, worldRoot);
-    if (isWorldMod(mod)) {
-      throw new Error(`No level.dat found in ${path.basename(mod.file_path)}`);
+    if (worldRoot) return placeWorld(server, archiveMod, worldRoot);
+    if (isWorldMod(archiveMod)) {
+      throw new Error(`No level.dat found in ${path.basename(archivePath)}`);
     }
     await extractNestedArchives(tmp);
     const packs = findManifestPacks(tmp);
-    if (packs.length) return placePacks(server, mod, packs);
+    if (packs.length) return placePacks(server, archiveMod, packs);
     const structures = findStructureFiles(tmp);
-    if (structures.length) return placeStructures(server, mod, structures);
-    throw new Error(`${path.basename(mod.file_path)} is not a Bedrock pack, world, template, or structure file`);
+    if (structures.length) return placeStructures(server, archiveMod, structures);
+    throw new Error(`${path.basename(archivePath)} is not a Bedrock pack, world, template, or structure file`);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+async function installModToServer(server, mod) {
+  const archives = modArchives.existingArchives(mod);
+  if (!archives.length) {
+    throw new Error('Mod archive is missing from the library');
+  }
+  const placed = [];
+  const errors = [];
+  for (const archive of archives) {
+    try {
+      placed.push(...await installOneArchive(server, {
+        ...mod,
+        file_path: archive.path,
+        type: archive.kind || mod.type,
+      }, archive.path));
+    } catch (err) {
+      errors.push(`${path.basename(archive.path)}: ${err.message}`);
+    }
+  }
+  if (!placed.length) {
+    throw new Error(errors[0] || 'Mod archive could not be installed');
+  }
+  if (errors.length) {
+    logger.warn(`Installed ${placed.length} pack(s) from ${mod.name} with warnings: ${errors.join('; ')}`);
+  }
+  return placed;
 }
 
 function uninstallModFromServer(server, mod, manifestRaw) {
@@ -713,13 +742,15 @@ function uninstallModFromServer(server, mod, manifestRaw) {
       }
     }
   }
-  removeLooseArchiveCopies(server.data_path, path.basename(mod.file_path || ''));
+  for (const archive of modArchives.archiveList(mod)) {
+    removeLooseArchiveCopies(server.data_path, path.basename(archive.path || ''));
+  }
 }
 
 async function activateServerPacks(server) {
   if (!server || server.kind === 'bedrock_connect' || server.kind === 'remote') return;
   const rows = db.prepare(`
-    SELECT sm.mod_id, sm.install_manifest, m.file_path, m.name, m.type
+    SELECT sm.mod_id, sm.install_manifest, m.file_path, m.extra_files, m.name, m.type
     FROM server_mods sm
     JOIN mods m ON m.id = sm.mod_id
     WHERE sm.server_id = ?
@@ -731,11 +762,12 @@ async function activateServerPacks(server) {
       pack.dir && fs.existsSync(path.join(server.data_path, pack.dir))
     ));
     if (placedDirsExist) continue;
-    if (!row.file_path || !fs.existsSync(row.file_path)) continue;
+    if (!modArchives.existingArchives(row).length) continue;
     try {
       const placed = await installModToServer(server, {
         id: row.mod_id,
         file_path: row.file_path,
+        extra_files: row.extra_files,
         type: row.type,
       });
       db.prepare(`
