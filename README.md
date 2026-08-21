@@ -5,6 +5,8 @@ A one-stop self-hosted console for Minecraft Bedrock. One Linux host can run mul
 > [!IMPORTANT]
 > This application does not currently provide login or role-based access control. Keep it on a trusted LAN or behind an authenticated reverse proxy. Do not expose the management port or DNS port `53` to the internet.
 
+Release development uses separate baseline, open-source, Pro, and Enterprise branches. See [docs/release-model.md](docs/release-model.md).
+
 ## Quick start
 
 Target: **Ubuntu 24.04 x86-64**. You need `git` and `sudo`. Clone with HTTPS if you do not have SSH keys for the Git host.

@@ -19,8 +19,8 @@ if [[ ! "$github_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   exit 1
 fi
 
-if [[ ! "$release_tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-  echo "Release tag must use the vMAJOR.MINOR.PATCH format" >&2
+if [[ ! "$release_tag" =~ ^v([0-9]+\.[0-9]+\.3)$ ]]; then
+  echo "Only open-source vMAJOR.MINOR.3 tags are published to GitHub" >&2
   exit 1
 fi
 
@@ -82,10 +82,10 @@ EOF
 export GIT_ASKPASS="$askpass_file"
 export GIT_TERMINAL_PROMPT=0
 
-# Push all reachable LFS objects so older commits in the mirrored release
-# history remain usable, not only the installer in the current tag.
-git lfs fetch --all origin
-git lfs push --all "$github_remote"
+# Copy only LFS objects reachable from this open-source release. Objects that
+# exist solely on Pro or Enterprise refs must never be sent to GitHub.
+git lfs fetch origin "$release_tag"
+git lfs push "$github_remote" "$release_tag"
 
 python3 "$publisher_helper" "$github_repository" "$release_tag" "$installer"
 echo "Published $installer to GitHub release $release_tag"
