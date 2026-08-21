@@ -64,14 +64,4 @@ chmod 600 "$credentials_file"
 git -c credential.helper= -c "credential.helper=store --file=$credentials_file" \
   push "$github_remote" "$commit:refs/heads/$branch"
 
-# Make a normal GitHub clone land on the actively mirrored open-source branch.
-payload="$(printf '{"default_branch":"%s"}' "$branch")"
-curl --silent --show-error --fail-with-body \
-  --request PATCH \
-  --header "Accept: application/vnd.github+json" \
-  --header "Authorization: Bearer $GITHUB_RELEASE_TOKEN" \
-  --header "X-GitHub-Api-Version: 2022-11-28" \
-  --data "$payload" \
-  "https://api.github.com/repos/$github_repository" >/dev/null
-
 echo "Mirrored $branch at $commit to GitHub"
