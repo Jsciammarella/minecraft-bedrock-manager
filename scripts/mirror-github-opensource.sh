@@ -48,6 +48,7 @@ chmod 700 "$askpass_file"
 
 export GIT_ASKPASS="$askpass_file"
 export GIT_TERMINAL_PROMPT=0
+export GIT_ASKPASS_REQUIRE=force
 
 git remote remove "$github_remote" >/dev/null 2>&1 || true
 git config "lfs.${github_url}/info/lfs.locksverify" false
