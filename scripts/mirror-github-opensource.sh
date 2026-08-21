@@ -31,12 +31,12 @@ git lfs fetch origin "$commit"
 
 
 askpass_file="$(mktemp)"
-cleanup() {
 credentials_file="$(mktemp)"
+cleanup() {
   git remote remove "$github_remote" >/dev/null 2>&1 || true
   rm -f "$askpass_file"
-}
   rm -f "$credentials_file"
+}
 trap cleanup EXIT
 
 cat >"$askpass_file" <<'EOF'
