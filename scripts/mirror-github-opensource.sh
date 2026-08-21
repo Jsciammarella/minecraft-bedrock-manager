@@ -32,9 +32,11 @@ git lfs fetch origin "$commit"
 
 askpass_file="$(mktemp)"
 cleanup() {
+credentials_file="$(mktemp)"
   git remote remove "$github_remote" >/dev/null 2>&1 || true
   rm -f "$askpass_file"
 }
+  rm -f "$credentials_file"
 trap cleanup EXIT
 
 cat >"$askpass_file" <<'EOF'
@@ -57,7 +59,10 @@ git remote add "$github_remote" "$github_url"
 # Copy only LFS objects reachable from the open-source commit, then update only
 # its matching release branch. No other GitLab ref is sent to GitHub.
 git lfs push "$github_remote" "$commit"
-git push "$github_remote" "$commit:refs/heads/$branch"
+printf 'https://x-access-token:%s@github.com\n' "$GITHUB_RELEASE_TOKEN" >"$credentials_file"
+chmod 600 "$credentials_file"
+git -c credential.helper= -c "credential.helper=store --file=$credentials_file" \
+  push "$github_remote" "$commit:refs/heads/$branch"
 
 # Make a normal GitHub clone land on the actively mirrored open-source branch.
 payload="$(printf '{"default_branch":"%s"}' "$branch")"
