@@ -4,8 +4,8 @@
   Stage the manager and build a 64-bit Windows installer.
 
   Output is dist\windows\MinecraftBedrockManager-<version>_<build>.exe
-  (for example MinecraftBedrockManager-0.3.0_0001.exe). The product version
-  stays 0.3.0 until you pass -Version; the build number increments automatically.
+  (for example MinecraftBedrockManager-0.3.3_0001.exe). The product version
+  stays 0.3.3 until you pass -Version; the build number increments automatically.
 
 .DESCRIPTION
   Linux Docker and native installers are not used here. Run this on Windows 10/11 x64
@@ -42,7 +42,7 @@ $MinGitZipName = 'MinGit-2.47.1-64-bit.zip'
 function Get-ProductVersion {
   param([string]$Requested)
   if ($Requested -match '^(\d+\.\d+\.\d+)(?:_(\d+))?$') { return $Matches[1] }
-  return '0.3.0'
+  return '0.3.3'
 }
 
 function Get-RequestedBuild {
@@ -128,7 +128,7 @@ $CacheDir = Join-Path $PSScriptRoot 'cache'
 $BuildStamp = Join-Path $PSScriptRoot 'installer-build-number.txt'
 $BuildNumber = Get-NextBuildNumber $ProductVersion (Get-RequestedBuild $Version $Build) $BuildStamp $OutDir
 $DisplayVersion = '{0}_{1:D4}' -f $ProductVersion, $BuildNumber
-# MSI ProductVersion is only x.y.z. Burn can use a fourth field so 0.3.0_0002 replaces 0.3.0_0001.
+# MSI ProductVersion is only x.y.z. Burn can use a fourth field so 0.3.3_0002 replaces 0.3.3_0001.
 $BundleVersion = '{0}.{1}' -f $ProductVersion, $BuildNumber
 $MsiOut = Join-Path $OutDir ("MinecraftBedrockManager-$DisplayVersion.msi")
 $ExeOut = Join-Path $OutDir ("MinecraftBedrockManager-$DisplayVersion.exe")

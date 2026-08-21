@@ -1,6 +1,6 @@
 {
   "name": "minecraft-bedrock-manager",
-  "version": "0.3.0",
+  "version": "0.3.3",
   "description": "Minecraft Bedrock Server Manager Web Application",
   "main": "server/index.js",
   "scripts": {
