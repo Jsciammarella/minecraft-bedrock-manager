@@ -8,6 +8,7 @@ const serverManager = require('./serverManager');
 const packInstaller = require('./packInstaller');
 const packFiles = require('./packFiles');
 const execAsync = promisify(exec);
+const modArchives = require('./modArchives');
 
 const MODS_DIR = path.join(__dirname, '../../data/mods');
 const THUMBS_DIR = path.join(MODS_DIR, 'thumbs');
@@ -20,7 +21,7 @@ class ModManager {
 
   // ========== MOD LIBRARY ==========
 
-  async uploadMod(file, metadata = {}) {
+  storeUploadedFile(file) {
     const ext = path.extname(file.originalname).toLowerCase();
     if (!packFiles.isImportExt(ext)) {
       throw new Error(packFiles.unsupportedMessage(ext));
@@ -44,45 +45,87 @@ class ModManager {
       throw new Error('Uploaded file data was not available');
     }
 
-    const fileSize = fs.statSync(filePath).size;
+    return filePath;
+  }
 
+  async uploadMod(fileOrFiles, metadata = {}) {
+    const incoming = (Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles]).filter(Boolean);
+    if (!incoming.length) throw new Error('No file uploaded');
+
+    const ordered = modArchives.orderArchivePaths(
+      incoming.map((file) => ({ file, path: file.originalname }))
+    ).map((item) => item.file);
+    const unique = [];
+    const seen = new Set();
+    for (const file of ordered) {
+      const key = String(file.originalname || '').toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      unique.push(file);
+    }
+
+    const stored = [];
     try {
-      await packInstaller.verifyArchive(filePath);
+      for (const file of unique) {
+        const destPath = this.storeUploadedFile(file);
+        try {
+          await packInstaller.verifyArchive(destPath);
+        } catch (err) {
+          if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
+          throw err;
+        }
+        stored.push({
+          path: destPath,
+          kind: packFiles.typeFromExt(file.originalname, 'addon'),
+          size: fs.statSync(destPath).size,
+          name: path.basename(destPath),
+        });
+      }
     } catch (err) {
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      for (const item of stored) {
+        if (item.path && fs.existsSync(item.path)) {
+          try { fs.unlinkSync(item.path); } catch { /* ignore */ }
+        }
+      }
       throw err;
     }
 
-    // Determine type from extension
-    let type = packFiles.typeFromExt(file.originalname, 'addon');
-    if (metadata.type) type = metadata.type;
+    const primary = stored[0];
+    const extraFiles = stored.length > 1 ? modArchives.serializeExtraFiles(stored.slice(1)) : null;
+    const fileSize = stored.reduce((sum, file) => sum + (file.size || 0), 0);
+    const type = metadata.type || primary.kind || 'addon';
+    const displayName = metadata.name || path.parse(unique[0].originalname).name || primary.name;
 
-    // Insert into database
     const insert = db.prepare(`
-      INSERT INTO mods (name, slug, type, description, file_path, file_size, source)
-      VALUES (?, ?, ?, ?, ?, ?, 'upload')
+      INSERT INTO mods (name, slug, type, description, file_path, file_size, extra_files, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'upload')
     `);
 
-    const slug = this.getAvailableSlug(metadata.name || safeName);
+    const slug = this.getAvailableSlug(displayName);
     let result;
     try {
       result = insert.run(
-        metadata.name || safeName,
+        displayName,
         slug,
         type,
         metadata.description || '',
-        filePath,
-        fileSize
+        primary.path,
+        fileSize,
+        extraFiles
       );
     } catch (err) {
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      for (const item of stored) {
+        if (item.path && fs.existsSync(item.path)) {
+          try { fs.unlinkSync(item.path); } catch { /* ignore */ }
+        }
+      }
       throw err;
     }
 
-    await this.attachArchiveThumbnail(result.lastInsertRowid, filePath);
+    await this.attachArchiveThumbnail(result.lastInsertRowid, primary.path);
 
-    logger.info(`Uploaded mod: ${safeName} (${type})`);
-    return { id: result.lastInsertRowid, name: metadata.name || safeName, type, filePath };
+    logger.info(`Uploaded mod: ${displayName} (${type}, ${stored.length} archive${stored.length === 1 ? '' : 's'})`);
+    return { id: result.lastInsertRowid, name: displayName, type, filePath: primary.path };
   }
 
   async installModToServer(serverId, modId) {
@@ -101,8 +144,12 @@ class ModManager {
     const existing = db.prepare('SELECT * FROM server_mods WHERE server_id = ? AND mod_id = ?').get(serverId, modId);
     if (existing) throw new Error('Mod already installed on this server');
 
-    if (mod.file_path && fs.existsSync(mod.file_path)) {
-      await packInstaller.verifyArchive(mod.file_path);
+    const archives = modArchives.existingArchives(mod);
+    if (!archives.length) throw new Error('Mod archive is missing from the library');
+    for (const archive of archives) {
+      if (packFiles.isArchiveExt(path.extname(archive.path))) {
+        await packInstaller.verifyArchive(archive.path);
+      }
     }
 
     const destDir = this.getModDestDir(server.data_path, mod.type);
@@ -112,7 +159,7 @@ class ModManager {
     installManifest = await packInstaller.installModToServer(server, mod);
 
     if (!mod.thumbnail) {
-      await this.attachArchiveThumbnail(modId, mod.file_path);
+      await this.attachArchiveThumbnail(modId, archives[0].path);
     }
 
     db.prepare(`
@@ -277,19 +324,34 @@ class ModManager {
     return candidate;
   }
 
-  async deleteMod(modId) {
+  async deleteMod(modId, { uninstallFromServers = false } = {}) {
     const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
     if (!mod) throw new Error('Mod not found');
 
-    // Check if installed on any server
-    const installations = db.prepare('SELECT COUNT(*) as count FROM server_mods WHERE mod_id = ?').get(modId);
-    if (installations.count > 0) {
-      throw new Error('Cannot delete mod that is installed on servers');
+    const installations = db.prepare(`
+      SELECT s.id, s.name
+      FROM server_mods sm
+      JOIN servers s ON s.id = sm.server_id
+      WHERE sm.mod_id = ?
+      ORDER BY s.name COLLATE NOCASE
+    `).all(modId);
+
+    if (installations.length > 0) {
+      if (!uninstallFromServers) {
+        throw new Error(
+          `Cannot delete mod that is installed on ${installations.length} server${installations.length === 1 ? '' : 's'}`
+        );
+      }
+      for (const server of installations) {
+        await this.uninstallModFromServer(server.id, modId);
+      }
     }
 
     // Delete file
-    if (fs.existsSync(mod.file_path)) {
-      fs.unlinkSync(mod.file_path);
+    for (const archive of modArchives.archiveList(mod)) {
+      if (archive.path && fs.existsSync(archive.path)) {
+        try { fs.unlinkSync(archive.path); } catch { /* ignore */ }
+      }
     }
     this.removeLocalThumbnail(mod.thumbnail);
 

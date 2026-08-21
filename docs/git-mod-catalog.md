@@ -106,6 +106,15 @@ Place an index at the catalog root (repository root, or the configured subdirect
       "file": "addons/example-addon/example-addon.mcaddon",
       "thumbnail": "addons/example-addon/thumbnail.png",
       "websiteUrl": "https://gitlab.example.com/group/bedrock-mod-catalog"
+    },
+    {
+      "name": "Example Combo",
+      "slug": "example-combo",
+      "type": "addon",
+      "file": [
+        "addons/example-combo/example-combo.mcaddon",
+        "maps/example-combo/example-combo.mcworld"
+      ]
     }
   ]
 }
@@ -130,7 +139,18 @@ Each pack folder may include `mod.json` (or `addon.json`):
 }
 ```
 
-If `file` is omitted, the first pack file in that folder is used.
+`file` may be a single filename or an array of archives. A string keeps the previous catalog format. An array stores every listed pack as one library mod, the same way a CurseForge project with both a `.mcworld` and a `.mcpack` is saved:
+
+```json
+{
+  "name": "Example Combo",
+  "file": ["example-addon.mcaddon", "example-world.mcworld", "example-pack.mcpack"]
+}
+```
+
+If `file` is omitted, pack files in that folder are used. A folder that contains more than one archive is listed once and downloads every pack into that library mod. Install and remove always apply to every archive on the library entry.
+
+The same `file` string or array is used by the file catalog.
 
 ## Fields and catalog filters
 
@@ -141,7 +161,7 @@ The Mod Catalog search box, category dropdown, sort dropdown, and source dropdow
 | `name` | Recommended | Display title. Defaults to a cleaned-up file or folder name. |
 | `slug` | Recommended | Stable id used when downloading. Use lowercase kebab-case. |
 | `type` | Recommended | `addon`, `texture_pack`, `world`, or `skin`. |
-| `file` | Recommended | Path to the downloadable pack. |
+| `file` | Recommended | Pack path as a string, or an array of pack paths for a multi-file library entry. |
 | `description` | Optional | Shown on the catalog card and matched by search. |
 | `author` | Optional | Shown on the card and matched by search. |
 | `categories` | Optional | Matched by the category filter. |

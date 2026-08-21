@@ -32,7 +32,6 @@ function ModLibrary() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null);
   const [uploadFiles, setUploadFiles] = useState([]);
-  const [uploadIndex, setUploadIndex] = useState(0);
   const [uploadName, setUploadName] = useState('');
   const [uploadDesc, setUploadDesc] = useState('');
   const [uploadType, setUploadType] = useState('addon');
@@ -49,6 +48,8 @@ function ModLibrary() {
   const [installing, setInstalling] = useState(false);
   const [installingServerId, setInstallingServerId] = useState(null);
   const [installError, setInstallError] = useState('');
+  const [deleteModal, setDeleteModal] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const [settingsModal, setSettingsModal] = useState(null);
   const [settingsDesc, setSettingsDesc] = useState('');
@@ -76,12 +77,18 @@ function ModLibrary() {
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files || []);
     setUploadFiles(files);
-    if (files.length === 1) {
-      setUploadName(files[0].name.replace(/\.[^/.]+$/, ''));
-      setUploadType(typeFromFileName(files[0].name));
-    } else {
+    if (!files.length) {
       setUploadName('');
+      return;
     }
+    const primary = [...files].sort((a, b) => {
+      const rank = { '.mcaddon': 0, '.zip': 1, '.mcpack': 2, '.mcworld': 3, '.mctemplate': 4, '.mcstructure': 5 };
+      const aRank = rank[`.${a.name.split('.').pop()?.toLowerCase()}`] ?? 9;
+      const bRank = rank[`.${b.name.split('.').pop()?.toLowerCase()}`] ?? 9;
+      return aRank - bRank || a.name.localeCompare(b.name);
+    })[0];
+    setUploadName(primary.name.replace(/\.[^/.]+$/, ''));
+    setUploadType(typeFromFileName(primary.name));
   };
 
   const handleUpload = async () => {
@@ -92,36 +99,23 @@ function ModLibrary() {
 
     setUploading(true);
     setUploadProgress(0);
-    setUploadIndex(0);
     setError('');
-    const failures = [];
     try {
-      for (let i = 0; i < uploadFiles.length; i += 1) {
-        const file = uploadFiles[i];
-        setUploadIndex(i);
-        setUploadProgress(0);
-        try {
-          await modApi.upload(file, {
-            name: uploadFiles.length === 1 ? (uploadName || file.name.replace(/\.[^/.]+$/, '')) : file.name.replace(/\.[^/.]+$/, ''),
-            description: uploadDesc,
-            type: uploadFiles.length === 1 ? uploadType : typeFromFileName(file.name),
-          }, (percent) => setUploadProgress(percent));
-        } catch (err) {
-          failures.push(`${file.name}: ${err.response?.data?.error || err.message || 'Upload failed'}`);
-        }
-      }
+      await modApi.upload(uploadFiles, {
+        name: uploadName || uploadFiles[0].name.replace(/\.[^/.]+$/, ''),
+        description: uploadDesc,
+        type: uploadType,
+      }, (percent) => setUploadProgress(percent));
       loadMods();
-      if (failures.length) {
-        setError(failures.join(' '));
-        return;
-      }
-      setSuccess(uploadFiles.length === 1 ? 'Mod uploaded successfully!' : `${uploadFiles.length} mods uploaded successfully!`);
+      setSuccess('Mod uploaded successfully!');
       setShowUploadModal(false);
       setUploadFiles([]);
       setUploadName('');
       setUploadDesc('');
       setUploadProgress(null);
       setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Upload failed');
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -182,16 +176,46 @@ function ModLibrary() {
     }
   };
 
-  const handleDelete = async (modId) => {
-    if (!confirm('Delete this mod from the library?')) return;
+  const installedServersForMod = (modId) => (
+    (servers || []).filter((server) => {
+      if (server.kind === 'bedrock_connect' || server.kind === 'remote') return false;
+      return (server.installedModIds || []).map(Number).includes(Number(modId));
+    })
+  );
+
+  const scrollLibraryTop = () => {
+    requestAnimationFrame(() => {
+      const main = document.querySelector('main');
+      if (main) main.scrollTo({ top: 0, behavior: 'smooth' });
+      else window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  };
+
+  const handleDelete = (mod) => {
+    if (!mod?.id) return;
+    setDeleteModal({ mod, servers: installedServersForMod(mod.id) });
+  };
+
+  const performDelete = async (modId, uninstallFromAll) => {
+    setDeleting(true);
+    setError('');
     try {
-      await modApi.delete(modId);
-      setSuccess('Mod deleted');
+      await modApi.delete(modId, { uninstallFromAll });
+      setSuccess(uninstallFromAll
+        ? 'Mod removed from all servers and deleted from the library'
+        : 'Mod deleted');
+      setDeleteModal(null);
       setExpandedMod(null);
-      loadMods();
+      await loadMods();
+      await refresh();
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
+      setDeleteModal(null);
+      setExpandedMod(null);
       setError(err.response?.data?.error || err.message);
+      scrollLibraryTop();
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -211,6 +235,7 @@ function ModLibrary() {
       await refresh();
       setSuccess('Mod installed!');
       setInstallModal(null);
+      setExpandedMod(null);
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
       setInstallError(err.response?.data?.error || err.message);
@@ -486,7 +511,7 @@ function ModLibrary() {
             onClose={() => setExpandedMod(null)}
             onInstall={() => openInstallModal(expandedMod)}
             onSettings={() => openSettings(expandedMod)}
-            onDelete={() => handleDelete(expandedMod.id)}
+            onDelete={() => handleDelete(expandedMod)}
             getTypeBadge={getTypeBadge}
             getSourceBadge={getSourceBadge}
           />
@@ -531,6 +556,7 @@ function ModLibrary() {
                   <p className="text-sm text-mc-textMuted">Click to select one or more files</p>
                 )}
                 <p className="text-xs text-mc-textMuted mt-1">.mcpack, .mcaddon, .mcworld, .mctemplate, .mcstructure, .zip</p>
+                <p className="text-xs text-mc-textMuted mt-1">Multiple archives are stored as one library mod.</p>
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -544,45 +570,39 @@ function ModLibrary() {
               {uploadFiles.length > 1 && (
                 <ul className="max-h-28 overflow-y-auto text-xs text-mc-textMuted space-y-1">
                   {uploadFiles.map((file, index) => (
-                    <li key={`${file.name}-${index}`} className={uploading && index === uploadIndex ? 'text-mc-accent' : ''}>
-                      {file.name}
-                    </li>
+                    <li key={`${file.name}-${index}`}>{file.name}</li>
                   ))}
                 </ul>
               )}
 
-              {uploadFiles.length <= 1 && (
-                <>
-                  <div>
-                    <label className="block text-sm font-medium text-mc-text mb-2">Name</label>
-                    <input
-                      type="text"
-                      value={uploadName}
-                      onChange={(e) => setUploadName(e.target.value)}
-                      disabled={uploading}
-                      className="input"
-                      placeholder="Mod name"
-                    />
-                  </div>
+              <div>
+                <label className="block text-sm font-medium text-mc-text mb-2">Name</label>
+                <input
+                  type="text"
+                  value={uploadName}
+                  onChange={(e) => setUploadName(e.target.value)}
+                  disabled={uploading}
+                  className="input"
+                  placeholder="Mod name"
+                />
+              </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-mc-text mb-2">Type</label>
-                    <select
-                      value={uploadType}
-                      onChange={(e) => setUploadType(e.target.value)}
-                      disabled={uploading}
-                      className="input"
-                    >
-                      <option value="addon">Addon</option>
-                      <option value="texture_pack">Texture Pack</option>
-                      <option value="world">World/Map</option>
-                      <option value="template">Template</option>
-                      <option value="structure">Structure</option>
-                      <option value="skin">Skin</option>
-                    </select>
-                  </div>
-                </>
-              )}
+              <div>
+                <label className="block text-sm font-medium text-mc-text mb-2">Type</label>
+                <select
+                  value={uploadType}
+                  onChange={(e) => setUploadType(e.target.value)}
+                  disabled={uploading}
+                  className="input"
+                >
+                  <option value="addon">Addon</option>
+                  <option value="texture_pack">Texture Pack</option>
+                  <option value="world">World/Map</option>
+                  <option value="template">Template</option>
+                  <option value="structure">Structure</option>
+                  <option value="skin">Skin</option>
+                </select>
+              </div>
 
               <div>
                 <label className="block text-sm font-medium text-mc-text mb-2">Description</label>
@@ -607,13 +627,11 @@ function ModLibrary() {
                     />
                   </div>
                   <p className="text-xs text-mc-textMuted mt-2">
-                    {uploadFiles.length > 1
-                      ? `Uploading ${uploadIndex + 1} of ${uploadFiles.length}${uploadProgress == null ? '' : uploadProgress < 100 ? ` — ${uploadProgress}%` : ' — saving'}`
-                      : uploadProgress == null
-                        ? 'Uploading…'
-                        : uploadProgress < 100
-                          ? `Uploading ${uploadProgress}%`
-                          : 'Saving to the library…'}
+                    {uploadProgress == null
+                      ? 'Uploading…'
+                      : uploadProgress < 100
+                        ? `Uploading ${uploadProgress}%`
+                        : 'Saving to the library…'}
                   </p>
                 </div>
               )}
@@ -629,9 +647,7 @@ function ModLibrary() {
                       <Loader2 className="w-4 h-4 animate-spin" />
                       {uploadProgress != null && uploadProgress < 100
                         ? `Uploading ${uploadProgress}%`
-                        : uploadFiles.length > 1
-                          ? `Uploading ${uploadIndex + 1} of ${uploadFiles.length}`
-                          : 'Uploading...'}
+                        : 'Uploading...'}
                     </>
                   ) : (
                     <>
@@ -689,6 +705,7 @@ function ModLibrary() {
                 <p className="text-xs text-mc-textMuted mt-2">
                   Paste a CurseForge Bedrock project URL. The address must start with{' '}
                   <span className="text-mc-text">https://www.curseforge.com/minecraft-bedrock</span>.
+                  If the project has more than one file type, the latest of each is saved as one library mod.
                 </p>
                 {curseforgeUrl.trim() && !curseforgeUrlValid && (
                   <p className="text-xs text-red-400 mt-2">
@@ -822,6 +839,72 @@ function ModLibrary() {
                   Cancel
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete from library */}
+      {deleteModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4">
+          <div className="card max-w-md w-full animate-slide-up">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">
+                {deleteModal.servers.length ? 'Remove installed mod' : 'Delete mod'}
+              </h3>
+              <button
+                onClick={() => setDeleteModal(null)}
+                disabled={deleting}
+                className="p-1 hover:bg-mc-surfaceLight rounded disabled:opacity-30"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            {deleteModal.servers.length ? (
+              <>
+                <p className="text-sm text-mc-textMuted mb-3">
+                  This mod is installed on {deleteModal.servers.length}{' '}
+                  {deleteModal.servers.length === 1 ? 'server' : 'servers'}:
+                </p>
+                <ul className="mb-4 space-y-1 max-h-40 overflow-y-auto">
+                  {deleteModal.servers.map((server) => (
+                    <li key={server.id} className="text-sm text-white flex items-center gap-2">
+                      <Server className="w-4 h-4 text-mc-textMuted flex-shrink-0" />
+                      {server.name}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-sm text-mc-textMuted mb-4">
+                  Would you like it removed from ALL servers and the mod library?
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-mc-textMuted mb-4">
+                Delete <strong className="text-white">{deleteModal.mod.name}</strong> from the mod library?
+              </p>
+            )}
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => performDelete(deleteModal.mod.id, deleteModal.servers.length > 0)}
+                disabled={deleting}
+                className="btn btn-primary flex-1"
+              >
+                {deleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Removing...
+                  </>
+                ) : (
+                  'Yes'
+                )}
+              </button>
+              <button
+                onClick={() => setDeleteModal(null)}
+                disabled={deleting}
+                className="btn btn-secondary"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>
@@ -1027,6 +1110,19 @@ function typeFromFileName(name) {
   return 'addon';
 }
 
+function extraArchiveNames(mod) {
+  if (!mod?.extra_files) return [];
+  try {
+    const parsed = typeof mod.extra_files === 'string' ? JSON.parse(mod.extra_files) : mod.extra_files;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => item?.name || (item?.path ? String(item.path).split(/[\\/]/).pop() : ''))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 function libraryThumbnailSrc(mod) {
   if (!mod?.thumbnail) return '';
   const value = String(mod.thumbnail);
@@ -1107,6 +1203,9 @@ function LibraryTile({
   const sizeLabel = Number.isFinite(mod.file_size)
     ? `${(mod.file_size / 1024).toFixed(1)} KB`
     : '';
+  const extraNames = extraArchiveNames(mod);
+  const primaryName = mod.file_path ? String(mod.file_path).split(/[\\/]/).pop() : '';
+  const archiveNames = [primaryName, ...extraNames].filter(Boolean);
 
   return (
     <div
@@ -1167,12 +1266,24 @@ function LibraryTile({
       </p>
 
       <div className={`flex items-center gap-3 text-mc-textMuted mb-3 ${expanded ? 'text-sm' : 'text-xs'}`}>
-        <span>v{mod.version || '1.0.0'}</span>
+        {expanded && <span>v{mod.version || '1.0.0'}</span>}
         {sizeLabel && <span>{sizeLabel}</span>}
+        {expanded
+          ? archiveNames.length > 1 && <span>{archiveNames.length} files</span>
+          : archiveNames.length > 0 && (
+            <span>{archiveNames.length} {archiveNames.length === 1 ? 'file' : 'files'}</span>
+          )}
         {expanded && mod.downloaded_at && (
           <span>Added {new Date(mod.downloaded_at).toLocaleDateString()}</span>
         )}
       </div>
+      {expanded && archiveNames.length > 1 && (
+        <ul className="text-xs text-mc-textMuted mb-3 space-y-1">
+          {archiveNames.map((name) => (
+            <li key={name}>{name}</li>
+          ))}
+        </ul>
+      )}
 
       <div className={`flex items-center gap-2 ${expanded ? '' : 'mt-auto'}`} onClick={(event) => event.stopPropagation()}>
         <button

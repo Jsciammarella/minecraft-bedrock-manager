@@ -8,7 +8,9 @@ const modManager = require('./modManager');
 const packInstaller = require('./packInstaller');
 const packFiles = require('./packFiles');
 const gitCatalog = require('./gitCatalogClient');
+const curseforge = require('./curseforgeClient');
 const platform = require('./platform');
+const modArchives = require('./modArchives');
 
 const SCRIPT_PATH = path.join(__dirname, '../scripts/fetch-curseforge-mod.py');
 const MODS_DIR = path.join(__dirname, '../../data/mods');
@@ -231,6 +233,7 @@ async function importFromUrl(url) {
   fs.mkdirSync(workRoot, { recursive: true });
   const workDir = fs.mkdtempSync(path.join(workRoot, 'job-'));
   let filePath = '';
+  let copiedPaths = [];
   try {
     await runFetchScript(projectUrl, workDir);
     const metaPath = findModJson(workDir);
@@ -238,15 +241,12 @@ async function importFromUrl(url) {
       throw new Error('The CurseForge fetch script did not create a catalog folder');
     }
     const catalogMod = gitCatalog.parseModMetaFile(metaPath, workDir);
-    if (!catalogMod?.filePath || !fs.existsSync(catalogMod.filePath)) {
+    const fetchedPaths = (catalogMod?.filePaths || (catalogMod?.filePath ? [catalogMod.filePath] : []))
+      .filter((filePath) => filePath && fs.existsSync(filePath) && packFiles.isImportExt(path.extname(filePath)));
+    if (!fetchedPaths.length) {
       throw new Error(
         'Could not download a pack file from this CurseForge page. The project may not have a downloadable .mcaddon or .mcpack.'
       );
-    }
-
-    const ext = path.extname(catalogMod.filePath).toLowerCase();
-    if (!packFiles.isImportExt(ext)) {
-      throw new Error(packFiles.unsupportedMessage(ext));
     }
 
     const duplicate = existingLibraryMod(projectSlug, [catalogMod.slug, projectSlug]);
@@ -254,20 +254,45 @@ async function importFromUrl(url) {
       throw new Error(`"${duplicate.name}" is already in the library`);
     }
 
-    await packInstaller.verifyArchive(catalogMod.filePath);
+    const projectClass = curseforge.sanitizeProjectClass(parts[1]);
+    let copied = [];
+    if (curseforge.apiKey) {
+      try {
+        const modId = await curseforge.findModIdBySlug(projectSlug, projectClass);
+        if (modId) copied = await curseforge.downloadLatestArchives(modId, projectSlug);
+      } catch (err) {
+        logger.warn(`CurseForge API multi-file import failed, using fetched pack: ${err.message}`);
+      }
+    }
+    if (!copied.length) {
+      fs.mkdirSync(MODS_DIR, { recursive: true });
+      copied = [];
+      for (const sourcePath of fetchedPaths) {
+        await packInstaller.verifyArchive(sourcePath);
+        const safeName = modManager.getAvailableFilename(
+          modManager.sanitizeFilename(path.basename(sourcePath))
+        );
+        const destPath = path.join(MODS_DIR, safeName);
+        fs.copyFileSync(sourcePath, destPath);
+        copied.push({
+          path: destPath,
+          kind: packFiles.typeFromExt(sourcePath),
+          size: fs.statSync(destPath).size,
+          name: path.basename(destPath),
+        });
+      }
+    }
+    copied.forEach((item) => copiedPaths.push(item.path));
 
-    const safeName = modManager.getAvailableFilename(
-      modManager.sanitizeFilename(path.basename(catalogMod.filePath))
-    );
-    fs.mkdirSync(MODS_DIR, { recursive: true });
-    filePath = path.join(MODS_DIR, safeName);
-    fs.copyFileSync(catalogMod.filePath, filePath);
-    const fileSize = fs.statSync(filePath).size;
+    const primary = copied[0];
+    filePath = primary.path;
+    const extraFiles = copied.length > 1 ? modArchives.serializeExtraFiles(copied.slice(1)) : null;
+    const fileSize = copied.reduce((sum, file) => sum + (file.size || 0), 0);
     const slug = modManager.getAvailableSlug(catalogMod.slug || catalogMod.name || projectSlug);
 
     const insert = db.prepare(`
-      INSERT INTO mods (name, slug, type, version, description, author, thumbnail, file_path, file_size, curseforge_id, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'curseforge')
+      INSERT INTO mods (name, slug, type, version, description, author, thumbnail, file_path, file_size, extra_files, curseforge_id, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'curseforge')
     `);
 
     let result;
@@ -275,17 +300,22 @@ async function importFromUrl(url) {
       result = insert.run(
         catalogMod.name || projectSlug,
         slug,
-        catalogMod.type || packFiles.typeFromExt(safeName, 'addon'),
+        catalogMod.type || packFiles.typeFromExt(primary.name, 'addon'),
         catalogMod.version || '1.0.0',
         catalogMod.description || '',
         catalogMod.author || '',
         '',
         filePath,
         fileSize,
+        extraFiles,
         projectSlug
       );
     } catch (err) {
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      for (const stored of copiedPaths) {
+        if (stored && fs.existsSync(stored)) {
+          try { fs.unlinkSync(stored); } catch { /* ignore */ }
+        }
+      }
       if (String(err.message || '').includes('UNIQUE constraint failed')) {
         throw new Error(`"${catalogMod.name || projectSlug}" is already in the library`);
       }
@@ -307,8 +337,11 @@ async function importFromUrl(url) {
     logger.info(`Imported CurseForge mod: ${catalogMod.name || projectSlug}`);
     return db.prepare('SELECT * FROM mods WHERE id = ?').get(result.lastInsertRowid);
   } catch (err) {
-    if (filePath && fs.existsSync(filePath)) {
-      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+    const leftover = copiedPaths.length ? copiedPaths : (filePath ? [filePath] : []);
+    for (const stored of leftover) {
+      if (stored && fs.existsSync(stored)) {
+        try { fs.unlinkSync(stored); } catch { /* ignore */ }
+      }
     }
     throw err;
   } finally {

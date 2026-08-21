@@ -5,7 +5,7 @@ import ModTileTags from '../components/ModTileTags';
 import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
 import {
   ArrowLeft, Search, Download, Package, AlertCircle, Check, Loader2,
-  ExternalLink, Star, Settings, GitBranch, RefreshCw, X
+  ExternalLink, Star, Settings, GitBranch, RefreshCw, X, Folder
 } from 'lucide-react';
 
 const CATALOG_PAGE_SIZE = 40;
@@ -18,7 +18,7 @@ function ModCatalog() {
   const [error, setError] = useState('');
   const [warning, setWarning] = useState('');
   const [success, setSuccess] = useState('');
-  const [sources, setSources] = useState({ curseforge: { available: false }, git: { available: false } });
+  const [sources, setSources] = useState({ curseforge: { available: false }, git: { available: false }, file: { available: false } });
 
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
@@ -27,6 +27,9 @@ function ModCatalog() {
   const [total, setTotal] = useState(0);
   const [sortBy, setSortBy] = useState('relevancy');
   const [downloadModal, setDownloadModal] = useState(null);
+  const [filePicker, setFilePicker] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [multiFileMode, setMultiFileMode] = useState('manual');
   const [downloading, setDownloading] = useState(false);
   const [expandedMod, setExpandedMod] = useState(null);
   const { status, startSync } = useGitCatalogSync();
@@ -34,6 +37,7 @@ function ModCatalog() {
 
   useEffect(() => {
     loadCategories();
+    loadMultiFileMode();
     searchMods();
   }, []);
 
@@ -50,6 +54,31 @@ function ModCatalog() {
     }
     wasSyncing.current = Boolean(status.running);
   }, [status.running]);
+
+  const loadMultiFileMode = async () => {
+    try {
+      const res = await modApi.catalogSettings();
+      if (res.data?.multiFileMode === 'auto' || res.data?.multiFileMode === 'manual') {
+        setMultiFileMode(res.data.multiFileMode);
+      }
+    } catch {
+      /* keep the default until settings load */
+    }
+  };
+
+  const handleMultiFileMode = async (nextMode) => {
+    const previous = multiFileMode;
+    setMultiFileMode(nextMode);
+    try {
+      const res = await modApi.setCatalogMultiFileMode(nextMode);
+      if (res.data?.multiFileMode === 'auto' || res.data?.multiFileMode === 'manual') {
+        setMultiFileMode(res.data.multiFileMode);
+      }
+    } catch (err) {
+      setMultiFileMode(previous);
+      setError(err.response?.data?.error || err.message || 'Could not save multi-file handling');
+    }
+  };
 
   const loadCategories = async () => {
     try {
@@ -111,20 +140,40 @@ function ModCatalog() {
     }
   };
 
-  const handleDownload = async () => {
-    const mod = downloadModal;
+  const handleDownload = async (files) => {
+    const mod = filePicker?.mod || downloadModal;
     if (!mod) return;
+    if (filePicker && (!files || files.length < 1)) {
+      setError('Select at least one file to download');
+      return;
+    }
     setDownloading(true);
+    setError('');
     try {
-      await modApi.catalogDownload(mod);
+      const res = await modApi.catalogDownload(mod, undefined, files);
+      if (res.data?.needsSelection) {
+        const choices = res.data.files || [];
+        setFilePicker({ mod, files: choices });
+        setSelectedFiles(choices.map((file) => file.id));
+        setDownloadModal(null);
+        return;
+      }
       setSuccess(`"${mod.name}" downloaded to mod library!`);
       setDownloadModal(null);
+      setFilePicker(null);
+      setExpandedMod(null);
       setTimeout(() => setSuccess(''), 4000);
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Download failed');
     } finally {
       setDownloading(false);
     }
+  };
+
+  const togglePickedFile = (id) => {
+    setSelectedFiles((current) => (
+      current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
+    ));
   };
 
   const getTypeBadge = (type) => {
@@ -137,9 +186,13 @@ function ModCatalog() {
     return <span className={`badge ${colors[type] || 'badge-info'}`}>{(type || 'addon').replace('_', ' ')}</span>;
   };
 
-  const getSourceBadge = (modSource) => {
+  const getSourceBadge = (modSource, fileKind) => {
     if (modSource === 'git') {
       return <span className="badge badge-success">Git</span>;
+    }
+    if (modSource === 'file') {
+      const label = fileKind === 'smb' ? 'SMB' : fileKind === 'nfs' ? 'NFS' : 'Local';
+      return <span className="badge badge-warning">{label}</span>;
     }
     return <span className="badge badge-info">CurseForge</span>;
   };
@@ -156,9 +209,11 @@ function ModCatalog() {
 
   const searchingLabel = source === 'git'
     ? 'Searching Git catalog...'
-    : source === 'curseforge'
-      ? 'Searching CurseForge...'
-      : 'Searching catalog...';
+    : source === 'file'
+      ? 'Searching file catalog...'
+      : source === 'curseforge'
+        ? 'Searching CurseForge...'
+        : 'Searching catalog...';
 
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto">
@@ -169,7 +224,7 @@ function ModCatalog() {
           </button>
           <div>
             <h1 className="text-2xl font-bold text-white">Mod Catalog</h1>
-            <p className="text-mc-textMuted mt-1">Browse and download from CurseForge and a Git catalog</p>
+            <p className="text-mc-textMuted mt-1">Browse and download from CurseForge, Git, and file catalogs</p>
           </div>
         </div>
         <div className="page-header-actions flex items-center gap-2">
@@ -222,16 +277,32 @@ function ModCatalog() {
       )}
 
       <form onSubmit={handleSearch} className="card mb-6">
-        <div className="flex flex-col md:flex-row gap-4">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-mc-textMuted" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="input pl-10"
-              placeholder="Search for addons, texture packs, maps..."
-            />
+        <div className="flex flex-col md:flex-row md:items-start gap-4">
+          <div className="flex-1">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-mc-textMuted" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="input pl-10"
+                placeholder="Search for addons, texture packs, maps..."
+              />
+            </div>
+            <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 items-center mt-3">
+              <span className="text-sm font-medium text-white whitespace-nowrap">Multi-file handling:</span>
+              <button
+                type="button"
+                onClick={() => handleMultiFileMode(multiFileMode === 'auto' ? 'manual' : 'auto')}
+                className="btn btn-secondary text-sm border-2 border-mc-accent w-[6.5rem] justify-center shrink-0 justify-self-start"
+                title="Automatic mode downloads the latest file of each type"
+              >
+                {multiFileMode === 'auto' ? 'Auto' : 'Manual'}
+              </button>
+              <p className="col-span-2 text-xs text-mc-textMuted">
+                Automatic mode may not download all required mod files
+              </p>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <select
@@ -242,6 +313,7 @@ function ModCatalog() {
               <option value="all">All Sources</option>
               <option value="curseforge">CurseForge</option>
               <option value="git">Git Repository</option>
+              <option value="file">File Catalog</option>
             </select>
             <select
               value={category}
@@ -283,7 +355,7 @@ function ModCatalog() {
           <Package className="w-16 h-16 text-mc-textMuted mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">No mods found</h3>
           <p className="text-mc-textMuted mb-6">
-            {sources.git?.available || sources.curseforge?.available
+            {sources.git?.available || sources.curseforge?.available || sources.file?.available
               ? 'Try adjusting your search or filters'
               : 'Configure a Git repository or CurseForge API key to populate the catalog'}
           </p>
@@ -347,11 +419,15 @@ function ModCatalog() {
             <h3 className="text-lg font-semibold text-white mb-2">Download Mod</h3>
             <p className="text-sm text-mc-textMuted mb-4">
               Download <strong className="text-white">{downloadModal.name}</strong> to your mod library
-              {downloadModal.source === 'git' ? ' from the Git catalog' : ' from CurseForge'}?
+              {downloadModal.source === 'git'
+                ? ' from the Git catalog'
+                : downloadModal.source === 'file'
+                  ? ' from the file catalog'
+                  : ' from CurseForge'}?
             </p>
             <div className="flex items-center gap-3">
               <button
-                onClick={handleDownload}
+                onClick={() => handleDownload()}
                 disabled={downloading}
                 className="btn btn-primary flex-1"
               >
@@ -370,6 +446,75 @@ function ModCatalog() {
               <button
                 onClick={() => setDownloadModal(null)}
                 className="btn btn-secondary"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {filePicker && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4">
+          <div className="card max-w-lg w-full animate-slide-up max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-semibold text-white mb-2">Choose files to download</h3>
+            <p className="text-sm text-mc-textMuted mb-3">
+              <strong className="text-white">{filePicker.mod.name}</strong> includes more than one file.
+              Select at least one.
+            </p>
+            <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-300">
+                Multiple files of the same type may cause unexpected behavior, the mod to malfunction, or the world not to start.
+              </p>
+            </div>
+            <div className="space-y-2 mb-4">
+              {filePicker.files.map((file) => (
+                <label
+                  key={file.id}
+                  className="flex items-start gap-3 p-3 bg-mc-darker rounded-lg cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedFiles.includes(file.id)}
+                    onChange={() => togglePickedFile(file.id)}
+                    className="mt-1"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-sm text-white break-all">{file.name}</span>
+                    <span className="block text-xs text-mc-textMuted">
+                      {(file.type || 'file').replace('_', ' ')}
+                      {file.extension ? ` • ${file.extension}` : ''}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => handleDownload(selectedFiles)}
+                disabled={downloading || selectedFiles.length < 1}
+                className="btn btn-primary flex-1"
+              >
+                {downloading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Downloading...
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4" />
+                    Download selected
+                  </>
+                )}
+              </button>
+              <button
+                onClick={() => {
+                  setFilePicker(null);
+                  setSelectedFiles([]);
+                }}
+                className="btn btn-secondary"
+                disabled={downloading}
               >
                 Cancel
               </button>
@@ -481,13 +626,15 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
           <div className="w-full h-full flex items-center justify-center">
             {mod.source === 'git'
               ? <GitBranch className={`${expanded ? 'w-12 h-12' : 'w-8 h-8'} text-mc-textMuted`} />
-              : <Package className={`${expanded ? 'w-12 h-12' : 'w-8 h-8'} text-mc-textMuted`} />}
+              : mod.source === 'file'
+                ? <Folder className={`${expanded ? 'w-12 h-12' : 'w-8 h-8'} text-mc-textMuted`} />
+                : <Package className={`${expanded ? 'w-12 h-12' : 'w-8 h-8'} text-mc-textMuted`} />}
           </div>
         )}
       </div>
       <ModTileTags>
         {getTypeBadge(mod.type)}
-        {getSourceBadge(mod.source)}
+        {getSourceBadge(mod.source, mod.fileKind)}
       </ModTileTags>
 
       <h3
@@ -527,7 +674,7 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
             target="_blank"
             rel="noopener noreferrer"
             className={`btn btn-secondary ${expanded ? '' : 'text-xs p-2'}`}
-            title={mod.source === 'git' ? 'View source' : 'View on CurseForge'}
+            title={mod.source === 'git' ? 'View source' : mod.source === 'file' ? 'Open catalog folder' : 'View on CurseForge'}
           >
             <ExternalLink className={expanded ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
           </a>

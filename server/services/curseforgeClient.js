@@ -6,6 +6,8 @@ const db = require('../db/connection');
 const logger = require('./logger');
 const modManager = require('./modManager');
 const settingsStore = require('./settingsStore');
+const packFiles = require('./packFiles');
+const modArchives = require('./modArchives');
 
 const CURSEFORGE_API = 'https://api.curseforge.com';
 // CurseForge game 1132 is not Minecraft Bedrock; searches against it return an empty catalog.
@@ -174,13 +176,13 @@ class CurseForgeClient {
     }
   }
 
-  async downloadMod(slug, projectClass = 'addons', serverId = null, apiFile = {}) {
+  async downloadMod(slug, projectClass = 'addons', serverId = null, apiFile = {}, selectedFileIds = []) {
     const modPath = path.join(__dirname, '../../data/mods');
     const safeClass = this.sanitizeProjectClass(projectClass);
     
     try {
-      if (this.apiKey && apiFile.modId && apiFile.fileId) {
-        return await this.downloadViaAPI(slug, safeClass, serverId, apiFile);
+      if (this.apiKey && apiFile.modId) {
+        return await this.downloadViaAPI(slug, safeClass, serverId, apiFile, selectedFileIds);
       }
       // Get mod page
       const response = await axios.get(
@@ -300,48 +302,161 @@ class CurseForgeClient {
     });
   }
 
-  async downloadViaAPI(slug, projectClass, serverId, { modId, fileId }) {
+  async downloadViaAPI(slug, projectClass, serverId, { modId, fileId }, selectedFileIds = []) {
     const headers = { 'X-API-Key': this.apiKey };
-    const [modResponse, fileResponse, urlResponse] = await Promise.all([
-      axios.get(`${CURSEFORGE_API}/v1/mods/${modId}`, { headers, timeout: 10000 }),
-      axios.get(`${CURSEFORGE_API}/v1/mods/${modId}/files/${fileId}`, { headers, timeout: 10000 }),
-      axios.get(`${CURSEFORGE_API}/v1/mods/${modId}/files/${fileId}/download-url`, { headers, timeout: 10000 }),
-    ]);
+    const modResponse = await axios.get(`${CURSEFORGE_API}/v1/mods/${modId}`, { headers, timeout: 10000 });
     const item = modResponse.data.data;
-    const file = fileResponse.data.data;
-    const downloadUrl = urlResponse.data.data || file.downloadUrl;
-    if (!downloadUrl) throw new Error('CurseForge did not provide a download URL for this file');
+    const copied = await this.downloadLatestArchives(modId, slug, fileId, selectedFileIds);
+    if (!copied.length) throw new Error('CurseForge did not provide a downloadable Bedrock file');
 
-    const downloadResponse = await axios.get(downloadUrl, {
-      responseType: 'arraybuffer',
-      timeout: 60000,
-      headers,
-    });
-    const filename = modManager.sanitizeFilename(file.fileName || `${slug}.mcaddon`);
-    const filePath = path.join(__dirname, '../../data/mods', filename);
-    fs.writeFileSync(filePath, Buffer.from(downloadResponse.data));
-
+    const primary = copied[0];
+    const extraFiles = modArchives.serializeExtraFiles(copied.slice(1));
+    const fileSize = copied.reduce((sum, file) => sum + (file.size || 0), 0);
     const result = db.prepare(`
       INSERT OR IGNORE INTO mods
-        (name, slug, type, version, description, author, thumbnail, file_path, file_size, curseforge_id, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'curseforge')
+        (name, slug, type, version, description, author, thumbnail, file_path, file_size, extra_files, curseforge_id, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'curseforge')
     `).run(
       item.name,
       slug,
       this.typeFromProjectClass(projectClass),
-      file.displayName || '1.0.0',
+      copied[0].version || '1.0.0',
       item.summary || '',
       item.authors?.[0]?.name || 'Unknown',
       item.logo?.thumbnailUrl || item.logo?.url || '',
-      filePath,
-      fs.statSync(filePath).size,
+      primary.path,
+      fileSize,
+      extraFiles,
       String(modId)
     );
     const storedId = result.changes
       ? result.lastInsertRowid
       : db.prepare('SELECT id FROM mods WHERE curseforge_id = ?').get(String(modId))?.id;
+    if (storedId && !result.changes) {
+      db.prepare(`
+        UPDATE mods
+        SET extra_files = ?, file_path = ?, file_size = ?, downloaded_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(extraFiles, primary.path, fileSize, storedId);
+    }
     if (serverId && storedId) await modManager.installModToServer(serverId, storedId);
-    return { success: true, modId: storedId, name: item.name };
+    return { success: true, modId: storedId, name: item.name, files: copied.map((file) => file.name) };
+  }
+
+  async findModIdBySlug(slug, projectClass = 'addons') {
+    if (!this.apiKey || !slug) return null;
+    const headers = { 'X-API-Key': this.apiKey };
+    const params = {
+      gameId: MINECRAFT_BEDROCK_GAME_ID,
+      slug,
+      pageSize: 5,
+    };
+    if (BEDROCK_CLASS_IDS[projectClass]) params.classId = BEDROCK_CLASS_IDS[projectClass];
+    const response = await axios.get(`${CURSEFORGE_API}/v1/mods/search`, {
+      params,
+      headers,
+      timeout: 10000,
+    });
+    const match = (response.data.data || []).find((item) => item.slug === slug);
+    return match?.id || null;
+  }
+
+  async downloadLatestArchives(modId, slug, preferredFileId, selectedFileIds = []) {
+    const headers = { 'X-API-Key': this.apiKey };
+    const listed = await this.listModFiles(modId, headers);
+    const files = selectedFileIds.length
+      ? this.filesByIds(listed, selectedFileIds)
+      : this.latestFilesByExtension(listed, preferredFileId);
+    const copied = [];
+    for (const file of files) {
+      const urlResponse = await axios.get(
+        `${CURSEFORGE_API}/v1/mods/${modId}/files/${file.id}/download-url`,
+        { headers, timeout: 10000 }
+      );
+      const downloadUrl = urlResponse.data.data || file.downloadUrl;
+      if (!downloadUrl) throw new Error(`CurseForge did not provide a download URL for ${file.fileName || file.id}`);
+      const downloadResponse = await axios.get(downloadUrl, {
+        responseType: 'arraybuffer',
+        timeout: 120000,
+        headers,
+      });
+      const filename = modManager.getAvailableFilename(
+        modManager.sanitizeFilename(file.fileName || `${slug}${path.extname(file.fileName || '') || '.mcaddon'}`)
+      );
+      const filePath = path.join(__dirname, '../../data/mods', filename);
+      fs.writeFileSync(filePath, Buffer.from(downloadResponse.data));
+      copied.push({
+        path: filePath,
+        kind: packFiles.typeFromExt(file.fileName || filePath),
+        size: fs.statSync(filePath).size,
+        name: path.basename(filePath),
+        version: file.displayName || '1.0.0',
+      });
+    }
+    return copied;
+  }
+
+  async listModFiles(modId, headers) {
+    const files = [];
+    let index = 0;
+    for (let page = 0; page < 10; page += 1) {
+      const response = await axios.get(`${CURSEFORGE_API}/v1/mods/${modId}/files`, {
+        params: { index, pageSize: 50 },
+        headers,
+        timeout: 15000,
+      });
+      const batch = response.data.data || [];
+      files.push(...batch);
+      const total = response.data.pagination?.totalCount || files.length;
+      index += batch.length;
+      if (!batch.length || index >= total) break;
+    }
+    return files;
+  }
+
+  filesByIds(files, selectedFileIds) {
+    const wanted = new Set(selectedFileIds.map(String));
+    const selected = (files || []).filter((file) => wanted.has(String(file.id)));
+    if (!selected.length) throw new Error('Select at least one catalog file to download');
+    return selected;
+  }
+
+  async listDownloadableFiles(modId) {
+    if (!this.apiKey || !modId) return [];
+    const files = await this.listModFiles(modId, { 'X-API-Key': this.apiKey });
+    return (files || [])
+      .filter((file) => packFiles.isImportExt(path.extname(file.fileName || '')))
+      .sort((a, b) => new Date(b.fileDate || 0) - new Date(a.fileDate || 0))
+      .map((file) => ({
+        id: String(file.id),
+        name: file.fileName || `file-${file.id}`,
+        type: packFiles.typeFromExt(file.fileName || ''),
+        extension: path.extname(file.fileName || '').toLowerCase(),
+        date: file.fileDate || '',
+        size: file.fileLength || 0,
+      }));
+  }
+
+  latestFilesByExtension(files, preferredFileId) {
+    const byExt = new Map();
+    for (const file of files || []) {
+      const ext = path.extname(file.fileName || '').toLowerCase();
+      if (!packFiles.isImportExt(ext)) continue;
+      const date = new Date(file.fileDate || 0).getTime();
+      const prev = byExt.get(ext);
+      if (!prev || date > prev.date) byExt.set(ext, { file, date });
+    }
+    const selected = [...byExt.values()].map((item) => item.file);
+    if (!selected.length && preferredFileId) {
+      const fallback = (files || []).find((file) => String(file.id) === String(preferredFileId));
+      if (fallback) selected.push(fallback);
+    }
+    selected.sort((a, b) => {
+      const rank = { '.mcaddon': 0, '.zip': 1, '.mcpack': 2, '.mcworld': 3, '.mctemplate': 4, '.mcstructure': 5 };
+      return (rank[path.extname(a.fileName || '').toLowerCase()] ?? 9)
+        - (rank[path.extname(b.fileName || '').toLowerCase()] ?? 9);
+    });
+    return selected;
   }
 
   projectClassFromItem(item) {

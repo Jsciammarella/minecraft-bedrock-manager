@@ -240,4 +240,9 @@ if (!accessColumns.has('has_custom_permission')) {
   db.exec('UPDATE server_player_access SET has_custom_permission = 1');
 }
 
+const modColumns = new Set(db.prepare('PRAGMA table_info(mods)').all().map(column => column.name));
+if (!modColumns.has('extra_files')) {
+  db.exec('ALTER TABLE mods ADD COLUMN extra_files TEXT');
+}
+
 module.exports = db;

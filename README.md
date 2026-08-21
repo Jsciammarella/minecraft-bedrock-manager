@@ -38,7 +38,7 @@ Download the latest `MinecraftBedrockManager-*.exe` from [GitHub Releases](https
 - Create a Bedrock server from the dashboard. The tile shows **Building Server** while the official Linux zip downloads.
 - Use the **Remote** toggle on Create Server to advertise a Bedrock world that already runs on another pingable host.
 - Use **Bedrock Connect** on the dashboard if consoles need a custom server list, then open **BedrockConnect** in the sidebar for DNS instructions.
-- Optional: **Mod Catalog → Settings** for CurseForge or a Git catalog.
+- Optional: **Mod Catalog → Settings** for CurseForge, a Git catalog, or a file catalog.
 - Later updates: use `upgrade.sh` below. Never run `docker compose down -v`.
 
 ### Update (keep production data)
@@ -128,7 +128,7 @@ Per-server allowlists, operator permissions, and bans. Scan running servers (Bed
 
 Upload `.mcpack`, `.mcaddon`, `.mcworld`, `.mctemplate`, `.mcstructure`, and `.zip` files into the mod library, then install them onto a server. Archives are extracted: behavior/resource packs go into the correct folders and world pack JSON is updated; worlds and templates replace `level-name`; structure files go into the world's `structures/` folder.
 
-**Mod Catalog** can search CurseForge (an API key is recommended) and an optional Git repository of packs. Configure those on **Mod Catalog → Settings**. Git URL, branch, token, and Test stay disabled until **Enable Git catalog** is on. **Sync Now** stays disabled until the Git catalog is enabled and an access token has been saved. See [docs/git-mod-catalog.md](docs/git-mod-catalog.md) for the repository layout.
+**Mod Catalog** can search CurseForge (an API key is recommended), an optional Git repository of packs, and optional local or network folders. Configure those on **Mod Catalog → Settings**. Git URL, branch, token, and Test stay disabled until **Enable Git catalog** is on. **Sync Now** stays disabled until the Git catalog is enabled and an access token has been saved. See [docs/git-mod-catalog.md](docs/git-mod-catalog.md) and [docs/file-mod-catalog.md](docs/file-mod-catalog.md).
 
 ### Ports
 
@@ -191,6 +191,7 @@ Each server detail page has a live console capped at the last **200** lines, plu
 | `AUTO_UPDATE_CHECK_INTERVAL` | `86400` | Update-check interval in seconds |
 | `CURSEFORGE_API_KEY` | empty | Optional; can also be set in Catalog Settings |
 | `GIT_CATALOG_*` | empty | Optional Git catalog; preferred configuration is **Mod Catalog → Settings** |
+| `FILE_CATALOG_*` | empty | Optional file catalog (local / SMB / NFS); preferred configuration is **Mod Catalog → Settings** |
 
 Never commit `.env`. Values saved in the UI override these environment variables.
 
@@ -253,6 +254,7 @@ Runtime state is not in Git:
 | Docker `mc-data` or native `data/servers/` | SQLite, worlds, properties, binaries |
 | `data/mods/` | Library packs and thumbnails |
 | `data/git-catalog/` | Cloned Git catalog |
+| `~/Minecraft Bedrock Manager/catalog/` (Windows: Public Documents) | Default local file catalog |
 | `data/bedrock-connect/` | Runtime Bedrock Connect JAR archive |
 | `data/phantom/` | Runtime Phantom binary |
 | `data/logs/` | Application logs |
@@ -263,7 +265,7 @@ Stop active servers before a consistent backup. Restore the whole data directory
 ## Known limitations
 
 - No built-in authentication.
-- CurseForge catalog is more reliable with an API key; a Git catalog can be used instead or as well.
+- CurseForge catalog is more reliable with an API key; a Git catalog or file catalog can be used instead or as well.
 - Official Bedrock zip download can fail; the manager will not pretend a stub is a real server unless `ALLOW_STUB_SERVER=1`.
 - Player bans are manager-enforced from observed connections.
 - LAN listing does not support Nintendo Switch and cannot share UDP `19132`/`19133` with a **running** Bedrock Connect instance.

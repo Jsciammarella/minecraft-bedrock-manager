@@ -6,6 +6,8 @@ frontend/node_modules/
 public/
 !frontend/public/
 !frontend/public/**
+__pycache__/
+*.py[cod]
 coverage/
 dist/*
 !dist/windows/

@@ -34,12 +34,15 @@ services:
       - GIT_CATALOG_TOKEN=${GIT_CATALOG_TOKEN:-}
       - GIT_CATALOG_SUBDIR=${GIT_CATALOG_SUBDIR:-}
       - GIT_CATALOG_SYNC_HOURS=${GIT_CATALOG_SYNC_HOURS:-2}
+      - FILE_CATALOG_LOCAL_PATH=${FILE_CATALOG_LOCAL_PATH:-/catalog}
       - CONNECT_HOST=${CONNECT_HOST:-}
       - AUTO_UPDATE_CHECK_INTERVAL=${AUTO_UPDATE_CHECK_INTERVAL:-86400}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     volumes:
       # Persistent data - server worlds, configs, mods
       - mc-data:/app/data
+      # Host-writable file catalog (extract the folder template here)
+      - "${FILE_CATALOG_HOST_DIR:-${HOME}/Minecraft Bedrock Manager/catalog}:/catalog"
       # Optional: mount custom logs directory
       - mc-logs:/app/data/logs
       # Shared scratch dir for CurseForge URL imports (sidecar writes, manager reads)

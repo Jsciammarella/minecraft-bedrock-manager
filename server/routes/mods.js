@@ -6,6 +6,9 @@ const path = require('path');
 const modManager = require('../services/modManager');
 const catalog = require('../services/catalogService');
 const gitCatalog = require('../services/gitCatalogClient');
+const fileCatalog = require('../services/fileCatalogClient');
+const fileCatalogTemplate = require('../services/fileCatalogTemplate');
+const gitCatalogTemplate = require('../services/gitCatalogTemplate');
 const packFiles = require('../services/packFiles');
 const curseforgeImporter = require('../services/curseforgeImporter');
 const mcpedlImporter = require('../services/mcpedlImporter');
@@ -21,7 +24,7 @@ const upload = multer({
       cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${safeName}`);
     },
   }),
-  limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB; files stream to disk instead of memory
+  limits: { fileSize: 1024 * 1024 * 1024, files: 20 }, // 1GB each; files stream to disk instead of memory
   fileFilter: (req, file, cb) => {
     const allowed = packFiles.IMPORT_EXTS;
     const ext = path.extname(file.originalname).toLowerCase();
@@ -70,9 +73,29 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+function collectedUploads(req) {
+  if (Array.isArray(req.files)) return req.files;
+  if (req.files && typeof req.files === 'object') {
+    return [...(req.files.files || []), ...(req.files.file || [])];
+  }
+  return req.file ? [req.file] : [];
+}
+
+function unlinkUploads(files) {
+  for (const file of files || []) {
+    if (file?.path && fs.existsSync(file.path)) {
+      try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+    }
+  }
+}
+
 // Upload a mod. Handle Multer here so validation errors are always useful JSON.
+// Accepts a single "file" field (older clients) or multiple "files" archives as one library mod.
 router.post('/upload', (req, res) => {
-  upload.single('file')(req, res, async (uploadError) => {
+  upload.fields([
+    { name: 'files', maxCount: 20 },
+    { name: 'file', maxCount: 20 },
+  ])(req, res, async (uploadError) => {
     if (uploadError) {
       const tooLarge = uploadError.code === 'LIMIT_FILE_SIZE';
       return res.status(tooLarge ? 413 : 400).json({
@@ -80,12 +103,13 @@ router.post('/upload', (req, res) => {
       });
     }
 
+    const files = collectedUploads(req);
     try {
-      if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-      const result = await modManager.uploadMod(req.file, req.body);
+      if (!files.length) return res.status(400).json({ error: 'No file uploaded' });
+      const result = await modManager.uploadMod(files, req.body);
       res.status(201).json(result);
     } catch (err) {
-      if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      unlinkUploads(files);
       res.status(400).json({ error: err.message });
     }
   });
@@ -150,7 +174,8 @@ router.get('/:id/thumbnail', async (req, res) => {
 // Delete a mod from library
 router.delete('/:id', async (req, res) => {
   try {
-    await modManager.deleteMod(req.params.id);
+    const uninstallFromServers = req.query.uninstallFromAll === '1' || req.query.uninstallFromAll === 'true';
+    await modManager.deleteMod(req.params.id, { uninstallFromServers });
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -207,6 +232,14 @@ router.get('/catalog/settings', async (req, res) => {
   }
 });
 
+router.put('/catalog/multi-file-mode', (req, res) => {
+  try {
+    res.json(catalog.setMultiFileMode(req.body?.mode));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 router.put('/catalog/settings', async (req, res) => {
   try {
     const previous = gitCatalog.getConfig();
@@ -231,6 +264,13 @@ router.put('/catalog/settings', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
+});
+
+router.get('/catalog/git/starter', (req, res) => {
+  const zip = gitCatalogTemplate.buildStarterZip();
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${gitCatalogTemplate.STARTER_FILENAME}"`);
+  res.send(zip);
 });
 
 router.get('/catalog/git/status', (req, res) => {
@@ -263,6 +303,36 @@ router.post('/catalog/git/sync', async (req, res) => {
 router.get('/catalog/git/thumbnail/:slug', async (req, res) => {
   try {
     const filePath = gitCatalog.getThumbnailPath(req.params.slug);
+    if (!filePath || !fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Thumbnail not found' });
+    }
+    res.sendFile(path.resolve(filePath), {
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/catalog/file/starter', (req, res) => {
+  const zip = fileCatalogTemplate.buildStarterZip();
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${fileCatalogTemplate.STARTER_FILENAME}"`);
+  res.send(zip);
+});
+
+router.post('/catalog/file/test', async (req, res) => {
+  try {
+    const result = await catalog.testFileConnection(req.body || {});
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/catalog/file/thumbnail/:kind/:slug', async (req, res) => {
+  try {
+    const filePath = fileCatalog.getThumbnailPath(req.params.kind, req.params.slug);
     if (!filePath || !fs.existsSync(filePath)) {
       return res.status(404).json({ error: 'Thumbnail not found' });
     }

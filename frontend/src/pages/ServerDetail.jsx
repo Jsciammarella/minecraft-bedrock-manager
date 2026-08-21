@@ -94,6 +94,7 @@ function ServerDetail() {
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [librarySearch, setLibrarySearch] = useState('');
   const [busyModId, setBusyModId] = useState(null);
+  const [removeModModal, setRemoveModModal] = useState(null);
   const [restartScheduling, setRestartScheduling] = useState(false);
   const [updateError, setUpdateError] = useState('');
   const [lanBusy, setLanBusy] = useState(false);
@@ -352,8 +353,15 @@ function ServerDetail() {
     }
   };
 
-  const handleRemoveMod = async (mod) => {
-    if (!confirm(`Remove "${mod.name}" from ${server.name}? It will remain in the manager's mod library.`)) return;
+  const handleRemoveMod = (mod) => {
+    if (!mod?.id || gameplayLocked || busyModId) return;
+    setRemoveModModal(mod);
+  };
+
+  const confirmRemoveMod = async () => {
+    const mod = removeModModal;
+    if (!mod || busyModId) return;
+    setRemoveModModal(null);
     setRemovingModId(mod.id);
     setBusyModId(mod.id);
     setModMessage(null);
@@ -1211,6 +1219,40 @@ function ServerDetail() {
               </button>
               <button
                 onClick={() => setShowUpdateModal(false)}
+                className="btn btn-secondary"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {removeModModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4">
+          <div className="card max-w-md w-full animate-slide-up">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">Remove mod</h3>
+              <button
+                onClick={() => setRemoveModModal(null)}
+                className="p-1 hover:bg-mc-surfaceLight rounded"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-sm text-mc-textMuted mb-4">
+              Remove <strong className="text-white">{removeModModal.name}</strong> from{' '}
+              <strong className="text-white">{server.name}</strong>? It will remain in the manager's mod library.
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={confirmRemoveMod}
+                className="btn btn-primary flex-1"
+              >
+                Yes
+              </button>
+              <button
+                onClick={() => setRemoveModModal(null)}
                 className="btn btn-secondary"
               >
                 Cancel

@@ -27,6 +27,7 @@ services:
       - GIT_CATALOG_TOKEN=${GIT_CATALOG_TOKEN:-}
       - GIT_CATALOG_SUBDIR=${GIT_CATALOG_SUBDIR:-}
       - GIT_CATALOG_SYNC_HOURS=${GIT_CATALOG_SYNC_HOURS:-2}
+      - FILE_CATALOG_LOCAL_PATH=${FILE_CATALOG_LOCAL_PATH:-/catalog}
       - CONNECT_HOST=${CONNECT_HOST:-}
       - LOG_LEVEL=debug
     volumes:
@@ -35,6 +36,7 @@ services:
       - ./frontend:/app/frontend
       - ./vendor:/app/vendor
       - ./data:/app/data
+      - "${FILE_CATALOG_HOST_DIR:-${HOME}/Minecraft Bedrock Manager/catalog}:/catalog"
       - mc-cf-fetch:/tmp/mc-cf-import
       # Avoid mounting node_modules from host
       - /app/node_modules

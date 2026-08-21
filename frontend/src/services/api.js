@@ -40,9 +40,14 @@ export const serverApi = {
 export const modApi = {
   getAll: () => api.get('/mods'),
   getById: (id) => api.get(`/mods/${id}`),
-  upload: (file, metadata, onProgress) => {
+  upload: (files, metadata, onProgress) => {
+    const list = (Array.isArray(files) ? files : [files]).filter(Boolean);
     const formData = new FormData();
-    formData.append('file', file);
+    if (list.length === 1) {
+      formData.append('file', list[0]);
+    } else {
+      list.forEach((file) => formData.append('files', file));
+    }
     if (metadata) Object.entries(metadata).forEach(([k, v]) => formData.append(k, v));
     return api.post('/mods/upload', formData, {
       timeout: 10 * 60 * 1000,
@@ -62,7 +67,10 @@ export const modApi = {
   importMcpedlUrl: (url) => api.post('/mods/import-mcpedl', { url }, {
     timeout: 20 * 60 * 1000,
   }),
-  delete: (id) => api.delete(`/mods/${id}`),
+  delete: (id, { uninstallFromAll } = {}) => api.delete(`/mods/${id}`, {
+    params: uninstallFromAll ? { uninstallFromAll: '1' } : undefined,
+    timeout: 10 * 60 * 1000,
+  }),
   update: (id, { description, thumbnailFile, clearThumbnail }) => {
     const formData = new FormData();
     if (description != null) formData.append('description', description);
@@ -81,19 +89,23 @@ export const modApi = {
   
   catalogSearch: (params) => api.get('/mods/catalog/search', { params, timeout: 90000 }),
   catalogCategories: () => api.get('/mods/catalog/categories'),
-  catalogDownload: (mod, serverId) => api.post(`/mods/catalog/download/${encodeURIComponent(mod.slug)}`, {
+  catalogDownload: (mod, serverId, files) => api.post(`/mods/catalog/download/${encodeURIComponent(mod.slug)}`, {
     source: mod.source || 'curseforge',
     projectClass: mod.projectClass,
     curseforgeId: mod.curseforgeId,
     fileId: mod.fileId,
+    fileKind: mod.fileKind,
     serverId,
-  }),
+    files,
+  }, { timeout: 10 * 60 * 1000 }),
+  setCatalogMultiFileMode: (mode) => api.put('/mods/catalog/multi-file-mode', { mode }),
   catalogDetails: (slug, projectClass, source) => api.get(`/mods/catalog/${encodeURIComponent(slug)}`, {
     params: { projectClass, source },
   }),
   catalogSettings: () => api.get('/mods/catalog/settings'),
   saveCatalogSettings: (data) => api.put('/mods/catalog/settings', data),
   testGitCatalog: (data) => api.post('/mods/catalog/git/test', data, { timeout: 45000 }),
+  testFileCatalog: (data) => api.post('/mods/catalog/file/test', data, { timeout: 45000 }),
   gitCatalogSyncStatus: () => api.get('/mods/catalog/git/status'),
   syncGitCatalog: () => api.post('/mods/catalog/git/sync'),
 };

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { modApi } from '../services/api';
 import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
 import {
-  ArrowLeft, Save, Loader2, Check, AlertCircle, RefreshCw, Eye, EyeOff, GitBranch
+  ArrowLeft, Save, Loader2, Check, AlertCircle, RefreshCw, Eye, EyeOff, GitBranch, Folder, Download
 } from 'lucide-react';
 
 function ModCatalogSettings() {
@@ -11,6 +11,7 @@ function ModCatalogSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [testingFile, setTestingFile] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [showCurseforgeKey, setShowCurseforgeKey] = useState(false);
@@ -32,6 +33,23 @@ function ModCatalogSettings() {
   const [gitSubdir, setGitSubdir] = useState('');
   const [gitLastSync, setGitLastSync] = useState('');
   const [gitModCount, setGitModCount] = useState(0);
+
+  const [fileEnabled, setFileEnabled] = useState(true);
+  const [fileModCount, setFileModCount] = useState(0);
+  const [defaultLocalPath, setDefaultLocalPath] = useState('');
+  const [localEnabled, setLocalEnabled] = useState(true);
+  const [localPath, setLocalPath] = useState('');
+  const [smbEnabled, setSmbEnabled] = useState(false);
+  const [smbPath, setSmbPath] = useState('');
+  const [smbUsername, setSmbUsername] = useState('');
+  const [smbPassword, setSmbPassword] = useState('');
+  const [smbPasswordSet, setSmbPasswordSet] = useState(false);
+  const [clearSmbPassword, setClearSmbPassword] = useState(false);
+  const [showSmbPassword, setShowSmbPassword] = useState(false);
+  const [nfsEnabled, setNfsEnabled] = useState(false);
+  const [nfsPath, setNfsPath] = useState('');
+  const [gitTestResult, setGitTestResult] = useState(null);
+  const [fileTestResults, setFileTestResults] = useState({});
 
   useEffect(() => {
     loadSettings();
@@ -69,6 +87,17 @@ function ModCatalogSettings() {
       setGitTokenSet(Boolean(data.git?.tokenSet));
       setGitSubdir(data.git?.subdir || '');
       applyGitSync(data);
+      setFileEnabled(data.files?.enabled !== false);
+      setFileModCount(data.files?.modCount || 0);
+      setDefaultLocalPath(data.files?.defaultLocalPath || '');
+      setLocalEnabled(data.files?.local?.enabled !== false);
+      setLocalPath(data.files?.local?.path || '');
+      setSmbEnabled(Boolean(data.files?.smb?.enabled));
+      setSmbPath(data.files?.smb?.path || '');
+      setSmbUsername(data.files?.smb?.username || '');
+      setSmbPasswordSet(Boolean(data.files?.smb?.passwordSet));
+      setNfsEnabled(Boolean(data.files?.nfs?.enabled));
+      setNfsPath(data.files?.nfs?.path || '');
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to load catalog settings');
     } finally {
@@ -81,6 +110,8 @@ function ModCatalogSettings() {
     setSaving(true);
     setError('');
     setSuccess('');
+    setGitTestResult(null);
+    setFileTestResults({});
     try {
       const payload = {
         git: {
@@ -90,25 +121,42 @@ function ModCatalogSettings() {
           username: gitUsername,
           subdir: gitSubdir,
         },
+        files: {
+          enabled: fileEnabled,
+          local: { enabled: localEnabled, path: localPath },
+          smb: { enabled: smbEnabled, path: smbPath, username: smbUsername },
+          nfs: { enabled: nfsEnabled, path: nfsPath },
+        },
       };
       if (clearCurseforgeApiKey) payload.clearCurseforgeApiKey = true;
       else if (curseforgeApiKey.trim()) payload.curseforgeApiKey = curseforgeApiKey.trim();
       if (clearGitToken) payload.clearGitToken = true;
       else if (gitToken.trim()) payload.git.token = gitToken.trim();
+      if (clearSmbPassword) payload.clearSmbPassword = true;
+      else if (smbPassword.trim()) payload.files.smb.password = smbPassword.trim();
 
       const res = await modApi.saveCatalogSettings(payload);
       const data = res.data;
       setCurseforgeConfigured(Boolean(data.curseforge?.configured));
       setGitTokenSet(Boolean(data.git?.tokenSet));
+      setSmbPasswordSet(Boolean(data.files?.smb?.passwordSet));
+      setFileModCount(data.files?.modCount || 0);
       applyGitSync(data);
       setCurseforgeApiKey('');
       setGitToken('');
+      setSmbPassword('');
       setClearCurseforgeApiKey(false);
       setClearGitToken(false);
+      setClearSmbPassword(false);
       setSuccess(data.git?.sync?.running
         ? 'Catalog settings saved. Git catalog is syncing in the background.'
         : 'Catalog settings saved');
       setTimeout(() => setSuccess(''), 4000);
+      requestAnimationFrame(() => {
+        const main = document.querySelector('main');
+        if (main) main.scrollTo({ top: 0, behavior: 'smooth' });
+        else window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to save settings');
     } finally {
@@ -118,8 +166,7 @@ function ModCatalogSettings() {
 
   const handleTest = async () => {
     setTesting(true);
-    setError('');
-    setSuccess('');
+    setGitTestResult(null);
     try {
       await modApi.testGitCatalog({
         url: gitUrl,
@@ -127,12 +174,45 @@ function ModCatalogSettings() {
         username: gitUsername,
         token: gitToken.trim() || undefined,
       });
-      setSuccess('Git repository is reachable');
-      setTimeout(() => setSuccess(''), 3000);
+      setGitTestResult({ ok: true, message: 'Git repository is reachable' });
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Git connection failed');
+      setGitTestResult({
+        ok: false,
+        message: err.response?.data?.error || err.message || 'Git connection failed',
+      });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleTestFile = async (kind) => {
+    setTestingFile(kind);
+    setFileTestResults((prev) => ({ ...prev, [kind]: null }));
+    try {
+      const payload = { kind };
+      if (kind === 'local') payload.path = localPath;
+      if (kind === 'smb') {
+        payload.path = smbPath;
+        payload.username = smbUsername;
+        if (smbPassword.trim()) payload.password = smbPassword.trim();
+      }
+      if (kind === 'nfs') payload.path = nfsPath;
+      const res = await modApi.testFileCatalog(payload);
+      const label = kind === 'local' ? 'Local folder' : kind.toUpperCase();
+      setFileTestResults((prev) => ({
+        ...prev,
+        [kind]: { ok: true, message: `${label} is reachable (${res.data.modCount || 0} mods)` },
+      }));
+    } catch (err) {
+      setFileTestResults((prev) => ({
+        ...prev,
+        [kind]: {
+          ok: false,
+          message: err.response?.data?.error || err.message || 'File catalog test failed',
+        },
+      }));
+    } finally {
+      setTestingFile('');
     }
   };
 
@@ -173,7 +253,7 @@ function ModCatalogSettings() {
         </button>
         <div>
           <h1 className="text-2xl font-bold text-white">Catalog Settings</h1>
-          <p className="text-mc-textMuted mt-1">Configure CurseForge and Git catalog sources</p>
+          <p className="text-mc-textMuted mt-1">Configure CurseForge, Git, and file catalog sources</p>
         </div>
       </div>
 
@@ -259,6 +339,17 @@ function ModCatalogSettings() {
             Git hosts. GitLab tokens must include <code className="text-mc-accent">read_repository</code>;
             {' '}<code className="text-mc-accent">read_user</code> is not enough to clone a private project.
             See <code className="text-mc-accent">docs/git-mod-catalog.md</code> for the recommended layout.
+          </p>
+          <a
+            href="/api/mods/catalog/git/starter"
+            download="catalog-git.zip"
+            className="btn btn-secondary text-sm mb-4"
+          >
+            <Download className="w-4 h-4" />
+            Download git template
+          </a>
+          <p className="text-xs text-mc-textMuted mb-4">
+            Extracts a blank Git catalog you can push to GitLab or GitHub, then connect below.
           </p>
 
           <div className="flex items-center justify-between p-3 bg-mc-darker rounded-lg mb-4">
@@ -388,6 +479,203 @@ function ModCatalogSettings() {
               {status.running ? 'Syncing...' : 'Sync Now'}
             </button>
           </div>
+          <TestResult result={gitTestResult} className="mt-3" />
+          </div>
+        </Section>
+
+        <Section title="File Catalog">
+          <p className="text-sm text-mc-textMuted mb-4">
+            Optional folder of Bedrock packs using the same layout as the Git catalog
+            (<code className="text-mc-accent">addons/</code>, <code className="text-mc-accent">maps/</code>,
+            {' '}<code className="text-mc-accent">texture-packs/</code>, plus optional <code className="text-mc-accent">catalog.json</code>).
+            Enable a local folder, an SMB share, an NFS mount, or any combination. See{' '}
+            <code className="text-mc-accent">docs/file-mod-catalog.md</code>.
+          </p>
+          <a
+            href="/api/mods/catalog/file/starter"
+            download="file-catalog-starter.zip"
+            className="btn btn-secondary text-sm mb-4"
+          >
+            <Download className="w-4 h-4" />
+            Download folder template
+          </a>
+          <p className="text-xs text-mc-textMuted mb-4">
+            The download extracts a ready-to-fill catalog with <code className="text-mc-accent">catalog.json</code>, README, and an example mod in each category.
+            Examples will be present in the catalog, and should be deleted once the catalog is setup for use.
+          </p>
+
+          <div className="flex items-center justify-between p-3 bg-mc-darker rounded-lg mb-4">
+            <div>
+              <p className="text-sm font-medium text-white">Enable file catalog</p>
+              <p className="text-xs text-mc-textMuted">
+                {fileModCount ? `${fileModCount} mods currently indexed` : 'Include packs from local or network folders'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setFileEnabled(value => !value)}
+              className={`toggle ${fileEnabled ? 'toggle-active' : 'toggle-inactive'}`}
+            >
+              <span className={`toggle-thumb ${fileEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+            </button>
+          </div>
+
+          <div className={!fileEnabled ? 'opacity-50 space-y-4' : 'space-y-4'}>
+            <div className="p-3 bg-mc-darker rounded-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-white">Local folder</p>
+                  <p className="text-xs text-mc-textMuted">Windows or Linux path on this host. Leave blank to use a folder you can write to.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setLocalEnabled(value => !value)}
+                  disabled={!fileEnabled}
+                  className={`toggle ${localEnabled ? 'toggle-active' : 'toggle-inactive'}`}
+                >
+                  <span className={`toggle-thumb ${localEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+              </div>
+              <input
+                type="text"
+                value={localPath}
+                onChange={(e) => setLocalPath(e.target.value)}
+                className="input"
+                placeholder={defaultLocalPath || 'A folder you can write to'}
+                disabled={!fileEnabled || !localEnabled}
+              />
+              <button
+                type="button"
+                onClick={() => handleTestFile('local')}
+                disabled={!fileEnabled || !localEnabled || testingFile === 'local'}
+                className="btn btn-secondary text-sm"
+              >
+                {testingFile === 'local' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Folder className="w-4 h-4" />}
+                Test Folder
+              </button>
+              <TestResult result={fileTestResults.local} />
+            </div>
+
+            <div className="p-3 bg-mc-darker rounded-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-white">SMB share</p>
+                  <p className="text-xs text-mc-textMuted">UNC path such as \\server\share\catalog, or a folder where the share is already mounted.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSmbEnabled(value => !value)}
+                  disabled={!fileEnabled}
+                  className={`toggle ${smbEnabled ? 'toggle-active' : 'toggle-inactive'}`}
+                >
+                  <span className={`toggle-thumb ${smbEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+              </div>
+              <input
+                type="text"
+                value={smbPath}
+                onChange={(e) => setSmbPath(e.target.value)}
+                className="input"
+                placeholder="\\fileserver\bedrock\catalog"
+                disabled={!fileEnabled || !smbEnabled}
+              />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
+                <div>
+                <input
+                  type="text"
+                  value={smbUsername}
+                  onChange={(e) => setSmbUsername(e.target.value)}
+                  className="input"
+                  placeholder="Username (optional)"
+                  autoComplete="off"
+                  disabled={!fileEnabled || !smbEnabled}
+                />
+                </div>
+                <div>
+                  <div className="relative">
+                    <input
+                      type={showSmbPassword ? 'text' : 'password'}
+                      value={smbPassword}
+                      onChange={(e) => {
+                        setSmbPassword(e.target.value);
+                        setClearSmbPassword(false);
+                      }}
+                      className="input pr-12"
+                      placeholder={smbPasswordSet ? 'Leave blank to keep the current password' : 'Password (optional)'}
+                      autoComplete="off"
+                      disabled={!fileEnabled || !smbEnabled}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSmbPassword(value => !value)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-mc-textMuted hover:text-mc-text"
+                      disabled={!fileEnabled || !smbEnabled}
+                    >
+                      {showSmbPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  {smbPasswordSet && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setClearSmbPassword(true);
+                        setSmbPassword('');
+                        setSmbPasswordSet(false);
+                      }}
+                      className="mt-2 block text-xs text-mc-danger hover:underline"
+                      disabled={!fileEnabled || !smbEnabled}
+                    >
+                      Remove stored SMB password
+                    </button>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleTestFile('smb')}
+                disabled={!fileEnabled || !smbEnabled || !smbPath || testingFile === 'smb'}
+                className="btn btn-secondary text-sm"
+              >
+                {testingFile === 'smb' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                Test SMB
+              </button>
+              <TestResult result={fileTestResults.smb} />
+            </div>
+
+            <div className="p-3 bg-mc-darker rounded-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-white">NFS share</p>
+                  <p className="text-xs text-mc-textMuted">Local mount path, or host:/export if this host can mount NFS.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setNfsEnabled(value => !value)}
+                  disabled={!fileEnabled}
+                  className={`toggle ${nfsEnabled ? 'toggle-active' : 'toggle-inactive'}`}
+                >
+                  <span className={`toggle-thumb ${nfsEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+              </div>
+              <input
+                type="text"
+                value={nfsPath}
+                onChange={(e) => setNfsPath(e.target.value)}
+                className="input"
+                placeholder="/mnt/nfs/bedrock-catalog"
+                disabled={!fileEnabled || !nfsEnabled}
+              />
+              <button
+                type="button"
+                onClick={() => handleTestFile('nfs')}
+                disabled={!fileEnabled || !nfsEnabled || !nfsPath || testingFile === 'nfs'}
+                className="btn btn-secondary text-sm"
+              >
+                {testingFile === 'nfs' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                Test NFS
+              </button>
+              <TestResult result={fileTestResults.nfs} />
+            </div>
           </div>
         </Section>
 
@@ -423,6 +711,23 @@ function Section({ title, children }) {
     <div className="card">
       <h2 className="text-lg font-semibold text-white mb-4">{title}</h2>
       {children}
+    </div>
+  );
+}
+
+function TestResult({ result, className = '' }) {
+  if (!result?.message) return null;
+  const ok = result.ok;
+  return (
+    <div
+      className={`${className} p-3 rounded-lg flex items-start gap-3 ${
+        ok ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'
+      }`.trim()}
+    >
+      {ok
+        ? <Check className="w-5 h-5 text-green-400 flex-shrink-0 mt-0.5" />
+        : <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />}
+      <p className={`text-sm ${ok ? 'text-green-400' : 'text-red-400'}`}>{result.message}</p>
     </div>
   );
 }
