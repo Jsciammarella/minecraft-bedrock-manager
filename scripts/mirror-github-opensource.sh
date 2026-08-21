@@ -25,6 +25,10 @@ if [[ ! "$branch" =~ ^release/[0-9]+\.[0-9]+\.3$ ]]; then
   echo "Only release/MAJOR.MINOR.3 branches may be mirrored to GitHub" >&2
   exit 1
 fi
+# Fetch from GitLab before replacing the runner's GitLab credentials with the
+# GitHub-only askpass helper.
+git lfs fetch origin "$commit"
+
 
 askpass_file="$(mktemp)"
 cleanup() {
@@ -33,11 +37,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cat >"$askpass_file" <<''EOF''
+cat >"$askpass_file" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
-  *Username*) printf ''%s\n'' ''x-access-token'' ;;
-  *Password*) printf ''%s\n'' "$GITHUB_RELEASE_TOKEN" ;;
+  *Username*) printf '%s\n' 'x-access-token' ;;
+  *Password*) printf '%s\n' "$GITHUB_RELEASE_TOKEN" ;;
 esac
 EOF
 chmod 700 "$askpass_file"
@@ -51,12 +55,11 @@ git remote add "$github_remote" "$github_url"
 
 # Copy only LFS objects reachable from the open-source commit, then update only
 # its matching release branch. No other GitLab ref is sent to GitHub.
-git lfs fetch origin "$commit"
 git lfs push "$github_remote" "$commit"
 git push "$github_remote" "$commit:refs/heads/$branch"
 
 # Make a normal GitHub clone land on the actively mirrored open-source branch.
-payload="$(printf ''{"default_branch":"%s"}'' "$branch")"
+payload="$(printf '{"default_branch":"%s"}' "$branch")"
 curl --silent --show-error --fail-with-body \
   --request PATCH \
   --header "Accept: application/vnd.github+json" \
