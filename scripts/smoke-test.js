@@ -9,6 +9,7 @@ const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-manager-smoke-'));
 process.env.MC_MANAGER_DB_PATH = path.join(testRoot, 'mc_manager.db');
 process.env.MC_MANAGER_USER_PLUGINS_DIR = path.join(testRoot, 'plugins');
 process.env.MC_MANAGER_PLUGIN_DATA_DIR = path.join(testRoot, 'plugin-data');
+process.env.MC_MANAGER_PLUGIN_STATE_PATH = path.join(testRoot, 'plugin-state.json');
 const db = require('../server/db/connection');
 const serverManager = require('../server/services/serverManager');
 const curseforge = require('../server/services/curseforgeClient');
@@ -134,6 +135,62 @@ async function testPluginHost() {
   } finally {
     await new Promise((resolve) => pluginServer.close(resolve));
   }
+  pluginHost.resetForTests();
+
+  const badZip = path.join(testRoot, 'invalid-plugin.zip');
+  fs.writeFileSync(badZip, zipStore({
+    'plugin.json': JSON.stringify({ id: 'bad-root', name: 'Bad Root' }),
+    'ui/index.html': '<html></html>',
+  }));
+  await assert.rejects(
+    () => pluginHost.installPluginFromZip(badZip),
+    /invalid plugin/i
+  );
+  assert.equal(
+    fs.existsSync(path.join(pluginHost.USER_PLUGINS_DIR, 'bad-root')),
+    false,
+    'invalid zip must not install a plugin'
+  );
+
+  const goodZip = path.join(testRoot, 'sample-plugin.zip');
+  fs.writeFileSync(goodZip, zipStore({
+    'sample-plugin/plugin.json': JSON.stringify({
+      id: 'sample-plugin',
+      name: 'Sample Plugin',
+      version: '1.0.0',
+      menu: { label: 'Sample Plugin' },
+    }),
+    'sample-plugin/ui/index.html': '<html><body>sample</body></html>',
+  }));
+  const installed = await pluginHost.installPluginFromZip(goodZip);
+  assert.equal(installed.id, 'sample-plugin');
+  assert.equal(installed.enabled, true);
+  assert(pluginHost.getMenuItems().some((item) => item.pluginId === 'sample-plugin'));
+  pluginHost.setPluginEnabled('sample-plugin', false);
+  assert.equal(pluginHost.getPlugin('sample-plugin').enabled, false);
+  assert.equal(
+    pluginHost.getMenuItems().some((item) => item.pluginId === 'sample-plugin'),
+    false,
+    'disabled plugins must leave the sidebar'
+  );
+  pluginHost.setPluginEnabled('sample-plugin', true);
+  assert.equal(pluginHost.getPlugin('sample-plugin').enabled, true);
+
+  const folderRoot = path.join(testRoot, 'folder-upload-files');
+  fs.mkdirSync(path.join(folderRoot, 'folder-plugin', 'ui'), { recursive: true });
+  const folderManifest = path.join(folderRoot, 'folder-plugin', 'plugin.json');
+  const folderHtml = path.join(folderRoot, 'folder-plugin', 'ui', 'index.html');
+  fs.writeFileSync(folderManifest, JSON.stringify({
+    id: 'folder-plugin',
+    name: 'Folder Plugin',
+    menu: { label: 'Folder Plugin' },
+  }));
+  fs.writeFileSync(folderHtml, '<html><body>folder</body></html>');
+  const fromFolder = pluginHost.installPluginFromFiles([
+    { originalname: 'folder-plugin/plugin.json', path: folderManifest },
+    { originalname: 'folder-plugin/ui/index.html', path: folderHtml },
+  ]);
+  assert.equal(fromFolder.id, 'folder-plugin');
   pluginHost.resetForTests();
 }
 

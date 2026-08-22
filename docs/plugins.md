@@ -9,13 +9,18 @@ they fit, there is no extra scrollbar.
 
 ## Install
 
-1. Copy a plugin folder into `data/plugins/` on the manager host.
-   Docker uses the `mc-data` volume at `/app/data/plugins`.
-2. Restart the manager.
-3. Open **Plugins** in the sidebar, or use the new menu item the plugin added.
+Open **Plugins** next to the version label at the top of the left-hand menu.
+Use **Upload** to send a plugin folder or a zip file.
+
+A zip must contain **one plugin folder** (for example `hello-world/plugin.json`).
+If the zip has files in the archive root, the manager deletes the temporary
+extract and reports that the archive is an invalid plugin.
+
+You can still copy a folder into `data/plugins/` on the host. Docker uses the
+`mc-data` volume at `/app/data/plugins`. Each installed plugin has a toggle on
+the Plugins page; turning it off hides its sidebar item without deleting files.
 
 A complete example is [`examples/plugins/hello-world`](../examples/plugins/hello-world).
-Copy that folder to `data/plugins/hello-world` to try it.
 
 Installing a plugin means you trust its files. A plugin backend runs as the
 same Node process as the manager. Only install plugins you would run yourself.
@@ -55,7 +60,8 @@ The folder name **must** match `id` in `plugin.json`.
 }
 ```
 
-Set `"enabled": false` to keep the files on disk without showing a menu item.
+Set `"enabled": false` in `plugin.json` to default a plugin off. The Plugins page
+toggle overrides that without deleting the folder.
 
 `order` only sorts plugin items relative to each other. Plugin items always
 appear **below** the core menu. Use more than one object in `menus` if the

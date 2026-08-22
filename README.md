@@ -124,7 +124,7 @@ An upgrade or restart should not require recreating a remote. Start it again fro
 
 ### Plugins
 
-Drop-in folders can add their own sidebar items and pages. They cannot change Dashboard, server details, catalog, library, players, BedrockConnect, or ports. Copy a folder into `data/plugins/` and restart. See [docs/plugins.md](docs/plugins.md) and the [hello-world example](examples/plugins/hello-world).
+Drop-in folders can add their own sidebar items and pages. Open **Plugins** next to the version label at the top of the left-hand menu to upload a folder or zip and to turn plugins on or off. They cannot change Dashboard, server details, catalog, library, players, BedrockConnect, or ports. See [docs/plugins.md](docs/plugins.md) and the [hello-world example](examples/plugins/hello-world).
 
 ### Players and access
 

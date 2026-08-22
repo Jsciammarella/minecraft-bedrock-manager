@@ -1,7 +1,7 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { 
   Server, Plus, Package, Users, Network, Globe,
-  ChevronLeft, ChevronRight, Home, Download, Menu, X, Puzzle
+  ChevronLeft, ChevronRight, Home, Download, Menu, X
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useApi } from '../context/ApiContext';
@@ -33,6 +33,13 @@ function Layout() {
     pluginApi.list()
       .then((res) => setPluginMenus(res.data?.menus || []))
       .catch(() => setPluginMenus([]));
+    const refreshPluginMenus = () => {
+      pluginApi.list()
+        .then((res) => setPluginMenus(res.data?.menus || []))
+        .catch(() => setPluginMenus([]));
+    };
+    window.addEventListener('mbm-plugins-changed', refreshPluginMenus);
+    return () => window.removeEventListener('mbm-plugins-changed', refreshPluginMenus);
   }, []);
 
   useEffect(() => {
@@ -62,7 +69,6 @@ function Layout() {
     { icon: Users, label: 'Players', path: '/players' },
     { icon: Globe, label: 'BedrockConnect', path: '/bedrock-connect' },
     { icon: Network, label: 'Ports', path: '/ports' },
-    { icon: Puzzle, label: 'Plugins', path: '/plugins', exact: true },
   ];
 
   const activeServers = servers.filter(s => s.status === 'running').length;
@@ -79,6 +85,7 @@ function Layout() {
   const currentPage = navItems.find((item) => isCoreNavActive(item));
   const pageTitle = currentPlugin?.label
     || currentPage?.label
+    || (location.pathname === '/plugins' ? 'Plugins' : null)
     || (location.pathname.startsWith('/servers/') ? 'Server' : 'MC Manager');
   const isPluginPage = location.pathname.startsWith('/plugins/') && location.pathname !== '/plugins';
 
@@ -164,10 +171,37 @@ function Layout() {
             </button>
           )}
         </div>
-        {showLabels && managerVersion && (
-          <p className="mt-2 text-xs text-mc-textMuted" title={`Manager version ${managerVersion}`}>
-            v. {managerVersion}
-          </p>
+        {showLabels && (
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <p className="text-xs text-mc-textMuted truncate min-w-0" title={managerVersion ? `Manager version ${managerVersion}` : undefined}>
+              {managerVersion ? `v. ${managerVersion}` : '\u00a0'}
+            </p>
+            <button
+              type="button"
+              onClick={() => goTo('/plugins')}
+              className={`text-xs shrink-0 ${
+                location.pathname === '/plugins'
+                  ? 'text-mc-accent'
+                  : 'text-mc-textMuted hover:text-mc-text'
+              }`}
+            >
+              Plugins
+            </button>
+          </div>
+        )}
+        {!showLabels && (
+          <button
+            type="button"
+            onClick={() => goTo('/plugins')}
+            className={`mt-2 w-full text-xs ${
+              location.pathname === '/plugins'
+                ? 'text-mc-accent'
+                : 'text-mc-textMuted hover:text-mc-text'
+            }`}
+            title="Plugins"
+          >
+            Plugins
+          </button>
         )}
       </div>
 

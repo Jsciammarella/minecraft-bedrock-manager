@@ -1,14 +1,23 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 const express = require('express');
 const logger = require('./logger');
+const platform = require('./platform');
+
+const execFileAsync = promisify(execFile);
 
 const BUNDLED_PLUGINS_DIR = path.join(__dirname, '../bundled-plugins');
 const USER_PLUGINS_DIR = process.env.MC_MANAGER_USER_PLUGINS_DIR
   || path.join(__dirname, '../../data/plugins');
 const PLUGIN_DATA_DIR = process.env.MC_MANAGER_PLUGIN_DATA_DIR
   || path.join(__dirname, '../../data/plugin-data');
+const PLUGIN_STATE_PATH = process.env.MC_MANAGER_PLUGIN_STATE_PATH
+  || path.join(__dirname, '../../data/plugin-state.json');
 const EXAMPLE_PLUGINS_DIR = path.join(__dirname, '../../examples/plugins');
+const INVALID_ARCHIVE_MESSAGE = 'The archive is an invalid plugin.';
 
 const ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
 const PAGE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
@@ -95,6 +104,7 @@ const CORE_API_ALLOWLIST = [
 
 let loaded = [];
 let backendModules = [];
+let lastDirs = null;
 
 function isInsideDir(root, target) {
   const resolvedRoot = path.resolve(root);
@@ -259,6 +269,7 @@ function publicPlugin(plugin) {
     description: plugin.description,
     author: plugin.author,
     enabled: plugin.enabled,
+    icon: plugin.menus?.[0]?.icon || 'puzzle',
     source: plugin.source,
     menus: plugin.enabled ? plugin.menus : [],
     pages: plugin.enabled ? plugin.pages.map((page) => ({
@@ -331,6 +342,7 @@ function loadPlugins(dirs = defaultPluginDirs()) {
       seen.add(parsed.manifest.id);
       const plugin = {
         ...parsed.manifest,
+        enabled: isPluginEnabled(parsed.manifest.id, parsed.manifest.enabled),
         root: folder,
         source: path.resolve(dir) === path.resolve(USER_PLUGINS_DIR) ? 'user' : 'bundled',
         router: null,
@@ -340,16 +352,190 @@ function loadPlugins(dirs = defaultPluginDirs()) {
       logger.info(`Loaded plugin ${plugin.id} (${plugin.enabled ? 'enabled' : 'disabled'})`);
     }
   }
+  lastDirs = dirs;
   loaded = next;
   return getPlugins();
 }
 
-function resetForTests() {
+function unloadPlugins() {
   for (const file of backendModules) {
     delete require.cache[file];
   }
   backendModules = [];
   loaded = [];
+}
+
+function resetForTests() {
+  unloadPlugins();
+  lastDirs = null;
+}
+
+function reloadPlugins() {
+  const dirs = lastDirs || defaultPluginDirs();
+  unloadPlugins();
+  return loadPlugins(dirs);
+}
+
+function readEnabledState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(PLUGIN_STATE_PATH, 'utf8'));
+    return raw && raw.enabled && typeof raw.enabled === 'object' ? raw.enabled : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeEnabledState(enabledMap) {
+  fs.mkdirSync(path.dirname(PLUGIN_STATE_PATH), { recursive: true });
+  fs.writeFileSync(PLUGIN_STATE_PATH, `${JSON.stringify({ enabled: enabledMap }, null, 2)}\n`);
+}
+
+function isPluginEnabled(id, manifestEnabled) {
+  const state = readEnabledState();
+  if (Object.prototype.hasOwnProperty.call(state, id)) return Boolean(state[id]);
+  return manifestEnabled !== false;
+}
+
+function setPluginEnabled(id, enabled) {
+  if (!getPlugin(id)) {
+    const err = new Error('Plugin not found');
+    err.status = 404;
+    throw err;
+  }
+  const state = readEnabledState();
+  state[id] = Boolean(enabled);
+  writeEnabledState(state);
+  reloadPlugins();
+  return publicPlugin(getPlugin(id));
+}
+
+function ignoredExtractName(name) {
+  const base = String(name || '').trim();
+  return !base || base === '__MACOSX' || base === '.DS_Store' || base === 'Thumbs.db' || base.startsWith('.');
+}
+
+function pluginRootFromTree(root, { allowRootFiles = false } = {}) {
+  if (!root || !fs.existsSync(root)) {
+    const err = new Error(INVALID_ARCHIVE_MESSAGE);
+    err.status = 400;
+    throw err;
+  }
+  const entries = fs.readdirSync(root, { withFileTypes: true })
+    .filter((entry) => !ignoredExtractName(entry.name));
+  const files = entries.filter((entry) => entry.isFile());
+  const dirs = entries.filter((entry) => entry.isDirectory());
+  if (allowRootFiles && fs.existsSync(path.join(root, 'plugin.json'))) {
+    return root;
+  }
+  if (files.length || dirs.length !== 1) {
+    const err = new Error(INVALID_ARCHIVE_MESSAGE);
+    err.status = 400;
+    throw err;
+  }
+  return path.join(root, dirs[0].name);
+}
+
+function assertInstallablePlugin(folder) {
+  const folderName = path.basename(folder);
+  const manifestPath = path.join(folder, 'plugin.json');
+  if (!fs.existsSync(manifestPath)) {
+    const err = new Error(INVALID_ARCHIVE_MESSAGE);
+    err.status = 400;
+    throw err;
+  }
+  let raw;
+  try {
+    raw = readJson(manifestPath);
+  } catch (cause) {
+    const err = new Error(INVALID_ARCHIVE_MESSAGE);
+    err.status = 400;
+    err.cause = cause;
+    throw err;
+  }
+  const parsed = parseManifest(raw, folderName);
+  if (!parsed.ok) {
+    const err = new Error(parsed.error || INVALID_ARCHIVE_MESSAGE);
+    err.status = 400;
+    throw err;
+  }
+  return parsed.manifest;
+}
+
+async function extractZip(zipPath, destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
+  if (process.platform === 'win32') {
+    await platform.unzipArchive(zipPath, destDir);
+    return;
+  }
+  await execFileAsync('unzip', ['-o', '-qq', zipPath, '-d', destDir], { timeout: 120000 });
+}
+
+function copyPluginIntoPlace(sourceFolder, manifest) {
+  const dest = path.join(USER_PLUGINS_DIR, manifest.id);
+  fs.mkdirSync(USER_PLUGINS_DIR, { recursive: true });
+  if (fs.existsSync(dest)) {
+    fs.rmSync(dest, { recursive: true, force: true });
+  }
+  fs.cpSync(sourceFolder, dest, { recursive: true });
+  lastDirs = defaultPluginDirs();
+  reloadPlugins();
+  const loadedPlugin = getPlugin(manifest.id);
+  if (!loadedPlugin) {
+    const err = new Error('Plugin uploaded but could not be loaded');
+    err.status = 400;
+    throw err;
+  }
+  return publicPlugin(loadedPlugin);
+}
+
+async function installPluginFromZip(zipPath, { deleteZip = false } = {}) {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mbm-plugin-'));
+  try {
+    await extractZip(zipPath, temp);
+    const source = pluginRootFromTree(temp, { allowRootFiles: false });
+    const manifest = assertInstallablePlugin(source);
+    return copyPluginIntoPlace(source, manifest);
+  } catch (err) {
+    if (!err.status) err.status = 400;
+    throw err;
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+    if (deleteZip) fs.rmSync(zipPath, { force: true });
+  }
+}
+
+function safeUploadRelPath(originalName) {
+  const rel = String(originalName || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!rel || rel.includes('..') || path.isAbsolute(rel)) return '';
+  return rel;
+}
+
+function installPluginFromFiles(files) {
+  const incoming = (Array.isArray(files) ? files : []).filter(Boolean);
+  if (!incoming.length) {
+    const err = new Error('No plugin files uploaded');
+    err.status = 400;
+    throw err;
+  }
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mbm-plugin-'));
+  try {
+    for (const file of incoming) {
+      const rel = safeUploadRelPath(file.originalname);
+      if (!rel) continue;
+      const dest = path.join(temp, rel);
+      if (!isInsideDir(temp, dest) && path.resolve(dest) !== path.resolve(temp)) continue;
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(file.path, dest);
+    }
+    const source = pluginRootFromTree(temp, { allowRootFiles: true });
+    const manifest = assertInstallablePlugin(source);
+    return copyPluginIntoPlace(source, manifest);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+    for (const file of incoming) {
+      try { fs.rmSync(file.path, { force: true }); } catch { /* ignore */ }
+    }
+  }
 }
 
 function getPlugins() {
@@ -411,10 +597,12 @@ function isAllowedPluginApiPath(pluginId, requestPath) {
     return false;
   }
   if (pathname.includes('..')) return false;
+  if (pathname === '/api/plugins/upload' || pathname.startsWith('/api/plugins/upload/')) return false;
   const ownPrefix = `/api/plugins/${pluginId}`;
   if (pathname === ownPrefix || pathname.startsWith(`${ownPrefix}/`)) {
     if (pathname === `${ownPrefix}/ui` || pathname.startsWith(`${ownPrefix}/ui/`)) return false;
     if (pathname === `${ownPrefix}/meta` || pathname === `${ownPrefix}/sdk.js`) return false;
+    if (pathname === `${ownPrefix}/enabled`) return false;
     return ID_RE.test(pluginId) && !RESERVED_PLUGIN_IDS.has(pluginId);
   }
   if (pathname === '/api/plugins' || pathname === '/api/plugins/') return true;
@@ -433,7 +621,9 @@ module.exports = {
   BUNDLED_PLUGINS_DIR,
   CORE_MENU_PATHS,
   EXAMPLE_PLUGINS_DIR,
+  INVALID_ARCHIVE_MESSAGE,
   PLUGIN_DATA_DIR,
+  PLUGIN_STATE_PATH,
   RESERVED_PLUGIN_IDS,
   USER_PLUGINS_DIR,
   defaultPluginDirs,
@@ -441,11 +631,15 @@ module.exports = {
   getPlugin,
   getPlugins,
   injectHtmlSdk,
+  installPluginFromFiles,
+  installPluginFromZip,
   isAllowedPluginApiPath,
   isAllowedPluginNavigatePath,
   loadPlugins,
   parseManifest,
   publicPlugin,
+  reloadPlugins,
   resetForTests,
   resolveUiFile,
+  setPluginEnabled,
 };
