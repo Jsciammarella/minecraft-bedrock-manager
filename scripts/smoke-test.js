@@ -1165,6 +1165,17 @@ async function run() {
   assert.equal(javaProps['white-list'], 'false');
   assert.ok(!Object.prototype.hasOwnProperty.call(javaProps, 'server-portv6'));
 
+  const javaRuntime = require('../server/services/javaRuntime');
+  assert.equal(javaRuntime.parseJavaMajor('openjdk version "17.0.12" 2024-07-16'), 17);
+  assert.equal(javaRuntime.parseJavaMajor('openjdk version "25.0.1" 2025-10-21'), 25);
+  assert.equal(javaRuntime.parseJavaMajor('java version "1.8.0_402"'), 8);
+  assert.equal(javaRuntime.componentForMajor(25), 'java-runtime-epsilon');
+  assert.equal(javaRuntime.componentForMajor(21), 'java-runtime-delta');
+  assert.equal(javaRuntime.componentForMajor(17), 'java-runtime-gamma');
+  if (process.platform === 'win32' && process.arch === 'x64') {
+    assert.equal(javaRuntime.mojangPlatformKey(), 'windows-x64');
+  }
+
   const prevStub = process.env.ALLOW_STUB_SERVER;
   process.env.ALLOW_STUB_SERVER = '1';
   const javaCreated = await serverManager.createServer({

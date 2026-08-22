@@ -11,6 +11,7 @@ const portRanges = require('./portRanges');
 const playerPresence = require('./playerPresence');
 const platform = require('./platform');
 const javaEdition = require('./javaEdition');
+const javaRuntime = require('./javaRuntime');
 const execAsync = promisify(exec);
 
 const BASE_DIR = path.join(__dirname, '../../data/servers');
@@ -1083,9 +1084,14 @@ class ServerManager {
         javaEdition.createStubJar(serverPath);
       } else {
         const jar = await javaEdition.ensureJar(version);
-        javaEdition.installJarInto(serverPath, jar.path, jar.id);
+        javaEdition.installJarInto(serverPath, jar.path, jar.id, jar.java);
         db.prepare('UPDATE servers SET version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
           .run(jar.id, serverId);
+        try {
+          await javaEdition.ensureJavaForServer({ data_path: serverPath, version: jar.id });
+        } catch (err) {
+          logger.warn(`Java runtime will be installed when this server first starts: ${err.message}`);
+        }
       }
       if (!this.getServer(serverId)) return;
 
@@ -1435,7 +1441,6 @@ done
   }
 
   async startJavaServer(server) {
-    await javaEdition.assertJavaAvailable();
     const jar = javaEdition.installedJar(server.data_path);
     if (!jar) {
       throw new Error('Minecraft Java server.jar was not found. Recreate the server or run an update.');
@@ -1443,18 +1448,22 @@ done
     if (javaEdition.isStubJar(jar.jarPath)) {
       throw new Error('This instance has a placeholder Java jar, not the official Minecraft server. Delete it and create the server again.');
     }
+    const javaBin = await javaEdition.ensureJavaForServer(server);
     javaEdition.writeEula(server.data_path);
     this.writeRuntimeServerProperties(server);
 
     const sessionKey = this.sessionKey(server.id);
     try {
       const { spawn: spawnPty } = require('node-pty');
-      const pty = spawnPty(platform.javaCommand(), javaEdition.spawnArgs(server.data_path), {
+      const env = { ...process.env };
+      if (path.isAbsolute(javaBin)) env.JAVA_HOME = javaRuntime.javaHomeFromBin(javaBin);
+      logger.info(`Starting Java server ${server.name} with ${javaBin}`);
+      const pty = spawnPty(javaBin, javaEdition.spawnArgs(server.data_path), {
         name: 'xterm-color',
         cols: 120,
         rows: 30,
         cwd: server.data_path,
-        env: { ...process.env },
+        env,
       });
 
       this.ptySessions.set(sessionKey, pty);
@@ -2155,7 +2164,7 @@ done
       await this.backupServerData(server.data_path, backupPath, { java: true });
       try {
         const jar = await javaEdition.ensureJar(targetVersion || 'latest');
-        javaEdition.installJarInto(server.data_path, jar.path, jar.id);
+        javaEdition.installJarInto(server.data_path, jar.path, jar.id, jar.java);
         await this.restoreServerData(server.data_path, backupPath, { java: true });
         this.writeRuntimeServerProperties(this.getServer(serverId));
         db.prepare('UPDATE servers SET version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')

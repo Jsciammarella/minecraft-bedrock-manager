@@ -125,7 +125,7 @@ function CreateServer() {
               description: formData.description,
               gamemode: formData.gamemode,
               difficulty: formData.difficulty,
-              acceptEula: true,
+              acceptEula,
             }
           : {
             ...formData,
@@ -518,7 +518,8 @@ function CreateServer() {
         <div className="flex items-center gap-3 pt-4 border-t border-mc-surfaceLight">
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || (java && !remote && !acceptEula)}
+            title={java && !remote && !acceptEula ? 'Agree to the Minecraft EULA to create a Java server' : undefined}
             className="btn btn-primary flex-1"
           >
             {loading ? (

@@ -1,14 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
 const axios = require('axios');
 const db = require('../db/connection');
 const logger = require('./logger');
-const platform = require('./platform');
-
-const execFileAsync = promisify(execFile);
+const javaRuntime = require('./javaRuntime');
 
 const KIND = 'java';
 const DISPLAY_NAME = 'Java';
@@ -294,7 +290,15 @@ async function resolveRelease(version) {
   if (!server?.url) {
     throw new Error(`Minecraft Java ${wanted} does not publish a dedicated server jar`);
   }
-  return { id: wanted, url: server.url, sha1: server.sha1 || '' };
+  const javaMajor = Number(data?.javaVersion?.majorVersion) || 17;
+  const javaComponent = data?.javaVersion?.component || javaRuntime.componentForMajor(javaMajor);
+  return {
+    id: wanted,
+    url: server.url,
+    sha1: server.sha1 || '',
+    javaMajor,
+    javaComponent,
+  };
 }
 
 function sha1File(filePath) {
@@ -307,32 +311,75 @@ function sha1File(filePath) {
   });
 }
 
-function rememberVersion(id, filePath) {
+function sidecarPathFor(version) {
+  const safe = String(version || '').replace(/[^a-zA-Z0-9._-]/g, '_');
+  return path.join(RELEASES_DIR, `${safe}.java.json`);
+}
+
+function runtimeMetaFromResolved(resolved) {
+  return {
+    id: resolved.id,
+    major: Number(resolved.javaMajor) || 17,
+    component: resolved.javaComponent || javaRuntime.componentForMajor(resolved.javaMajor),
+  };
+}
+
+function writeSidecar(meta) {
+  if (!meta?.id) return;
+  ensureDirs();
+  fs.writeFileSync(sidecarPathFor(meta.id), `${JSON.stringify(meta, null, 2)}\n`);
+}
+
+function readSidecar(version) {
+  try {
+    return JSON.parse(fs.readFileSync(sidecarPathFor(version), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function writeServerRuntimeMeta(serverDir, meta) {
+  fs.writeFileSync(path.join(serverDir, 'java_runtime.json'), `${JSON.stringify(meta, null, 2)}\n`);
+}
+
+function readServerRuntimeMeta(serverDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(serverDir, 'java_runtime.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function rememberVersion(id, filePath, javaMeta) {
   const index = readIndex();
   const versions = (index.versions || []).filter((item) => item.id !== id);
   versions.unshift({
     id,
     path: filePath,
     downloadedAt: new Date().toISOString(),
+    javaMajor: javaMeta?.major,
+    javaComponent: javaMeta?.component,
   });
   if (versions.length > MAX_LISTED_VERSIONS) versions.length = MAX_LISTED_VERSIONS;
   writeIndex({ versions, latest: versions[0]?.id || id });
+  if (javaMeta) writeSidecar(javaMeta);
 }
 
 async function ensureJar(version) {
   const resolved = await resolveRelease(version);
+  const java = runtimeMetaFromResolved(resolved);
   ensureDirs();
   const dest = jarPathFor(resolved.id);
   if (fs.existsSync(dest) && fs.statSync(dest).size > 1000) {
     if (resolved.sha1) {
       const digest = await sha1File(dest);
       if (digest.toLowerCase() === resolved.sha1.toLowerCase()) {
-        rememberVersion(resolved.id, dest);
-        return { id: resolved.id, path: dest, downloaded: false };
+        rememberVersion(resolved.id, dest, java);
+        return { id: resolved.id, path: dest, downloaded: false, java };
       }
     } else {
-      rememberVersion(resolved.id, dest);
-      return { id: resolved.id, path: dest, downloaded: false };
+      rememberVersion(resolved.id, dest, java);
+      return { id: resolved.id, path: dest, downloaded: false, java };
     }
   }
 
@@ -354,9 +401,9 @@ async function ensureJar(version) {
       throw new Error(`Minecraft Java ${resolved.id} failed SHA-1 verification`);
     }
   }
-  rememberVersion(resolved.id, dest);
+  rememberVersion(resolved.id, dest, java);
   logger.info(`Downloaded Minecraft Java ${resolved.id}`);
-  return { id: resolved.id, path: dest, downloaded: true };
+  return { id: resolved.id, path: dest, downloaded: true, java };
 }
 
 function writeEula(serverDir) {
@@ -373,12 +420,18 @@ function createStubJar(serverDir) {
   fs.writeFileSync(path.join(serverDir, 'version.txt'), 'stub\n');
 }
 
-function installJarInto(serverDir, jarSource, version) {
+function installJarInto(serverDir, jarSource, version, javaMeta) {
   fs.mkdirSync(serverDir, { recursive: true });
   fs.copyFileSync(jarSource, jarPath(serverDir));
   writeEula(serverDir);
   fs.writeFileSync(path.join(serverDir, 'version.txt'), `${version}\n`);
-  return { id: version, jarPath: jarPath(serverDir) };
+  const meta = javaMeta || readSidecar(version) || {
+    id: version,
+    major: 17,
+    component: javaRuntime.componentForMajor(17),
+  };
+  writeServerRuntimeMeta(serverDir, meta);
+  return { id: version, jarPath: jarPath(serverDir), java: meta };
 }
 
 function installedJar(serverDir) {
@@ -398,14 +451,37 @@ function isStubJar(filePath) {
   }
 }
 
-async function assertJavaAvailable() {
-  try {
-    await execFileAsync(platform.javaCommand(), ['-version'], { timeout: 8000, windowsHide: true });
-  } catch (err) {
-    const text = [err.stderr, err.stdout, err.message].filter(Boolean).join('\n');
-    if (/version/i.test(text)) return;
-    throw new Error('Java 17 or newer is required to run Minecraft Java Edition. Install a JRE and restart the manager.');
+async function requiredJavaFor(server) {
+  const fromServer = readServerRuntimeMeta(server?.data_path);
+  if (fromServer?.major) {
+    return {
+      major: Number(fromServer.major),
+      component: fromServer.component || javaRuntime.componentForMajor(fromServer.major),
+    };
   }
+  const tag = installedJar(server?.data_path)?.tag || server?.version;
+  const fromSidecar = readSidecar(tag);
+  if (fromSidecar?.major) {
+    return {
+      major: Number(fromSidecar.major),
+      component: fromSidecar.component || javaRuntime.componentForMajor(fromSidecar.major),
+    };
+  }
+  const resolved = await resolveRelease(tag || 'latest');
+  const meta = runtimeMetaFromResolved(resolved);
+  if (server?.data_path) {
+    try { writeServerRuntimeMeta(server.data_path, meta); } catch { /* ignore */ }
+  }
+  return { major: meta.major, component: meta.component };
+}
+
+async function ensureJavaForServer(server) {
+  const required = await requiredJavaFor(server);
+  return javaRuntime.ensureJava(required);
+}
+
+async function assertJavaAvailable(server) {
+  return ensureJavaForServer(server || { version: 'latest' });
 }
 
 function runtimeProperties(server, existing = {}, extras = {}) {
@@ -511,6 +587,7 @@ module.exports = {
   assertJavaAvailable,
   attachFields,
   createStubJar,
+  ensureJavaForServer,
   ensureJar,
   installJarInto,
   installedJar,
