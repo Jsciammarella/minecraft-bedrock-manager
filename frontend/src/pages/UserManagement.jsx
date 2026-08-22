@@ -6,7 +6,7 @@ const TILES = [
   { to: '/users', end: true, label: 'Users', description: 'Accounts and access', icon: Users, show: (auth) => auth.canViewUsers },
   { to: '/users/groups', label: 'Groups', description: 'Shared permission sets', icon: UsersRound, show: (auth) => auth.canViewGroups },
   { to: '/users/permissions', label: 'Permissions', description: 'Available platform rights', icon: Shield, show: (auth) => auth.canViewPermissions },
-  { to: '/users/settings', label: 'Settings', description: 'Session and defaults', icon: Settings, show: (auth) => auth.canViewSettings },
+  { to: '/users/settings', label: 'Settings', description: 'Password and platform options', icon: Settings, show: (auth) => auth.canViewSettings },
 ];
 
 function UserManagement() {

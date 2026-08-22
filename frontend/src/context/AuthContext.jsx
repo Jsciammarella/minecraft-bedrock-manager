@@ -88,15 +88,7 @@ export function AuthProvider({ children }) {
       canViewUsers,
       canViewGroups,
       canViewPermissions,
-      canViewSettings: isAdmin || canAny(
-        'users.change_password',
-        'users.change_name',
-        'users.change_user_permissions',
-        'users.change_group_permissions',
-        'users.change_group_membership',
-        'users.add_groups',
-        'users.delete_groups',
-      ),
+      canViewSettings: Boolean(user),
       canAccessUserManagement: isAdmin || canAny(
         'users.change_password',
         'users.change_name',

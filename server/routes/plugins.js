@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const pluginHost = require('../services/pluginHost');
-const { requireAdmin } = require('../middleware/auth');
+const { requireAdmin, requirePermission } = require('../middleware/auth');
 
 const router = require('express').Router();
 const sdkPath = path.join(__dirname, '../static/plugin-sdk.js');
@@ -39,7 +39,7 @@ router.get('/sdk.js', (req, res) => {
   res.sendFile(sdkPath);
 });
 
-router.post('/upload', requireAdmin, (req, res) => {
+router.post('/upload', requirePermission('plugins.upload'), (req, res) => {
   upload.fields([
     { name: 'archive', maxCount: 1 },
     { name: 'files', maxCount: 400 },

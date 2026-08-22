@@ -3,8 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import {
   Loader2, Plus, Search, Shield, Trash2, User, UserX, Users, X
 } from 'lucide-react';
-import { userManagementApi } from '../services/api';
+import { authApi, userManagementApi } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import PasswordPolicyHints from '../components/PasswordPolicyHints.jsx';
+import ScrollableCheckList from '../components/ScrollableCheckList.jsx';
+import { DEFAULT_PASSWORD_POLICY, validatePassword, validateUsername } from '../utils/passwordPolicy';
 
 function UsersList() {
   const navigate = useNavigate();
@@ -22,9 +25,11 @@ function UsersList() {
     username: '',
     fullName: '',
     password: '',
+    confirmPassword: '',
     isAdmin: false,
     groupIds: [],
   });
+  const [policy, setPolicy] = useState(DEFAULT_PASSWORD_POLICY);
 
   const canCreate = isAdmin || can('users.change_user_permissions');
   const canToggle = canCreate;
@@ -46,6 +51,12 @@ function UsersList() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    authApi.passwordPolicy()
+      .then((res) => setPolicy(res.data || DEFAULT_PASSWORD_POLICY))
+      .catch(() => setPolicy(DEFAULT_PASSWORD_POLICY));
+  }, []);
 
   useEffect(() => {
     load();
@@ -101,6 +112,16 @@ function UsersList() {
 
   const handleCreate = async (event) => {
     event.preventDefault();
+    const usernameError = validateUsername(form.username, policy);
+    if (usernameError) {
+      setError(usernameError);
+      return;
+    }
+    const passwordError = validatePassword(form.password, policy, { confirm: form.confirmPassword });
+    if (passwordError) {
+      setError(passwordError);
+      return;
+    }
     setCreating(true);
     setError('');
     try {
@@ -112,7 +133,7 @@ function UsersList() {
         groupIds: form.groupIds,
       });
       setShowCreate(false);
-      setForm({ username: '', fullName: '', password: '', isAdmin: false, groupIds: [] });
+      setForm({ username: '', fullName: '', password: '', confirmPassword: '', isAdmin: false, groupIds: [] });
       await load();
       navigate(`/users/${created.data.id}`);
     } catch (err) {
@@ -150,7 +171,7 @@ function UsersList() {
             className="input w-full md:w-56"
           >
             <option value="all">All users</option>
-            <option value="admins">Administrators</option>
+            <option value="admins">Administrator Users</option>
             {visibleGroups.map((group) => (
               <option key={group.id} value={String(group.id)}>{group.name}</option>
             ))}
@@ -247,7 +268,7 @@ function UsersList() {
 
       {showCreate && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <form onSubmit={handleCreate} className="card max-w-lg w-full relative">
+          <form onSubmit={handleCreate} className="card max-w-lg w-full relative max-h-[90vh] overflow-y-auto">
             <button
               type="button"
               onClick={() => setShowCreate(false)}
@@ -267,29 +288,29 @@ function UsersList() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-mc-text mb-2">Password</label>
-                <input type="password" className="input" value={form.password} onChange={(e) => setForm((prev) => ({ ...prev, password: e.target.value }))} required minLength={6} />
+                <input type="password" className="input" value={form.password} onChange={(e) => setForm((prev) => ({ ...prev, password: e.target.value }))} required minLength={policy.minLength} maxLength={policy.maxLength} />
               </div>
               <div>
+                <label className="block text-sm font-medium text-mc-text mb-2">Verify password</label>
+                <input type="password" className="input" value={form.confirmPassword} onChange={(e) => setForm((prev) => ({ ...prev, confirmPassword: e.target.value }))} required minLength={policy.minLength} maxLength={policy.maxLength} />
+              </div>
+              <PasswordPolicyHints policy={policy} showUsername />
+              <div>
                 <label className="block text-sm font-medium text-mc-text mb-2">Groups</label>
-                <div className="max-h-40 overflow-y-auto space-y-2">
-                  {groups.map((group) => (
-                    <label key={group.id} className="flex items-center gap-2 text-sm text-mc-text">
-                      <input
-                        type="checkbox"
-                        checked={form.groupIds.includes(group.id)}
-                        onChange={(e) => {
-                          setForm((prev) => ({
-                            ...prev,
-                            groupIds: e.target.checked
-                              ? [...prev.groupIds, group.id]
-                              : prev.groupIds.filter((id) => id !== group.id),
-                          }));
-                        }}
-                      />
-                      {group.name}
-                    </label>
-                  ))}
-                </div>
+                <ScrollableCheckList
+                  items={groups.map((group) => ({ id: group.id, label: group.name }))}
+                  selectedIds={form.groupIds}
+                  searchPlaceholder="Search groups..."
+                  emptyText="No groups match this search."
+                  onToggle={(groupId, checked) => {
+                    setForm((prev) => ({
+                      ...prev,
+                      groupIds: checked
+                        ? [...prev.groupIds, groupId]
+                        : prev.groupIds.filter((id) => id !== groupId),
+                    }));
+                  }}
+                />
               </div>
               {isAdmin && (
                 <label className="flex items-center gap-2 text-sm text-white">

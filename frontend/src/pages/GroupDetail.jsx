@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Loader2, Save, Trash2 } from 'lucide-react';
 import { userManagementApi } from '../services/api';
 import { useAuth } from '../context/AuthContext';
-import PermissionTriState from '../components/PermissionTriState.jsx';
+import PermissionEditor from '../components/PermissionEditor.jsx';
+import ScrollableCheckList from '../components/ScrollableCheckList.jsx';
+import { scrollPageTop } from '../utils/scrollPageTop';
+import { splitPermissionCatalog } from '../utils/menuVisibility';
 
 function GroupDetail() {
   const { id } = useParams();
@@ -11,11 +14,13 @@ function GroupDetail() {
   const { can, isAdmin } = useAuth();
   const [group, setGroup] = useState(null);
   const [users, setUsers] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [catalog, setCatalog] = useState({ categories: [], permissions: [] });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [memberFilter, setMemberFilter] = useState('all');
   const [form, setForm] = useState({
     name: '',
     userIds: [],
@@ -24,14 +29,16 @@ function GroupDetail() {
 
   const load = async () => {
     try {
-      const [groupRes, userRes, catalogRes] = await Promise.all([
+      const [groupRes, userRes, groupListRes, catalogRes] = await Promise.all([
         userManagementApi.getGroup(id),
         userManagementApi.users().catch(() => ({ data: [] })),
+        userManagementApi.groups().catch(() => ({ data: [] })),
         userManagementApi.catalog(),
       ]);
       const next = groupRes.data;
       setGroup(next);
       setUsers(userRes.data || []);
+      setGroups(groupListRes.data || []);
       setCatalog(catalogRes.data || { categories: [], permissions: [] });
       setForm({
         name: next.name || '',
@@ -50,6 +57,34 @@ function GroupDetail() {
     load();
   }, [id]);
 
+  const filterOptions = useMemo(() => ([
+    { value: 'all', label: 'All users' },
+    { value: 'admins', label: 'Administrator Users' },
+    ...(groups.filter((item) => item.isActive).map((item) => ({
+      value: String(item.id),
+      label: item.name,
+    }))),
+  ]), [groups]);
+
+  const memberItems = useMemo(() => {
+    return users
+      .filter((user) => {
+        if (memberFilter === 'all') return true;
+        if (memberFilter === 'admins') return user.isAdmin;
+        return (user.groups || []).some((item) => String(item.id) === String(memberFilter));
+      })
+      .map((user) => ({
+        id: user.id,
+        label: user.fullName,
+        subtitle: `@${user.username}`,
+      }));
+  }, [users, memberFilter]);
+
+  const { actions: actionCatalog, menu: menuCatalog } = useMemo(
+    () => splitPermissionCatalog(catalog),
+    [catalog],
+  );
+
   const handleSave = async (event) => {
     event.preventDefault();
     setSaving(true);
@@ -67,6 +102,7 @@ function GroupDetail() {
       setError(err.response?.data?.error || err.message || 'Failed to save group');
     } finally {
       setSaving(false);
+      scrollPageTop();
     }
   };
 
@@ -77,6 +113,7 @@ function GroupDetail() {
       navigate('/users/groups');
     } catch (err) {
       setError(err.response?.data?.error || err.message);
+      scrollPageTop();
     }
   };
 
@@ -131,29 +168,48 @@ function GroupDetail() {
 
       <div className="card">
         <h3 className="text-lg font-semibold text-white mb-4">Members</h3>
-        <div className="space-y-2 max-h-72 overflow-y-auto">
-          {users.map((user) => (
-            <label key={user.id} className="flex items-center justify-between p-3 rounded-lg bg-mc-darker">
-              <span className="text-sm text-white">
-                {user.fullName}
-                <span className="ml-2 text-xs text-mc-textMuted">@{user.username}</span>
-              </span>
-              <input
-                type="checkbox"
-                checked={form.userIds.includes(user.id)}
-                disabled={!isAdmin && !can('users.change_group_membership')}
-                onChange={(e) => {
-                  setForm((prev) => ({
-                    ...prev,
-                    userIds: e.target.checked
-                      ? [...prev.userIds, user.id]
-                      : prev.userIds.filter((uid) => uid !== user.id),
-                  }));
-                }}
-              />
-            </label>
-          ))}
-        </div>
+        <ScrollableCheckList
+          items={memberItems}
+          selectedIds={form.userIds}
+          searchPlaceholder="Search by name..."
+          emptyText="No users match this search or filter."
+          filterValue={memberFilter}
+          onFilterChange={setMemberFilter}
+          filterOptions={filterOptions}
+          disabled={!isAdmin && !can('users.change_group_membership')}
+          onToggle={(userId, checked) => {
+            setForm((prev) => ({
+              ...prev,
+              userIds: checked
+                ? [...prev.userIds, userId]
+                : prev.userIds.filter((uid) => uid !== userId),
+            }));
+          }}
+        />
+      </div>
+
+      <div className="card">
+        <h3 className="text-lg font-semibold text-white mb-1">Menu visibility</h3>
+        <p className="text-xs text-mc-textMuted mb-4">
+          Menu items are visible by default. Deny hides an item. Allow keeps it visible unless another group deny wins. Plugin menu items appear here when a plugin is installed.
+        </p>
+        <PermissionEditor
+          catalog={menuCatalog}
+          values={form.permissions}
+          assignmentKey="allowGroup"
+          hideCategoryFilter
+          searchPlaceholder="Search menu items..."
+          emptyText="No menu items match this search."
+          disabled={!isAdmin && !can('users.change_group_permissions')}
+          onChange={(key, next) => {
+            setForm((prev) => {
+              const permissions = { ...prev.permissions };
+              if (!next) delete permissions[key];
+              else permissions[key] = next;
+              return { ...prev, permissions };
+            });
+          }}
+        />
       </div>
 
       <div className="card">
@@ -161,36 +217,20 @@ function GroupDetail() {
         <p className="text-xs text-mc-textMuted mb-4">
           Members inherit these while the group is active. A deny in any group blocks that permission until the user leaves the group.
         </p>
-        <div className="space-y-6">
-          {(catalog.categories || []).map((category) => (
-            <div key={category.id}>
-              <h4 className="text-sm font-semibold text-mc-text mb-3">{category.label}</h4>
-              <div className="space-y-2">
-                {(catalog.permissions || []).filter((perm) => perm.category === category.id).map((perm) => (
-                  <div key={perm.key} className="flex items-start justify-between gap-3 p-3 bg-mc-darker rounded-lg">
-                    <div>
-                      <p className="text-sm text-white">{perm.name}</p>
-                      <p className="text-xs text-mc-textMuted">{perm.description}</p>
-                    </div>
-                    <PermissionTriState
-                      value={form.permissions[perm.key] || ''}
-                      allowAssignment={perm.allowGroup !== false}
-                      disabled={!isAdmin && !can('users.change_group_permissions')}
-                      onChange={(next) => {
-                        setForm((prev) => {
-                          const permissions = { ...prev.permissions };
-                          if (!next) delete permissions[perm.key];
-                          else permissions[perm.key] = next;
-                          return { ...prev, permissions };
-                        });
-                      }}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+        <PermissionEditor
+          catalog={actionCatalog}
+          values={form.permissions}
+          assignmentKey="allowGroup"
+          disabled={!isAdmin && !can('users.change_group_permissions')}
+          onChange={(key, next) => {
+            setForm((prev) => {
+              const permissions = { ...prev.permissions };
+              if (!next) delete permissions[key];
+              else permissions[key] = next;
+              return { ...prev, permissions };
+            });
+          }}
+        />
       </div>
 
       <div className="flex gap-3">

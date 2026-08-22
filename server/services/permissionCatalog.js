@@ -1,9 +1,32 @@
 const CATEGORIES = [
   { id: 'servers', label: 'Dashboard/Servers' },
   { id: 'catalog', label: 'Catalog' },
+  { id: 'library', label: 'Library' },
   { id: 'players', label: 'Players' },
   { id: 'bedrock_connect', label: 'BedrockConnect' },
   { id: 'users', label: 'Users' },
+  { id: 'plugins', label: 'Plugins' },
+  { id: 'plugin', label: 'Plugin permissions' },
+  { id: 'menu', label: 'Menu' },
+];
+
+const MENU_PERMISSIONS = [
+  { key: 'menu.view.dashboard', category: 'menu', name: 'View Dashboard', description: 'Show Dashboard in the left-hand menu' },
+  { key: 'menu.view.servers', category: 'menu', name: 'View Servers', description: 'Show Servers in the left-hand menu' },
+  { key: 'menu.view.servers_new', category: 'menu', name: 'View New Server', description: 'Show New Server in the left-hand menu' },
+  { key: 'menu.view.library', category: 'menu', name: 'View Mod Library', description: 'Show Mod Library in the left-hand menu' },
+  { key: 'menu.view.catalog', category: 'menu', name: 'View Mod Catalog', description: 'Show Mod Catalog in the left-hand menu' },
+  { key: 'menu.view.players', category: 'menu', name: 'View Players', description: 'Show Players in the left-hand menu' },
+  { key: 'menu.view.bedrock_connect', category: 'menu', name: 'View BedrockConnect', description: 'Show BedrockConnect in the left-hand menu' },
+  { key: 'menu.view.ports', category: 'menu', name: 'View Ports', description: 'Show Ports in the left-hand menu' },
+  { key: 'menu.view.users', category: 'menu', name: 'View Users', description: 'Show Users in the left-hand menu' },
+  { key: 'menu.view.plugins', category: 'menu', name: 'View Plugins', description: 'Show Plugins in the left-hand menu' },
+];
+
+const READ_ONLY_MENU_ALLOW = [
+  'menu.view.dashboard',
+  'menu.view.players',
+  'menu.view.library',
 ];
 
 const PERMISSIONS = [
@@ -40,6 +63,12 @@ const PERMISSIONS = [
   { key: 'catalog.enable_git', category: 'catalog', name: 'Enable Git Catalog', description: 'Allow the user to enable and configure the git repository in the catalog settings' },
   { key: 'catalog.enable_file', category: 'catalog', name: 'Enable File Catalog', description: 'Allow user to enable and configure the file catalog in the catalog settings' },
 
+  { key: 'library.upload', category: 'library', name: 'Upload mods', description: 'Allow the user to upload mods to the library' },
+  { key: 'library.delete', category: 'library', name: 'Delete mods', description: 'Allow the user to delete mods from the library' },
+  { key: 'library.change_settings', category: 'library', name: 'Change mod settings', description: 'Allow the user to change library mod settings such as description and thumbnail' },
+  { key: 'library.import_curseforge', category: 'library', name: 'Download from CurseForge', description: 'Allow the user to import mods into the library from a CurseForge URL' },
+  { key: 'library.import_mcpedl', category: 'library', name: 'Download from MCPEDL', description: 'Allow the user to import mods into the library from an MCPEDL URL' },
+
   { key: 'players.add', category: 'players', name: 'Add a player', description: 'Allows users to add a player in the player management page' },
   { key: 'players.ban_all', category: 'players', name: 'Ban player from all servers', description: 'Allow user to ban player at the player management page' },
   { key: 'players.remove_whitelisted', category: 'players', name: 'Remove whitelisted players', description: 'Allows user to remove player from all allow lists at the player management page' },
@@ -55,6 +84,10 @@ const PERMISSIONS = [
   { key: 'users.change_group_membership', category: 'users', name: 'Change Group Membership', description: 'Allow user to add/remove users from groups' },
   { key: 'users.add_groups', category: 'users', name: 'Add groups', description: 'Allow user to create groups' },
   { key: 'users.delete_groups', category: 'users', name: 'Delete group', description: 'Allow user to delete groups (deleting groups with users just removes the user from that group)' },
+
+  { key: 'plugins.upload', category: 'plugins', name: 'Upload a plugin', description: 'Allow the user to upload plugins' },
+
+  ...MENU_PERMISSIONS,
 ];
 
 const ALL_KEYS = PERMISSIONS.map((item) => item.key);
@@ -91,9 +124,16 @@ const STANDARD_KEYS = [
   'catalog.set_curseforge_key',
   'catalog.enable_git',
   'catalog.enable_file',
+  'library.upload',
+  'library.delete',
+  'library.change_settings',
+  'library.import_curseforge',
+  'library.import_mcpedl',
   'players.add',
   'players.ban_all',
   'players.remove_whitelisted',
+  'plugins.upload',
+  ...MENU_PERMISSIONS.map((item) => item.key),
 ];
 
 const DEFAULT_GROUPS = [
@@ -108,6 +148,14 @@ const USER_MANAGEMENT_KEYS = PERMISSIONS
 
 function permissionByKey(key) {
   return PERMISSIONS.find((item) => item.key === key) || null;
+}
+
+function isMenuPermission(key) {
+  return String(key || '').startsWith('menu.view.');
+}
+
+function isPluginPermission(key) {
+  return String(key || '').startsWith('plugin.');
 }
 
 function startPermissionForKind(kind) {
@@ -168,11 +216,15 @@ function requiredServerUpdatePermissions(server, body) {
 module.exports = {
   CATEGORIES,
   PERMISSIONS,
+  MENU_PERMISSIONS,
   ALL_KEYS,
   STANDARD_KEYS,
   DEFAULT_GROUPS,
   USER_MANAGEMENT_KEYS,
+  READ_ONLY_MENU_ALLOW,
   permissionByKey,
+  isMenuPermission,
+  isPluginPermission,
   startPermissionForKind,
   stopPermissionForKind,
   requiredServerUpdatePermissions,

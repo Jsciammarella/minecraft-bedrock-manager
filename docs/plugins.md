@@ -71,6 +71,59 @@ plugin needs more than one sidebar entry; each entry still opens a page under
 Reserved ids such as `servers`, `mods`, `catalog`, `players`, `ports`, and
 `bedrock-connect` are rejected.
 
+## Plugin permissions
+
+Plugins can declare their own permissions in `plugin.json`. The manager reads
+those entries on load and adds them to **Users → Permissions** under **Plugin
+permissions**. They also appear in user and group permission editors.
+
+Declare them as a `permissions` array. Use a short local `key` made of lowercase
+letters, numbers, underscores, or hyphens. The manager stores the real key as
+`plugin.<plugin-id>.<key>`.
+
+```json
+{
+  "id": "my-plugin",
+  "name": "My Plugin",
+  "permissions": [
+    {
+      "key": "reset-world",
+      "name": "Reset world",
+      "description": "Allow the user to reset this plugin's saved world"
+    }
+  ]
+}
+```
+
+Rules:
+
+- Plugin permissions **cannot override** platform permissions. A key such as
+  `servers.create` is rejected. Dots are not allowed in the local key, so a
+  plugin cannot impersonate `servers.create` or another plugin's key.
+- The category is always **Plugin permissions**. Plugins cannot choose a
+  platform category.
+- Administrators have every plugin permission. Standard users receive newly
+  declared plugin permissions by default. Read-only users do not.
+
+In `backend.js`, check the local key with the `can` helper passed to
+`register()`. That helper looks up `plugin.<id>.<key>` on the signed-in user:
+
+```js
+module.exports = {
+  register({ router, id, can }) {
+    router.post('/reset', (req, res) => {
+      if (!can(req, 'reset-world')) {
+        return res.status(403).json({ error: 'You do not have permission to do that' });
+      }
+      res.json({ ok: true, plugin: id });
+    });
+  }
+};
+```
+
+Uploading a plugin requires the platform permission **Upload a plugin**
+(`plugins.upload`). Turning a plugin on or off still requires an administrator.
+
 ## Pages and isolation
 
 Plugin pages are HTML/CSS/JS under `ui/`. The manager opens them in a sandboxed
