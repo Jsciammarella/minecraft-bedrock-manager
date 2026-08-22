@@ -1131,6 +1131,80 @@ async function run() {
   ].join('\n'));
   assert.deepEqual(inferred.map((event) => event.username), ['Beta']);
 
+  const javaJoin = playerPresence.parsePresenceEvents(
+    '[12:00:00] [Server thread/INFO]: Steve joined the game\n[12:00:01] [Server thread/INFO]: Alex left the game'
+  );
+  assert.equal(javaJoin[0].type, 'join');
+  assert.equal(javaJoin[0].username, 'Steve');
+  assert.equal(javaJoin[1].type, 'leave');
+  assert.equal(javaJoin[1].username, 'Alex');
+  assert.deepEqual(
+    playerPresence.parseListOutput('There are 1 of a max of 20 players online:\nSteve'),
+    ['Steve']
+  );
+
+  const javaEdition = require('../server/services/javaEdition');
+  const javaCatalog = require('../server/services/javaPermissionCatalog');
+  assert.equal(javaEdition.isJava({ kind: 'java' }), true);
+  assert.equal(javaEdition.isJava({ kind: 'bedrock' }), false);
+  assert(javaCatalog.PERMISSIONS.some((item) => item.key === 'servers.create_java'));
+  assert(javaCatalog.PERMISSIONS.every((item) => item.edition === 'java'));
+  const javaProps = javaEdition.runtimeProperties({
+    name: 'JavaWorld',
+    port: 25565,
+    max_players: 20,
+    difficulty: 'easy',
+    gamemode: 'survival',
+    whitelist_mode: 0,
+    server_motd: 'Hello Java',
+  }, {}, { pvp: 1, simulation_distance: '8', op_permission_level: '4' });
+  assert.equal(javaProps['server-port'], '25565');
+  assert.equal(javaProps.motd, 'Hello Java');
+  assert.equal(javaProps.pvp, 'true');
+  assert.equal(javaProps['simulation-distance'], '8');
+  assert.equal(javaProps['white-list'], 'false');
+  assert.ok(!Object.prototype.hasOwnProperty.call(javaProps, 'server-portv6'));
+
+  const prevStub = process.env.ALLOW_STUB_SERVER;
+  process.env.ALLOW_STUB_SERVER = '1';
+  const javaCreated = await serverManager.createServer({
+    kind: 'java',
+    name: `java-${suffix}`,
+    port: 25600,
+    version: 'latest',
+    maxPlayers: 12,
+    acceptEula: true,
+    description: 'Java smoke',
+  });
+  assert.equal(javaCreated.kind, 'java');
+  assert.equal(javaCreated.status, 'creating');
+  const javaJob = serverManager.provisionJobs.get(Number(javaCreated.id));
+  if (javaJob) await javaJob;
+  const storedJava = serverManager.getServer(javaCreated.id);
+  assert.equal(storedJava.kind, 'java');
+  assert.equal(storedJava.status, 'stopped');
+  assert.equal(Number(storedJava.max_players), 12);
+  assert.equal(storedJava.pvp, 1);
+  const javaFiles = fs.readdirSync(storedJava.data_path);
+  assert(javaFiles.includes('server.jar') || javaFiles.includes('eula.txt'));
+  assert(fs.existsSync(path.join(storedJava.data_path, 'eula.txt')));
+  assert.match(fs.readFileSync(path.join(storedJava.data_path, 'eula.txt'), 'utf8'), /eula=true/);
+  await assert.rejects(
+    () => serverManager.setLanBroadcast(javaCreated.id, true),
+    /do not use the Bedrock console LAN proxy/
+  );
+  await assert.rejects(
+    () => serverManager.createServer({
+      kind: 'java',
+      name: `java-eula-${suffix}`,
+      port: 25601,
+      acceptEula: false,
+    }),
+    /EULA/
+  );
+  if (prevStub == null) delete process.env.ALLOW_STUB_SERVER;
+  else process.env.ALLOW_STUB_SERVER = prevStub;
+
   const created = serverManager.ensurePlayer('SmokeNewPlayer');
   assert.equal(created.created, true);
   const again = serverManager.ensurePlayer('smokenewplayer');
@@ -1399,6 +1473,7 @@ async function run() {
     udpPortDetection: 'ok',
     playerAccessFiles: 'ok',
     playerPresence: 'ok',
+    javaHosting: 'ok',
     packInstall: 'ok',
     dnsProxy: 'ok',
     bedrockConnectList: 'ok',

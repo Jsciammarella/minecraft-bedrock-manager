@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
+const net = require('net');
 const { exec, spawn } = require('child_process');
 const { promisify } = require('util');
 const db = require('../db/connection');
@@ -9,6 +10,7 @@ const settingsStore = require('./settingsStore');
 const portRanges = require('./portRanges');
 const playerPresence = require('./playerPresence');
 const platform = require('./platform');
+const javaEdition = require('./javaEdition');
 const execAsync = promisify(exec);
 
 const BASE_DIR = path.join(__dirname, '../../data/servers');
@@ -150,6 +152,10 @@ class ServerManager {
     return Boolean(server && server.kind === 'remote');
   }
 
+  isJava(server) {
+    return javaEdition.isJava(server);
+  }
+
   assertRemoteLocalPort(port, label = 'IPv4 port') {
     if (!portRanges.isDiscoveryPort(port)) return Number(port);
     throw new Error(
@@ -202,19 +208,19 @@ class ServerManager {
     if (!server) return server;
     const lanBroadcast = require('./lanBroadcast');
     const lan = lanBroadcast.statusFor(server);
-    if (this.isBedrockConnect(server)) {
-      return {
+    if (this.isBedrockConnect(server) || this.isJava(server)) {
+      return javaEdition.attachFields({
         ...server,
         lan: { ...lan, enabled: false, active: false, native: false, error: null },
         remoteReachable: null,
-      };
+      });
     }
     const remotePing = require('./remotePing');
-    return {
+    return javaEdition.attachFields({
       ...server,
       lan,
       remoteReachable: this.isRemote(server) ? remotePing.reachable(server.id) : null,
-    };
+    });
   }
 
   stopLanBroadcastsForBedrockConnect() {
@@ -280,6 +286,14 @@ class ServerManager {
         lan: lanBroadcast.statusFor(server),
       };
     }
+    if (this.isJava(server)) {
+      return {
+        allowed: false,
+        reason: 'java',
+        message: 'Java Edition servers do not use the Bedrock console LAN proxy. Geyser support will come later.',
+        lan: lanBroadcast.statusFor(server),
+      };
+    }
     if (this.isBedrockConnectActive()) {
       return {
         allowed: false,
@@ -337,6 +351,9 @@ class ServerManager {
     if (!server) throw new Error('Server not found');
     if (this.isBedrockConnect(server)) {
       throw new Error('Bedrock Connect cannot be advertised as a LAN game');
+    }
+    if (this.isJava(server)) {
+      throw new Error('Java Edition servers do not use the Bedrock console LAN proxy');
     }
     if (server.status === 'creating') {
       throw new Error('Wait until this server finishes building before enabling LAN listing');
@@ -729,7 +746,10 @@ class ServerManager {
       throw new Error('IPv4 and IPv6 ports must be different');
     }
     if (!portRanges.isIpv4GamePort(port) && !(this.isBedrockConnect(server) && port === BEDROCK_CONNECT_PORT)) {
-      throw new Error(`UDP port ${port} is not in the IPv4 game ranges`);
+      throw new Error(`${this.isJava(server) ? 'TCP' : 'UDP'} port ${port} is not in the IPv4 game ranges`);
+    }
+    if (this.isJava(server) && portRanges.isDiscoveryPort(port)) {
+      throw new Error(`Port ${port} is reserved for Bedrock LAN discovery`);
     }
 
     const taken = db.prepare('SELECT id, name FROM servers WHERE (port = ? OR ipv6_port = ?) AND id != ?').get(port, port, serverId);
@@ -742,8 +762,10 @@ class ServerManager {
       throw new Error('UDP port 19132 is reserved for Bedrock Connect');
     }
 
-    if (port !== Number(server.port) && !(await this.isUdpPortAvailable(port))) {
-      throw new Error(`UDP port ${port} is already in use by another process`);
+    if (port !== Number(server.port) && !(
+      this.isJava(server) ? await this.isTcpPortAvailable(port) : await this.isUdpPortAvailable(port)
+    )) {
+      throw new Error(`${this.isJava(server) ? 'TCP' : 'UDP'} port ${port} is already in use by another process`);
     }
 
     if (restartRequired || server.status === 'running') {
@@ -770,9 +792,13 @@ class ServerManager {
 
     const current = this.getServer(serverId);
     let ipv6Port = Number(current.ipv6_port) || null;
-    const wasPaired = ipv6Port && ipv6Port === portRanges.preferredIpv6Port(current.port);
-    if (!ipv6Port || wasPaired || ipv6Port === port) {
-      ipv6Port = await this.allocateIpv6Port(port, { excludeServerId: serverId });
+    if (!this.isJava(current)) {
+      const wasPaired = ipv6Port && ipv6Port === portRanges.preferredIpv6Port(current.port);
+      if (!ipv6Port || wasPaired || ipv6Port === port) {
+        ipv6Port = await this.allocateIpv6Port(port, { excludeServerId: serverId });
+      }
+    } else {
+      ipv6Port = null;
     }
 
     if (!this.isBedrockConnect(server) && !this.isRemote(server)) {
@@ -785,7 +811,7 @@ class ServerManager {
       WHERE id = ?
     `).run(port, ipv6Port, serverId);
     this.unregisterPorts(serverId);
-    this.registerPort(serverId, port, 'udp', 'ipv4');
+    this.registerPort(serverId, port, this.isJava(server) ? 'tcp' : 'udp', 'ipv4');
     if (ipv6Port) this.registerPort(serverId, ipv6Port, 'udp', 'ipv6');
     this.invalidateServerCache(serverId);
     logger.info(`Server ${server.name} is now on port ${port}`);
@@ -793,7 +819,7 @@ class ServerManager {
     try {
       if (this.isRemote(this.getServer(serverId)) && this.getServer(serverId).status === 'running') {
         await this.restartRemoteGateway(serverId);
-      } else if (Number(this.getServer(serverId)?.lan_broadcast) === 1) {
+      } else if (!this.isJava(this.getServer(serverId)) && Number(this.getServer(serverId)?.lan_broadcast) === 1) {
         await this.syncLanBroadcast(serverId);
       }
     } catch (err) {
@@ -807,6 +833,9 @@ class ServerManager {
   async createServer(config) {
     if (config?.kind === 'remote' || config?.remote === true) {
       return this.createRemoteServer(config);
+    }
+    if (config?.kind === 'java' || config?.java === true) {
+      return this.createJavaServer(config);
     }
     const { name, port, ipv6Port, version, maxPlayers, description, gamemode, difficulty } = config;
 
@@ -972,6 +1001,127 @@ class ServerManager {
       remoteIpv6Port,
       dataPath: serverPath,
     };
+  }
+
+  async createJavaServer(config) {
+    const name = String(config.name || '').trim();
+    const port = parseInt(config.port, 10);
+    const version = config.version || 'latest';
+    const maxPlayers = parseInt(config.maxPlayers ?? config.max_players ?? 20, 10) || 20;
+    const description = config.description || config.server_description || 'Minecraft Java Server';
+    const gamemode = config.gamemode || 'survival';
+    const difficulty = config.difficulty || 'easy';
+    const acceptedEula = config.acceptEula === true || config.acceptEula === 1 || config.acceptEula === '1'
+      || config.eula === true || config.eula === 1 || config.eula === 'true';
+
+    if (!name) throw new Error('Server name is required');
+    if (!acceptedEula) {
+      throw new Error('You must agree to the Minecraft EULA to create a Java Edition server');
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('Port must be between 1 and 65535');
+    }
+    if (!portRanges.isIpv4GamePort(port)) {
+      throw new Error(`TCP port ${port} is not in the IPv4 game ranges`);
+    }
+    if (Number(port) === portRanges.DISCOVERY_IPV4 || Number(port) === portRanges.DISCOVERY_IPV6) {
+      throw new Error(`Port ${port} is reserved for Bedrock LAN discovery`);
+    }
+
+    const existing = db.prepare('SELECT * FROM servers WHERE port = ? OR ipv6_port = ? OR name = ?').get(port, port, name);
+    if (existing) {
+      throw new Error('Port or server name already in use');
+    }
+    const pendingTaken = db.prepare('SELECT name FROM servers WHERE pending_port = ? OR pending_ipv6_port = ?').get(port, port);
+    if (pendingTaken) {
+      throw new Error(`Port ${port} is already reserved for ${pendingTaken.name}`);
+    }
+    if (!(await this.isTcpPortAvailable(port))) {
+      throw new Error(`TCP port ${port} is already in use by another process`);
+    }
+
+    const serverPath = path.join(BASE_DIR, name);
+    fs.mkdirSync(serverPath, { recursive: true });
+
+    const insert = db.prepare(`
+      INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
+        server_description, server_motd, status, data_path, lan_broadcast, kind)
+      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'creating', ?, 0, 'java')
+    `);
+    const result = insert.run(
+      name, version, port, maxPlayers,
+      difficulty, gamemode,
+      description, description,
+      serverPath
+    );
+    const serverId = result.lastInsertRowid;
+    this.registerPort(serverId, port, 'tcp', 'ipv4');
+    javaEdition.writeSettings(serverId, javaEdition.DEFAULTS);
+    this.invalidateServerCache(serverId);
+    this.broadcastServerStatus(serverId);
+
+    const job = this.finishCreateJavaServer(serverId, {
+      name,
+      port,
+      maxPlayers,
+      description,
+      gamemode,
+      difficulty,
+      version,
+      serverPath,
+    }).finally(() => this.provisionJobs.delete(Number(serverId)));
+    this.provisionJobs.set(Number(serverId), job);
+
+    logger.info(`Queued Java server create: ${name} on TCP ${port}`);
+    return { id: serverId, name, port, kind: 'java', status: 'creating', dataPath: serverPath };
+  }
+
+  async finishCreateJavaServer(serverId, config) {
+    const { name, port, maxPlayers, description, gamemode, difficulty, version, serverPath } = config;
+    try {
+      if (String(process.env.ALLOW_STUB_SERVER || '') === '1') {
+        javaEdition.createStubJar(serverPath);
+      } else {
+        const jar = await javaEdition.ensureJar(version);
+        javaEdition.installJarInto(serverPath, jar.path, jar.id);
+        db.prepare('UPDATE servers SET version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(jar.id, serverId);
+      }
+      if (!this.getServer(serverId)) return;
+
+      const server = this.getServer(serverId);
+      const extras = javaEdition.readSettings(serverId);
+      const propsPath = path.join(serverPath, 'server.properties');
+      this.writeServerProperties(
+        propsPath,
+        javaEdition.runtimeProperties({
+          ...server,
+          name,
+          port,
+          max_players: maxPlayers,
+          difficulty,
+          gamemode,
+          server_description: description,
+          server_motd: description,
+          data_path: serverPath,
+        }, this.readServerProperties(propsPath), extras)
+      );
+      javaEdition.writeEula(serverPath);
+      javaEdition.syncAccessFiles(server, []);
+
+      db.prepare('UPDATE servers SET status = ?, pending_restart_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('stopped', serverId);
+      this.invalidateServerCache(serverId);
+      this.broadcastServerStatus(serverId);
+      logger.info(`Created Java server: ${name} on TCP ${port}`);
+    } catch (err) {
+      logger.error(`Failed to finish creating Java server ${name}: ${err.message}`);
+      if (!this.getServer(serverId)) return;
+      db.prepare('UPDATE servers SET status = ?, pending_restart = 0, pending_restart_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('stopped', `Create failed: ${err.message}`, serverId);
+      this.invalidateServerCache(serverId);
+      this.broadcastServerStatus(serverId);
+    }
   }
 
   async startRemoteServer(server) {
@@ -1284,6 +1434,61 @@ done
     }
   }
 
+  async startJavaServer(server) {
+    await javaEdition.assertJavaAvailable();
+    const jar = javaEdition.installedJar(server.data_path);
+    if (!jar) {
+      throw new Error('Minecraft Java server.jar was not found. Recreate the server or run an update.');
+    }
+    if (javaEdition.isStubJar(jar.jarPath)) {
+      throw new Error('This instance has a placeholder Java jar, not the official Minecraft server. Delete it and create the server again.');
+    }
+    javaEdition.writeEula(server.data_path);
+    this.writeRuntimeServerProperties(server);
+
+    const sessionKey = this.sessionKey(server.id);
+    try {
+      const { spawn: spawnPty } = require('node-pty');
+      const pty = spawnPty(platform.javaCommand(), javaEdition.spawnArgs(server.data_path), {
+        name: 'xterm-color',
+        cols: 120,
+        rows: 30,
+        cwd: server.data_path,
+        env: { ...process.env },
+      });
+
+      this.ptySessions.set(sessionKey, pty);
+      this.setupPtyOutputBroadcast(server.id, pty);
+      db.prepare('UPDATE servers SET status = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('starting', server.id);
+      this.invalidateServerCache(server.id);
+      this.broadcastServerStatus(server.id);
+
+      setTimeout(() => {
+        if (this.ptySessions.has(sessionKey)) {
+          db.prepare(`
+            UPDATE servers
+            SET status = ?, pending_restart = 0, pending_restart_reason = NULL,
+              pending_restart_at = NULL, restart_scheduled_at = NULL,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run('running', server.id);
+          this.invalidateServerCache(server.id);
+          logger.info(`Java server ${server.name} started`);
+          this.broadcastServerStatus(server.id);
+        }
+      }, 4000);
+
+      return { success: true, message: 'Java server starting...' };
+    } catch (err) {
+      logger.error(`Failed to start Java server ${server.name}: ${err.message}`);
+      db.prepare('UPDATE servers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('stopped', server.id);
+      this.invalidateServerCache(server.id);
+      throw new Error(`Failed to start Java server: ${err.message}`);
+    }
+  }
+
   async startServer(serverId) {
     const sessionKey = this.sessionKey(serverId);
     const server = this.getServer(serverId);
@@ -1298,7 +1503,9 @@ done
     if (this.getServer(serverId)?.pending_ipv6_port) {
       await this.commitIpv6PortChange(serverId, this.getServer(serverId).pending_ipv6_port);
     }
-    await this.ensureIpv6PortAssigned(serverId);
+    if (!this.isJava(this.getServer(serverId))) {
+      await this.ensureIpv6PortAssigned(serverId);
+    }
     const current = this.getServer(serverId);
     const serverPath = current.data_path;
 
@@ -1310,6 +1517,10 @@ done
 
     if (this.isRemote(current)) {
       return this.startRemoteServer(current);
+    }
+
+    if (this.isJava(current)) {
+      return this.startJavaServer(current);
     }
 
     const serverBin = platform.bedrockBinaryPath(serverPath);
@@ -1691,7 +1902,25 @@ done
 
     const propsPath = path.join(server.data_path, 'server.properties');
     const currentProps = this.readServerProperties(propsPath);
-    
+
+    if (this.isJava(server)) {
+      const javaValues = {};
+      for (const key of javaEdition.SETTING_KEYS) {
+        if (rest[key] != null) javaValues[key] = rest[key];
+      }
+      if (rest.view_distance != null) javaValues.view_distance = rest.view_distance;
+      if (rest.player_idle_timeout != null) javaValues.player_idle_timeout = rest.player_idle_timeout;
+      javaEdition.writeSettings(serverId, javaValues);
+      const extras = javaEdition.readSettings(serverId);
+      const nextProps = javaEdition.applyMappedSettings(currentProps, {
+        ...rest,
+        ...extras,
+      });
+      this.writeServerProperties(
+        propsPath,
+        javaEdition.runtimeProperties({ ...server, ...rest }, nextProps, extras)
+      );
+    } else {
     // Map settings to properties
     const mapping = {
       max_players: 'max-players',
@@ -1736,6 +1965,7 @@ done
     }
 
     this.writeServerProperties(propsPath, currentProps);
+    }
 
     // Update database
     const update = db.prepare(`
@@ -1783,7 +2013,8 @@ done
     }
     const latest = this.getServer(serverId);
     if (
-      requestedIpv6Port != null
+      !this.isJava(server)
+      && requestedIpv6Port != null
       && requestedIpv6Port !== ''
       && Number(requestedIpv6Port) !== Number(server.ipv6_port)
       && Number(requestedIpv6Port) !== Number(latest.ipv6_port)
@@ -1860,6 +2091,13 @@ done
   writeRuntimeServerProperties(server) {
     const propsPath = path.join(server.data_path, 'server.properties');
     const current = this.readServerProperties(propsPath);
+    if (this.isJava(server)) {
+      this.writeServerProperties(
+        propsPath,
+        javaEdition.runtimeProperties(server, current, javaEdition.readSettings(server.id))
+      );
+      return;
+    }
     this.writeServerProperties(propsPath, this.bedrockRuntimeProperties(server, current));
   }
 
@@ -1911,6 +2149,34 @@ done
       return { success: true, fromVersion, toVersion: installed.tag };
     }
 
+    if (this.isJava(server)) {
+      const fromVersion = server.version;
+      const backupPath = path.join(server.data_path, 'backup_' + Date.now());
+      await this.backupServerData(server.data_path, backupPath, { java: true });
+      try {
+        const jar = await javaEdition.ensureJar(targetVersion || 'latest');
+        javaEdition.installJarInto(server.data_path, jar.path, jar.id);
+        await this.restoreServerData(server.data_path, backupPath, { java: true });
+        this.writeRuntimeServerProperties(this.getServer(serverId));
+        db.prepare('UPDATE servers SET version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(jar.id, serverId);
+        db.prepare(`
+          INSERT INTO update_history (server_id, from_version, to_version, status, notes)
+          VALUES (?, ?, ?, 'completed', ?)
+        `).run(serverId, fromVersion, jar.id, 'Java server jar updated');
+        this.invalidateServerCache(serverId);
+        if (server.status === 'running') {
+          this.markRestartRequired(serverId, `Java ${jar.id} is ready`);
+        }
+        logger.info(`Java server ${server.name} updated from ${fromVersion} to ${jar.id}`);
+        return { success: true, fromVersion, toVersion: jar.id };
+      } catch (err) {
+        logger.error(`Java update failed for ${server.name}, restoring backup`);
+        await this.restoreServerData(server.data_path, backupPath, { java: true });
+        throw new Error(`Update failed: ${err.message}`);
+      }
+    }
+
     const fromVersion = server.version;
     
     // Backup current addons and world data
@@ -1944,11 +2210,13 @@ done
     }
   }
 
-  async backupServerData(serverPath, backupPath) {
+  async backupServerData(serverPath, backupPath, { java = false } = {}) {
     fs.mkdirSync(backupPath, { recursive: true });
     
     // Backup important directories that should persist
-    const dirsToBackup = ['behavior_packs', 'texture_packs', 'resource_packs', 'worlds', 'user_data'];
+    const dirsToBackup = java
+      ? javaEdition.worldBackupDirs()
+      : ['behavior_packs', 'texture_packs', 'resource_packs', 'worlds', 'user_data'];
     
     for (const dir of dirsToBackup) {
       const src = path.join(serverPath, dir);
@@ -1963,16 +2231,23 @@ done
     }
 
     // Backup server.properties
-    const propsSrc = path.join(serverPath, 'server.properties');
-    if (fs.existsSync(propsSrc)) {
-      fs.copyFileSync(propsSrc, path.join(backupPath, 'server.properties'));
+    const extraFiles = java
+      ? javaEdition.accessBackupFiles()
+      : ['server.properties'];
+    for (const fileName of extraFiles) {
+      const propsSrc = path.join(serverPath, fileName);
+      if (fs.existsSync(propsSrc)) {
+        fs.copyFileSync(propsSrc, path.join(backupPath, fileName));
+      }
     }
   }
 
-  async restoreServerData(serverPath, backupPath) {
+  async restoreServerData(serverPath, backupPath, { java = false } = {}) {
     if (!fs.existsSync(backupPath)) return;
     
-    const dirsToRestore = ['behavior_packs', 'texture_packs', 'resource_packs', 'worlds', 'user_data'];
+    const dirsToRestore = java
+      ? javaEdition.worldBackupDirs()
+      : ['behavior_packs', 'texture_packs', 'resource_packs', 'worlds', 'user_data'];
     
     for (const dir of dirsToRestore) {
       const src = path.join(backupPath, dir);
@@ -1985,9 +2260,14 @@ done
     }
 
     // Restore server.properties if it exists
-    const propsSrc = path.join(backupPath, 'server.properties');
-    if (fs.existsSync(propsSrc)) {
-      fs.copyFileSync(propsSrc, path.join(serverPath, 'server.properties'));
+    const extraFiles = java
+      ? javaEdition.accessBackupFiles()
+      : ['server.properties'];
+    for (const fileName of extraFiles) {
+      const propsSrc = path.join(backupPath, fileName);
+      if (fs.existsSync(propsSrc)) {
+        fs.copyFileSync(propsSrc, path.join(serverPath, fileName));
+      }
     }
 
     // Cleanup backup
@@ -2402,10 +2682,12 @@ done
       WHERE server_id = ? AND player_id = ?
     `).get(serverId, player.id);
     if (!access?.has_custom_permission) return;
-    this.sendCommand(
-      serverId,
-      `permission set ${this.quoteCommandArgument(player.username)} ${access.permission}`
-    );
+    const safeName = this.quoteCommandArgument(player.username);
+    if (this.isJava(server)) {
+      this.sendCommand(serverId, access.permission === 'operator' ? `op ${safeName}` : `deop ${safeName}`);
+      return;
+    }
+    this.sendCommand(serverId, `permission set ${safeName} ${access.permission}`);
   }
 
   removeFromAllWhitelists(playerId) {
@@ -2524,6 +2806,21 @@ done
 
     if (server.status === 'running') {
       const safeName = this.quoteCommandArgument(player.username);
+      if (this.isJava(server)) {
+        if (changes.isWhitelisted !== undefined || changes.isBanned) {
+          this.sendCommand(serverId, `whitelist ${isWhitelisted ? 'add' : 'remove'} ${safeName}`);
+        }
+        if (hasCustomPermission && (changes.permission !== undefined || changes.hasCustomPermission !== undefined)) {
+          this.sendCommand(serverId, permission === 'operator' ? `op ${safeName}` : `deop ${safeName}`);
+        } else if (changes.hasCustomPermission !== undefined && !hasCustomPermission) {
+          this.sendCommand(serverId, `deop ${safeName}`);
+        }
+        if (isBanned) {
+          this.sendCommand(serverId, `ban ${safeName} ${this.quoteCommandArgument(banReason)}`);
+        } else if (changes.isBanned === false) {
+          this.sendCommand(serverId, `pardon ${safeName}`);
+        }
+      } else {
       if (changes.isWhitelisted !== undefined || changes.isBanned) {
         this.sendCommand(serverId, `allowlist ${isWhitelisted ? 'add' : 'remove'} ${safeName}`);
       }
@@ -2539,6 +2836,7 @@ done
       }
       if (isBanned) {
         this.sendCommand(serverId, `kick ${safeName} ${this.quoteCommandArgument(banReason)}`);
+      }
       }
     }
 
@@ -2579,6 +2877,9 @@ done
 
     fs.writeFileSync(path.join(server.data_path, 'allowlist.json'), `${JSON.stringify(allowlist, null, 2)}\n`);
     fs.writeFileSync(path.join(server.data_path, 'permissions.json'), `${JSON.stringify(permissions, null, 2)}\n`);
+    if (this.isJava(server)) {
+      javaEdition.syncAccessFiles(server, rows);
+    }
   }
 
   quoteCommandArgument(value) {
@@ -2636,6 +2937,22 @@ done
 
   isUdp6PortAvailable(port) {
     return this.bindProbe(port, 'udp6', '::');
+  }
+
+  isTcpPortAvailable(port) {
+    return new Promise((resolve) => {
+      const server = net.createServer();
+      let settled = false;
+      const finish = (available) => {
+        if (settled) return;
+        settled = true;
+        try { server.close(); } catch { /* ignore */ }
+        resolve(available);
+      };
+      server.once('error', () => finish(false));
+      server.once('listening', () => finish(true));
+      server.listen(Number(port), '0.0.0.0');
+    });
   }
 
   bindProbe(port, type, address) {
@@ -2749,7 +3066,7 @@ done
 
   async ensureIpv6PortAssigned(serverId) {
     const server = this.getServer(serverId);
-    if (!server || this.isBedrockConnect(server)) return server?.ipv6_port || null;
+    if (!server || this.isBedrockConnect(server) || this.isJava(server)) return server?.ipv6_port || null;
     if (server.ipv6_port) return server.ipv6_port;
     const ipv6Port = await this.allocateIpv6Port(server.port, { excludeServerId: serverId });
     db.prepare('UPDATE servers SET ipv6_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
@@ -2765,6 +3082,9 @@ done
     if (!server) throw new Error('Server not found');
     if (this.isBedrockConnect(server)) {
       throw new Error('Bedrock Connect must stay on UDP ports 19132/19133');
+    }
+    if (this.isJava(server)) {
+      throw new Error('Java Edition uses a single TCP port and does not have a separate IPv6 game port');
     }
     const port = parseInt(newPort, 10);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -2841,10 +3161,10 @@ done
     }));
 
     const usedPortSet = new Set(usedPorts.map((p) => p.port));
-    const addUsed = (port, family, server_name) => {
+    const addUsed = (port, family, server_name, protocol = 'udp') => {
       if (usedPortSet.has(port)) return;
       usedPortSet.add(port);
-      usedPorts.push({ port, protocol: 'udp', family, in_use: 1, server_name });
+      usedPorts.push({ port, protocol, family, in_use: 1, server_name });
     };
 
     for (const row of this.assignedPortRows()) {
@@ -2878,11 +3198,17 @@ done
     const ipv4Candidates = portRanges.ipv4Candidates().filter((port) => !usedPortSet.has(port));
     const ipv6Candidates = portRanges.ipv6Candidates().filter((port) => !usedPortSet.has(port));
     const ipv4Availability = await Promise.all(
-      ipv4Candidates.map(async (port) => ({
-        port,
-        family: 'ipv4',
-        available: await this.isUdpPortAvailable(port),
-      }))
+      ipv4Candidates.map(async (port) => {
+        const [udpFree, tcpFree] = await Promise.all([
+          this.isUdpPortAvailable(port),
+          this.isTcpPortAvailable(port),
+        ]);
+        return {
+          port,
+          family: 'ipv4',
+          available: udpFree && tcpFree,
+        };
+      })
     );
     const ipv6Availability = await Promise.all(
       ipv6Candidates.map(async (port) => ({
@@ -2901,7 +3227,8 @@ done
   // ========== DATA ACCESS ==========
 
   getServer(serverId) {
-    return db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
+    return server ? javaEdition.attachFields(server) : server;
   }
 
   getAllServers() {

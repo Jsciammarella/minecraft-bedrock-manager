@@ -16,6 +16,14 @@ function isRemote(server) {
   return server?.kind === 'remote';
 }
 
+function isJava(server) {
+  return server?.kind === 'java';
+}
+
+function isBedrockEdition(server) {
+  return !isJava(server);
+}
+
 function getRemoteReachableBadge(server) {
   if (!isRemote(server) || server.status !== 'running' || typeof server.remoteReachable !== 'boolean') {
     return null;
@@ -51,7 +59,13 @@ function compareServers(a, b, sortBy) {
     const delta = Number(a.port) - Number(b.port);
     if (delta) return delta;
   } else if (sortBy === 'type') {
-    const delta = (isRemote(a) ? 1 : 0) - (isRemote(b) ? 1 : 0);
+    const typeRank = (server) => {
+      if (isBedrockConnect(server)) return 0;
+      if (isJava(server)) return 1;
+      if (isRemote(server)) return 3;
+      return 2;
+    };
+    const delta = typeRank(a) - typeRank(b);
     if (delta) return delta;
   } else if (isBedrockConnect(a) !== isBedrockConnect(b)) {
     return isBedrockConnect(a) ? -1 : 1;
@@ -285,6 +299,8 @@ function Dashboard() {
     .filter((server) => {
       if (filterType === 'remote') return isRemote(server);
       if (filterType === 'local') return !isRemote(server);
+      if (filterType === 'java') return isJava(server);
+      if (filterType === 'bedrock') return isBedrockEdition(server);
       return true;
     })
     .filter((server) => serverMatchesSearch(server, search))
@@ -474,6 +490,8 @@ function Dashboard() {
               <option value="all">All Types</option>
               <option value="local">Local</option>
               <option value="remote">Remote</option>
+              <option value="java">Java</option>
+              <option value="bedrock">Bedrock</option>
             </select>
             <select
               value={sortBy}
@@ -500,9 +518,11 @@ function Dashboard() {
             const lanOn = Boolean(lan.native || lan.enabled);
             const isBuilding = server.status === 'creating';
             const createFailed = String(server.pending_restart_reason || '').startsWith('Create failed');
-            const lanLocked = isBedrockConnect(server) || lan.native || bcRunning || isBuilding;
+            const lanLocked = isBedrockConnect(server) || isJava(server) || lan.native || bcRunning || isBuilding;
             const lanTitle = isBedrockConnect(server)
               ? 'Bedrock Connect is a featured-server list, not a LAN game'
+              : isJava(server)
+                ? 'Java Edition does not use the Bedrock console LAN proxy'
               : isBuilding
                 ? 'Wait until this server finishes building'
                 : lan.native
@@ -545,6 +565,15 @@ function Dashboard() {
                           Remote
                         </span>
                       )}
+                      {isJava(server) ? (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                          JAVA
+                        </span>
+                      ) : (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                          Bedrock
+                        </span>
+                      )}
                       {lan.active && !lan.native && !isBedrockConnect(server) && (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 border border-sky-500/30">
                           LAN
@@ -572,7 +601,11 @@ function Dashboard() {
                   <Loader2 className="w-4 h-4 flex-shrink-0 mt-0.5 animate-spin" />
                   <div>
                     <p className="font-medium">Building Server</p>
-                    <p className="text-xs text-yellow-200/80 mt-1">Downloading Minecraft Bedrock Dedicated Server. Start and LAN unlock when this finishes.</p>
+                    <p className="text-xs text-yellow-200/80 mt-1">
+                      {isJava(server)
+                        ? 'Downloading Minecraft Java Edition server.jar. Start unlocks when this finishes.'
+                        : 'Downloading Minecraft Bedrock Dedicated Server. Start and LAN unlock when this finishes.'}
+                    </p>
                   </div>
                 </div>
               )}

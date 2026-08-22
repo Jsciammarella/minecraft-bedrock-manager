@@ -252,7 +252,7 @@ function ServerDetail() {
 
   const beginLanToggle = async () => {
     const lan = server?.stats?.lan || server?.lan || {};
-    if (server?.kind === 'bedrock_connect' || lan.native || server?.status === 'creating') return;
+    if (server?.kind === 'bedrock_connect' || server?.kind === 'java' || lan.native || server?.status === 'creating') return;
     if (servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting'))) return;
     setLanError('');
     setLanMessage('');
@@ -354,7 +354,7 @@ function ServerDetail() {
   };
 
   const handleRemoveMod = (mod) => {
-    if (!mod?.id || gameplayLocked || busyModId) return;
+    if (!mod?.id || modsLocked || busyModId) return;
     setRemoveModModal(mod);
   };
 
@@ -394,7 +394,7 @@ function ServerDetail() {
   };
 
   const handleInstallMod = async (mod) => {
-    if (busyModId) return;
+    if (busyModId || server?.kind === 'java' || server?.kind === 'bedrock_connect' || server?.kind === 'remote') return;
     setBusyModId(mod.id);
     setModMessage(null);
     try {
@@ -429,6 +429,15 @@ function ServerDetail() {
       try {
         const res = await serverApi.bedrockConnectVersions();
         setUpdateVersions((res.data?.stored || []).map(item => item.tag).filter(Boolean));
+      } catch {
+        setUpdateVersions([]);
+      }
+      return;
+    }
+    if (server?.kind === 'java') {
+      try {
+        const res = await serverApi.javaVersions();
+        setUpdateVersions((res.data?.versions || []).filter((id) => id && id !== 'latest'));
       } catch {
         setUpdateVersions([]);
       }
@@ -523,13 +532,15 @@ function ServerDetail() {
 
   const isBC = server.kind === 'bedrock_connect';
   const isRemote = server.kind === 'remote';
+  const isJava = server.kind === 'java';
   const gameplayLocked = isBC || isRemote;
+  const modsLocked = gameplayLocked || isJava;
   const isBuilding = server.status === 'creating';
   const createFailed = String(server.pending_restart_reason || '').startsWith('Create failed');
   const lan = server.stats?.lan || server.lan || {};
   const lanOn = Boolean(lan.native || lan.enabled);
   const bcRunning = servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting'));
-  const lanLocked = isBC || lan.native || bcRunning || isBuilding;
+  const lanLocked = isBC || isJava || lan.native || bcRunning || isBuilding;
   const connectLabel = server.connectAddress || `Port ${server.port}`;
   const onlinePlayers = Array.isArray(server.onlinePlayers) ? server.onlinePlayers : [];
 
@@ -544,6 +555,11 @@ function ServerDetail() {
       {isRemote && (
         <div className="mb-4 p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
           This is a UDP gateway to another Bedrock host. Start/stop, LAN listing, and local/remote ports can be changed. Console, players, mods, and updates are not available.
+        </div>
+      )}
+      {isJava && (
+        <div className="mb-4 p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
+          This is a Java Edition server. Bedrock addons, console LAN proxy, and IPv6 game ports stay visible but are disabled. Geyser is not enabled yet.
         </div>
       )}
       {location.state?.message && (
@@ -571,7 +587,11 @@ function ServerDetail() {
           <Loader2 className="w-4 h-4 mt-0.5 flex-shrink-0 animate-spin" />
           <div>
             <p className="font-medium">Building Server</p>
-            <p className="text-xs mt-1">Downloading Minecraft Bedrock Dedicated Server. Start and LAN unlock when this finishes.</p>
+            <p className="text-xs mt-1">
+              {isJava
+                ? 'Downloading Minecraft Java Edition server.jar. Start unlocks when this finishes.'
+                : 'Downloading Minecraft Bedrock Dedicated Server. Start and LAN unlock when this finishes.'}
+            </p>
           </div>
         </div>
       )}
@@ -627,6 +647,15 @@ function ServerDetail() {
               {isRemote && (
                 <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30">
                   Remote
+                </span>
+              )}
+              {isJava ? (
+                <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                  JAVA
+                </span>
+              ) : (
+                <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                  Bedrock
                 </span>
               )}
               {lan.active && !lan.native && !isBC && (
@@ -717,6 +746,8 @@ function ServerDetail() {
               title={lanLocked
                 ? (isBC
                   ? 'Bedrock Connect is not a LAN game'
+                  : isJava
+                    ? 'Java Edition does not use the Bedrock console LAN proxy'
                   : isBuilding
                     ? 'Wait until this server finishes building'
                     : lan.native
@@ -1084,7 +1115,7 @@ function ServerDetail() {
           </div>
 
           {/* Installed Mods */}
-          <div className={`card ${gameplayLocked ? 'opacity-60' : ''}`}>
+          <div className={`card ${modsLocked ? 'opacity-60' : ''}`}>
             <button
               onClick={() => setShowMods(!showMods)}
               className="w-full flex items-center justify-between"
@@ -1125,7 +1156,7 @@ function ServerDetail() {
                       </div>
                       <button
                         onClick={() => handleRemoveMod(mod)}
-                        disabled={gameplayLocked || removingModId === mod.id || Boolean(busyModId)}
+                        disabled={modsLocked || removingModId === mod.id || Boolean(busyModId)}
                         className="p-2 text-mc-textMuted hover:text-red-400 hover:bg-red-500/10 rounded transition-colors disabled:opacity-50"
                         title="Remove from this server only"
                         aria-label={`Remove ${mod.name} from this server`}
@@ -1140,7 +1171,7 @@ function ServerDetail() {
                 )}
                 <button
                   onClick={openManageMods}
-                  disabled={gameplayLocked}
+                  disabled={modsLocked}
                   className="w-full btn btn-secondary text-sm mt-2"
                 >
                   Manage Mods
@@ -1166,7 +1197,7 @@ function ServerDetail() {
                   <InfoRow label="Remote IPv6 Port" value={server.remote_ipv6_port || 'N/A'} />
                 </>
               )}
-              <InfoRow label="LAN listing" value={isBC ? 'n/a' : (lan.native ? 'Native (19132)' : (lan.active && lan.enabled) ? 'On' : (lan.enabled && bcRunning) ? 'Paused' : 'Off')} />
+              <InfoRow label="LAN listing" value={isBC || isJava ? 'n/a' : (lan.native ? 'Native (19132)' : (lan.active && lan.enabled) ? 'On' : (lan.enabled && bcRunning) ? 'Paused' : 'Off')} />
               {!isRemote && (
                 <>
                   <InfoRow label="Max Players" value={server.max_players} />
@@ -1189,6 +1220,8 @@ function ServerDetail() {
             <p className="text-sm text-mc-textMuted mb-4">
               {isBC
                 ? 'This will update the Bedrock Connect JAR. Choose Latest or a stored version. Older JARs stay on disk if they drop off this list.'
+                : isJava
+                  ? 'This will download the official Java server.jar for the selected version and keep your world folders.'
                 : 'This will update the server binary while preserving your addons, worlds, and configuration.'}
             </p>
             {updateError && (
@@ -1343,7 +1376,7 @@ function ServerDetail() {
                           <button
                             type="button"
                             onClick={() => handleRemoveMod(mod)}
-                            disabled={Boolean(busyModId)}
+                            disabled={Boolean(busyModId) || modsLocked}
                             className="btn btn-danger text-xs px-3 py-1.5"
                           >
                             Remove
@@ -1352,7 +1385,7 @@ function ServerDetail() {
                           <button
                             type="button"
                             onClick={() => handleInstallMod(mod)}
-                            disabled={Boolean(busyModId)}
+                            disabled={Boolean(busyModId) || modsLocked}
                             className="btn text-xs px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white"
                           >
                             <Plus className="w-3.5 h-3.5" />

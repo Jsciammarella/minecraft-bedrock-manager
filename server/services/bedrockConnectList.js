@@ -19,7 +19,7 @@ function gameServers() {
   return db.prepare(`
     SELECT id, name, port
     FROM servers
-    WHERE kind IS NULL OR kind != 'bedrock_connect'
+    WHERE (kind IS NULL OR kind NOT IN ('bedrock_connect', 'java'))
     ORDER BY name COLLATE NOCASE
   `).all();
 }

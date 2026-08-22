@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { serverApi, portApi } from '../services/api';
 import { ArrowLeft, Save, Loader2, Check, AlertCircle, RefreshCw } from 'lucide-react';
+import { isFieldDisabled, isJavaServer } from '../utils/editionSettings';
 
 function ServerProperties() {
   const { id } = useParams();
@@ -50,7 +51,41 @@ function ServerProperties() {
     remote_host: '',
     remote_ipv4_port: '19132',
     remote_ipv6_port: '19133',
+    pvp: 1,
+    spawn_protection: '16',
+    simulation_distance: '10',
+    allow_nether: 1,
+    allow_flight: 0,
+    enable_command_block: 0,
+    hardcore: 0,
+    force_gamemode: 0,
+    spawn_animals: 1,
+    spawn_npcs: 1,
+    spawn_monsters: 1,
+    generate_structures: 1,
+    hide_online_players: 0,
+    enforce_whitelist: 0,
+    network_compression_threshold: '256',
+    resource_pack: '',
+    resource_pack_sha1: '',
+    require_resource_pack: 0,
+    function_permission_level: '2',
+    op_permission_level: '4',
+    broadcast_console_to_ops: 1,
+    enable_rcon: 0,
+    rcon_port: '25575',
+    rcon_password: '',
+    enable_query: 0,
+    query_port: '',
+    sync_chunk_writes: 1,
+    prevent_proxy_connections: 0,
+    entity_broadcast_range_percentage: '100',
+    enforce_secure_profile: 1,
+    level_type: 'minecraft:normal',
+    max_world_size: '29999984',
+    enable_status: 1,
   });
+  const [permissionFilter, setPermissionFilter] = useState('all');
 
   useEffect(() => {
     loadServer();
@@ -80,6 +115,41 @@ function ServerProperties() {
         enable_cheats: res.data.enable_cheats ?? 1,
         server_authoritative: res.data.server_authoritative ?? 1,
         default_1st_person: res.data.default_1st_person ?? 1,
+        pvp: res.data.pvp ?? 1,
+        spawn_protection: String(res.data.spawn_protection ?? '16'),
+        simulation_distance: String(res.data.simulation_distance ?? '10'),
+        allow_nether: res.data.allow_nether ?? 1,
+        allow_flight: res.data.allow_flight ?? 0,
+        enable_command_block: res.data.enable_command_block ?? 0,
+        hardcore: res.data.hardcore ?? 0,
+        force_gamemode: res.data.force_gamemode ?? 0,
+        spawn_animals: res.data.spawn_animals ?? 1,
+        spawn_npcs: res.data.spawn_npcs ?? 1,
+        spawn_monsters: res.data.spawn_monsters ?? 1,
+        generate_structures: res.data.generate_structures ?? 1,
+        hide_online_players: res.data.hide_online_players ?? 0,
+        enforce_whitelist: res.data.enforce_whitelist ?? 0,
+        network_compression_threshold: String(res.data.network_compression_threshold ?? '256'),
+        resource_pack: res.data.resource_pack || '',
+        resource_pack_sha1: res.data.resource_pack_sha1 || '',
+        require_resource_pack: res.data.require_resource_pack ?? 0,
+        function_permission_level: String(res.data.function_permission_level ?? '2'),
+        op_permission_level: String(res.data.op_permission_level ?? '4'),
+        broadcast_console_to_ops: res.data.broadcast_console_to_ops ?? 1,
+        enable_rcon: res.data.enable_rcon ?? 0,
+        rcon_port: String(res.data.rcon_port ?? '25575'),
+        rcon_password: res.data.rcon_password || '',
+        enable_query: res.data.enable_query ?? 0,
+        query_port: String(res.data.query_port || res.data.port || ''),
+        sync_chunk_writes: res.data.sync_chunk_writes ?? 1,
+        prevent_proxy_connections: res.data.prevent_proxy_connections ?? 0,
+        entity_broadcast_range_percentage: String(res.data.entity_broadcast_range_percentage ?? '100'),
+        enforce_secure_profile: res.data.enforce_secure_profile ?? 1,
+        level_type: res.data.level_type || 'minecraft:normal',
+        max_world_size: String(res.data.max_world_size ?? '29999984'),
+        enable_status: res.data.enable_status ?? 1,
+        view_distance: String(res.data.view_distance ?? (res.data.kind === 'java' ? '10' : '32')),
+        player_idle_timeout: String(res.data.player_idle_timeout ?? (res.data.kind === 'java' ? '0' : '30')),
       }));
     } catch (err) {
       setError(err.message);
@@ -183,7 +253,8 @@ function ServerProperties() {
       };
       delete payload.ipv6_port;
       if (
-        formData.ipv6_port !== ''
+        server?.kind !== 'java'
+        && formData.ipv6_port !== ''
         && Number(formData.ipv6_port) !== Number(server.ipv6_port)
       ) {
         payload.ipv6Port = parseInt(formData.ipv6_port, 10);
@@ -213,7 +284,10 @@ function ServerProperties() {
 
   const isBC = server?.kind === 'bedrock_connect';
   const isRemote = server?.kind === 'remote';
+  const isJava = isJavaServer(server);
   const settingsLocked = isBC || isRemote;
+  const fieldOff = (name) => settingsLocked || isFieldDisabled(name, server);
+  const showPerm = (edition) => permissionFilter === 'all' || permissionFilter === edition;
   const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
   const ipv6Available = (ports.available || []).filter((item) => item.family === 'ipv6');
   const portOptions = [];
@@ -264,6 +338,16 @@ function ServerProperties() {
       {isRemote && (
         <div className="mb-6 p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
           Remote servers only allow changing local ports and the remote host and ports. Gameplay settings, mods, and updates are not available from this manager.
+        </div>
+      )}
+      {isJava && (
+        <div className="mb-6 p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
+          This is a Java Edition server. Bedrock-only settings stay visible but are disabled. Java-only settings are disabled on Bedrock servers.
+        </div>
+      )}
+      {!isJava && !isBC && !isRemote && (
+        <div className="mb-6 p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
+          Java-only settings stay visible so every server looks the same, but they are disabled on Bedrock.
         </div>
       )}
 
@@ -317,11 +401,11 @@ function ServerProperties() {
                 name="ipv6_port"
                 value={formData.ipv6_port}
                 onChange={handleChange}
-                className="input"
-                disabled={isBC}
-                required={!isBC}
+                className={`input ${isJava ? 'opacity-50' : ''}`}
+                disabled={isBC || isJava}
+                required={!isBC && !isJava}
               >
-                {isBC && !formData.ipv6_port && <option value="">19133</option>}
+                {(isBC || isJava) && !formData.ipv6_port && <option value="">n/a</option>}
                 {ipv6Select.map((port) => (
                   <option key={port} value={port}>{port}</option>
                 ))}
@@ -329,6 +413,8 @@ function ServerProperties() {
               <p className="mt-2 text-xs text-mc-textMuted">
                 {isBC
                   ? 'Bedrock Connect uses UDP 19133 for IPv6 discovery.'
+                  : isJava
+                    ? 'Java Edition uses one TCP listen port for IPv4 and IPv6. This Bedrock IPv6 port is unused.'
                   : isRemote
                     ? 'Must be a different number from the local IPv4 port. A new port applies after restart if the gateway is running.'
                     : 'Must be a different number from the IPv4 port. Defaults to 1000 below IPv4 when that port is free. A new port applies after restart if the server is running.'}
@@ -380,44 +466,120 @@ function ServerProperties() {
               { value: 'normal', label: 'Normal' },
               { value: 'hard', label: 'Hard' },
             ]} />
-            <FormField label="View Distance" name="view_distance" value={formData.view_distance} onChange={handleChange} type="number" min="2" max="32" disabled={settingsLocked} />
-            <FormField label="Tick Distance" name="tick_distance" value={formData.tick_distance} onChange={handleChange} type="number" min="1" max="10" disabled={settingsLocked} />
-            <FormField label="Player Idle Timeout (min)" name="player_idle_timeout" value={formData.player_idle_timeout} onChange={handleChange} type="number" min="0" max="1440" disabled={settingsLocked} />
-            <FormField label="TX Rate (FPS)" name="tx_rate" value={formData.tx_rate} onChange={handleChange} type="number" min="1" max="60" disabled={settingsLocked} />
+            <FormField label="View Distance" name="view_distance" value={formData.view_distance} onChange={handleChange} type="number" min="2" max="32" disabled={fieldOff('view_distance')} />
+            <FormField label="Tick Distance" name="tick_distance" value={formData.tick_distance} onChange={handleChange} type="number" min="1" max="10" disabled={fieldOff('tick_distance')} />
+            <FormField label="Player Idle Timeout (min)" name="player_idle_timeout" value={formData.player_idle_timeout} onChange={handleChange} type="number" min="0" max="1440" disabled={fieldOff('player_idle_timeout')} />
+            <FormField label="TX Rate (FPS)" name="tx_rate" value={formData.tx_rate} onChange={handleChange} type="number" min="1" max="60" disabled={fieldOff('tx_rate')} />
+            <FormField label="Simulation Distance" name="simulation_distance" value={formData.simulation_distance} onChange={handleChange} type="number" min="3" max="32" disabled={fieldOff('simulation_distance')} />
+            <FormField label="Spawn Protection" name="spawn_protection" value={formData.spawn_protection} onChange={handleChange} type="number" min="0" max="1024" disabled={fieldOff('spawn_protection')} />
           </div>
         </Section>
 
         {/* Toggles */}
         <Section title="Server Options">
           <div className="space-y-4">
-            <ToggleRow label="Enable Cheats" name="enable_cheats" value={formData.enable_cheats} onToggle={handleToggle} description="Allow cheats and commands" disabled={settingsLocked} />
-            <ToggleRow label="Server Authoritative" name="server_authoritative" value={formData.server_authoritative} onToggle={handleToggle} description="Server controls game logic" disabled={settingsLocked} />
-            <ToggleRow label="Whitelist Mode" name="whitelist_mode" value={formData.whitelist_mode} onToggle={handleToggle} description="Only whitelisted players can join" disabled={settingsLocked} />
-            <ToggleRow label="Texture Pack Required" name="texture_pack_required" value={formData.texture_pack_required} onToggle={handleToggle} description="Players must accept texture packs" disabled={settingsLocked} />
-            <ToggleRow label="Auto Ice" name="auto_ice" value={formData.auto_ice} onToggle={handleToggle} description="Water freezes into ice" disabled={settingsLocked} />
-            <ToggleRow label="Natural Regeneration" name="natural_regeneration" value={formData.natural_regeneration} onToggle={handleToggle} description="Health regenerates over time" disabled={settingsLocked} />
-            <ToggleRow label="Online Mode" name="online_mode" value={formData.online_mode} onToggle={handleToggle} description="Require Xbox Live authentication" disabled={settingsLocked} />
-            <ToggleRow label="Remote Discovery" name="remote_discovery" value={formData.remote_discovery} onToggle={handleToggle} description="Show server in external listings" disabled={settingsLocked} />
-            <ToggleRow label="Allow Third-Party Requests" name="allow_third_party_requests" value={formData.allow_third_party_requests} onToggle={handleToggle} description="Allow realms invites" disabled={settingsLocked} />
-            <ToggleRow label="Allow Third-Party Pictures" name="allow_third_party_pictures" value={formData.allow_third_party_pictures} onToggle={handleToggle} description="Allow skin data from third parties" disabled={settingsLocked} />
-            <ToggleRow label="Require Secure Chat" name="require_secure_chat" value={formData.require_secure_chat} onToggle={handleToggle} description="Enforce chat signing" disabled={settingsLocked} />
-            <ToggleRow label="Server Authoritative Inventory" name="server_authoritative_inventory" value={formData.server_authoritative_inventory} onToggle={handleToggle} description="Server manages inventory" disabled={settingsLocked} />
-            <ToggleRow label="Enable Player Data Init" name="enable_player_data_initialization" value={formData.enable_player_data_initialization} onToggle={handleToggle} description="Create player data on first join" disabled={settingsLocked} />
+            <ToggleRow label="Enable Cheats" name="enable_cheats" value={formData.enable_cheats} onToggle={handleToggle} description="Allow cheats and commands" disabled={fieldOff('enable_cheats')} />
+            <ToggleRow label="Server Authoritative" name="server_authoritative" value={formData.server_authoritative} onToggle={handleToggle} description="Server controls game logic" disabled={fieldOff('server_authoritative')} />
+            <ToggleRow label="Whitelist Mode" name="whitelist_mode" value={formData.whitelist_mode} onToggle={handleToggle} description="Only whitelisted players can join" disabled={fieldOff('whitelist_mode')} />
+            <ToggleRow label="Texture Pack Required" name="texture_pack_required" value={formData.texture_pack_required} onToggle={handleToggle} description="Players must accept texture packs" disabled={fieldOff('texture_pack_required')} />
+            <ToggleRow label="Auto Ice" name="auto_ice" value={formData.auto_ice} onToggle={handleToggle} description="Water freezes into ice" disabled={fieldOff('auto_ice')} />
+            <ToggleRow label="Natural Regeneration" name="natural_regeneration" value={formData.natural_regeneration} onToggle={handleToggle} description="Health regenerates over time" disabled={fieldOff('natural_regeneration')} />
+            <ToggleRow label="Online Mode" name="online_mode" value={formData.online_mode} onToggle={handleToggle} description={isJava ? 'Require a paid Minecraft Java account' : 'Require Xbox Live authentication'} disabled={fieldOff('online_mode')} />
+            <ToggleRow label="Remote Discovery" name="remote_discovery" value={formData.remote_discovery} onToggle={handleToggle} description="Show server in external listings" disabled={fieldOff('remote_discovery')} />
+            <ToggleRow label="Allow Third-Party Requests" name="allow_third_party_requests" value={formData.allow_third_party_requests} onToggle={handleToggle} description="Allow realms invites" disabled={fieldOff('allow_third_party_requests')} />
+            <ToggleRow label="Allow Third-Party Pictures" name="allow_third_party_pictures" value={formData.allow_third_party_pictures} onToggle={handleToggle} description="Allow skin data from third parties" disabled={fieldOff('allow_third_party_pictures')} />
+            <ToggleRow label="Require Secure Chat" name="require_secure_chat" value={formData.require_secure_chat} onToggle={handleToggle} description="Enforce chat signing" disabled={fieldOff('require_secure_chat')} />
+            <ToggleRow label="Server Authoritative Inventory" name="server_authoritative_inventory" value={formData.server_authoritative_inventory} onToggle={handleToggle} description="Server manages inventory" disabled={fieldOff('server_authoritative_inventory')} />
+            <ToggleRow label="Enable Player Data Init" name="enable_player_data_initialization" value={formData.enable_player_data_initialization} onToggle={handleToggle} description="Create player data on first join" disabled={fieldOff('enable_player_data_initialization')} />
+            <ToggleRow label="PvP" name="pvp" value={formData.pvp} onToggle={handleToggle} description="Players can damage each other" disabled={fieldOff('pvp')} />
+            <ToggleRow label="Allow Nether" name="allow_nether" value={formData.allow_nether} onToggle={handleToggle} description="Enable nether portals" disabled={fieldOff('allow_nether')} />
+            <ToggleRow label="Allow Flight" name="allow_flight" value={formData.allow_flight} onToggle={handleToggle} description="Allow survival flight without kicking" disabled={fieldOff('allow_flight')} />
+            <ToggleRow label="Enable Command Blocks" name="enable_command_block" value={formData.enable_command_block} onToggle={handleToggle} description="Command blocks can run" disabled={fieldOff('enable_command_block')} />
+            <ToggleRow label="Hardcore" name="hardcore" value={formData.hardcore} onToggle={handleToggle} description="Ban players on death" disabled={fieldOff('hardcore')} />
+            <ToggleRow label="Force Gamemode" name="force_gamemode" value={formData.force_gamemode} onToggle={handleToggle} description="Reset joining players to the server gamemode" disabled={fieldOff('force_gamemode')} />
+            <ToggleRow label="Spawn Animals" name="spawn_animals" value={formData.spawn_animals} onToggle={handleToggle} description="Animals spawn naturally" disabled={fieldOff('spawn_animals')} />
+            <ToggleRow label="Spawn Villagers" name="spawn_npcs" value={formData.spawn_npcs} onToggle={handleToggle} description="Villagers spawn" disabled={fieldOff('spawn_npcs')} />
+            <ToggleRow label="Spawn Monsters" name="spawn_monsters" value={formData.spawn_monsters} onToggle={handleToggle} description="Hostile mobs spawn" disabled={fieldOff('spawn_monsters')} />
+            <ToggleRow label="Generate Structures" name="generate_structures" value={formData.generate_structures} onToggle={handleToggle} description="Villages, strongholds, and other structures" disabled={fieldOff('generate_structures')} />
+            <ToggleRow label="Hide Online Players" name="hide_online_players" value={formData.hide_online_players} onToggle={handleToggle} description="Do not show player names in server list ping" disabled={fieldOff('hide_online_players')} />
+            <ToggleRow label="Enforce Whitelist" name="enforce_whitelist" value={formData.enforce_whitelist} onToggle={handleToggle} description="Kick players who are removed from the whitelist" disabled={fieldOff('enforce_whitelist')} />
+            <ToggleRow label="Require Resource Pack" name="require_resource_pack" value={formData.require_resource_pack} onToggle={handleToggle} description="Players must accept the server resource pack" disabled={fieldOff('require_resource_pack')} />
+            <ToggleRow label="Broadcast Console to Ops" name="broadcast_console_to_ops" value={formData.broadcast_console_to_ops} onToggle={handleToggle} description="Ops see console output in-game" disabled={fieldOff('broadcast_console_to_ops')} />
+            <ToggleRow label="Enable Status" name="enable_status" value={formData.enable_status} onToggle={handleToggle} description="Reply to Minecraft server list pings" disabled={fieldOff('enable_status')} />
+            <ToggleRow label="Enable Query" name="enable_query" value={formData.enable_query} onToggle={handleToggle} description="Enable GameSpy query protocol" disabled={fieldOff('enable_query')} />
+            <ToggleRow label="Enable RCON" name="enable_rcon" value={formData.enable_rcon} onToggle={handleToggle} description="Remote console protocol" disabled={fieldOff('enable_rcon')} />
+            <ToggleRow label="Sync Chunk Writes" name="sync_chunk_writes" value={formData.sync_chunk_writes} onToggle={handleToggle} description="Flush chunks synchronously" disabled={fieldOff('sync_chunk_writes')} />
+            <ToggleRow label="Prevent Proxy Connections" name="prevent_proxy_connections" value={formData.prevent_proxy_connections} onToggle={handleToggle} description="Reject connections through proxies" disabled={fieldOff('prevent_proxy_connections')} />
+            <ToggleRow label="Enforce Secure Profile" name="enforce_secure_profile" value={formData.enforce_secure_profile} onToggle={handleToggle} description="Require a Mojang signed player profile" disabled={fieldOff('enforce_secure_profile')} />
           </div>
         </Section>
 
         {/* Permission */}
         <Section title="Permissions">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
+            <p className="text-xs text-mc-textMuted flex-1">
+              Bedrock visitor/member/operator levels stay on every server. Java ops and function permissions stay visible too; each side is disabled on the other edition.
+            </p>
+            <select
+              value={permissionFilter}
+              onChange={(e) => setPermissionFilter(e.target.value)}
+              className="input sm:w-40 text-sm"
+              aria-label="Permission list filter"
+            >
+              <option value="all">All permissions</option>
+              <option value="bedrock">Bedrock only</option>
+              <option value="java">Java only</option>
+            </select>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <SelectField label="Default Player Permission" name="default_player_permission" value={formData.default_player_permission} onChange={handleChange} disabled={settingsLocked} options={[
-              { value: 'visitor', label: 'Visitor' },
-              { value: 'member', label: 'Member' },
-              { value: 'operator', label: 'Operator' },
+            {showPerm('bedrock') && (
+              <>
+                <SelectField label="Default Player Permission" name="default_player_permission" value={formData.default_player_permission} onChange={handleChange} disabled={fieldOff('default_player_permission')} options={[
+                  { value: 'visitor', label: 'Visitor' },
+                  { value: 'member', label: 'Member' },
+                  { value: 'operator', label: 'Operator' },
+                ]} />
+                <SelectField label="Default 1st Person" name="default_1st_person" value={String(formData.default_1st_person)} onChange={handleChange} disabled={fieldOff('default_1st_person')} options={[
+                  { value: '0', label: 'Off' },
+                  { value: '1', label: 'On' },
+                ]} />
+              </>
+            )}
+            {showPerm('java') && (
+              <>
+                <SelectField label="Op Permission Level" name="op_permission_level" value={formData.op_permission_level} onChange={handleChange} disabled={fieldOff('op_permission_level')} options={[
+                  { value: '1', label: '1 — Bypass spawn protection' },
+                  { value: '2', label: '2 — Use command blocks / clear' },
+                  { value: '3', label: '3 — Ban, op, and kick' },
+                  { value: '4', label: '4 — All commands' },
+                ]} />
+                <SelectField label="Function Permission Level" name="function_permission_level" value={formData.function_permission_level} onChange={handleChange} disabled={fieldOff('function_permission_level')} options={[
+                  { value: '1', label: '1' },
+                  { value: '2', label: '2' },
+                  { value: '3', label: '3' },
+                  { value: '4', label: '4' },
+                ]} />
+              </>
+            )}
+          </div>
+        </Section>
+
+        <Section title="Java Network">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <FormField label="Network Compression Threshold" name="network_compression_threshold" value={formData.network_compression_threshold} onChange={handleChange} type="number" disabled={fieldOff('network_compression_threshold')} />
+            <FormField label="Entity Broadcast Range %" name="entity_broadcast_range_percentage" value={formData.entity_broadcast_range_percentage} onChange={handleChange} type="number" min="10" max="1000" disabled={fieldOff('entity_broadcast_range_percentage')} />
+            <FormField label="Query Port" name="query_port" value={formData.query_port} onChange={handleChange} type="number" min="1" max="65535" disabled={fieldOff('query_port')} />
+            <FormField label="RCON Port" name="rcon_port" value={formData.rcon_port} onChange={handleChange} type="number" min="1" max="65535" disabled={fieldOff('rcon_port')} />
+            <FormField label="RCON Password" name="rcon_password" value={formData.rcon_password} onChange={handleChange} type="text" disabled={fieldOff('rcon_password')} />
+            <FormField label="Resource Pack URL" name="resource_pack" value={formData.resource_pack} onChange={handleChange} type="text" disabled={fieldOff('resource_pack')} />
+            <FormField label="Resource Pack SHA-1" name="resource_pack_sha1" value={formData.resource_pack_sha1} onChange={handleChange} type="text" disabled={fieldOff('resource_pack_sha1')} />
+            <SelectField label="Level Type" name="level_type" value={formData.level_type} onChange={handleChange} disabled={fieldOff('level_type')} options={[
+              { value: 'minecraft:normal', label: 'Normal' },
+              { value: 'minecraft:flat', label: 'Superflat' },
+              { value: 'minecraft:large_biomes', label: 'Large Biomes' },
+              { value: 'minecraft:amplified', label: 'Amplified' },
             ]} />
-            <SelectField label="Default 1st Person" name="default_1st_person" value={formData.default_1st_person} onChange={handleChange} disabled={settingsLocked} options={[
-              { value: '0', label: 'Off' },
-              { value: '1', label: 'On' },
-            ]} />
+            <FormField label="Max World Size" name="max_world_size" value={formData.max_world_size} onChange={handleChange} type="number" min="1" disabled={fieldOff('max_world_size')} />
           </div>
         </Section>
 
@@ -428,6 +590,8 @@ function ServerProperties() {
               <p className="text-sm text-mc-textMuted mb-3">
                 {isBC
                   ? 'Automatically check for and install Bedrock Connect JAR updates. Updates apply when Bedrock Connect is stopped.'
+                  : isJava
+                    ? 'Automatically check for and install official Java server.jar updates. Updates apply when the server is stopped, and worlds are preserved.'
                   : 'Automatically check for and install server updates. Updates will only be applied when the server is stopped, and addons/worlds will be preserved.'}
               </p>
               <div className="flex items-center justify-between">
@@ -505,18 +669,18 @@ function Section({ title, children }) {
   );
 }
 
-function FormField({ label, name, value, onChange, type = 'text', ...props }) {
+function FormField({ label, name, value, onChange, type = 'text', disabled = false, ...props }) {
   return (
-    <div>
+    <div className={disabled ? 'opacity-50' : ''}>
       <label className="block text-sm font-medium text-mc-text mb-2">{label}</label>
-      <input type={type} name={name} value={value} onChange={onChange} className="input" {...props} />
+      <input type={type} name={name} value={value} onChange={onChange} className="input" disabled={disabled} {...props} />
     </div>
   );
 }
 
 function SelectField({ label, name, value, onChange, options, disabled = false }) {
   return (
-    <div>
+    <div className={disabled ? 'opacity-50' : ''}>
       <label className="block text-sm font-medium text-mc-text mb-2">{label}</label>
       <select name={name} value={value} onChange={onChange} className="input" disabled={disabled}>
         {options.map(opt => (

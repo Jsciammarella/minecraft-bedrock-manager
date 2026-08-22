@@ -67,15 +67,23 @@ function ServerUsers() {
   const [success, setSuccess] = useState('');
   const [query, setQuery] = useState('');
   const [permission, setPermission] = useState('member');
+  const [permissionFilter, setPermissionFilter] = useState('all');
 
   const isBC = server?.kind === 'bedrock_connect';
   const isRemote = server?.kind === 'remote';
+  const isJava = server?.kind === 'java';
   const accessLocked = isBC || isRemote;
   const customPlayers = players.filter((player) => Number(player.has_custom_permission) === 1);
+  const showBedrockPerms = permissionFilter !== 'java';
+  const showJavaPerms = permissionFilter !== 'bedrock';
 
   useEffect(() => {
     loadPage();
   }, [id]);
+
+  useEffect(() => {
+    if (isJava && permission !== 'operator') setPermission('operator');
+  }, [isJava]);
 
   const loadPage = async () => {
     try {
@@ -178,6 +186,11 @@ function ServerUsers() {
           Remote servers do not have per-player permissions on this manager.
         </div>
       )}
+      {isJava && (
+        <div className="mb-6 p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
+          Java Edition uses ops instead of Bedrock visitor/member/operator. Bedrock permission levels stay listed but are disabled. Operator maps to <span className="font-mono text-white">op</span>.
+        </div>
+      )}
 
       {error && (
         <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-3">
@@ -197,13 +210,25 @@ function ServerUsers() {
           <Users className="w-4 h-4" />
           Permission list
         </h2>
-        <p className="text-xs text-mc-textMuted mb-4">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
+          <p className="text-xs text-mc-textMuted flex-1">
           Players listed here receive these permissions whenever they join this server.
           This is not an allow list — adding a player here does not let them in if whitelist
           mode is on, and they can still be banned. Players not listed here use the default
           permission from Properties. If a player is also on the allow list, permission
           changes stay in sync.
-        </p>
+          </p>
+          <select
+            value={permissionFilter}
+            onChange={(e) => setPermissionFilter(e.target.value)}
+            className="input sm:w-40 text-sm"
+            aria-label="Permission list filter"
+          >
+            <option value="all">All permissions</option>
+            <option value="bedrock">Bedrock only</option>
+            <option value="java">Java only</option>
+          </select>
+        </div>
 
         <div className="flex flex-col sm:flex-row gap-2 mb-4">
           <PlayerCombobox
@@ -221,9 +246,9 @@ function ServerUsers() {
             className="input sm:w-36 text-sm"
             aria-label="Permission level"
           >
-            <option value="visitor">Visitor</option>
-            <option value="member">Member</option>
-            <option value="operator">Operator</option>
+            {showBedrockPerms && <option value="visitor" disabled={isJava}>Visitor</option>}
+            {showBedrockPerms && <option value="member" disabled={isJava}>Member</option>}
+            {(showBedrockPerms || showJavaPerms) && <option value="operator">{isJava ? 'Operator (Java op)' : 'Operator'}</option>}
           </select>
           <button
             onClick={addCustomPermission}
@@ -272,9 +297,9 @@ function ServerUsers() {
                 className="input sm:w-36 text-sm"
                 aria-label={`Permission for ${player.username}`}
               >
-                <option value="visitor">Visitor</option>
-                <option value="member">Member</option>
-                <option value="operator">Operator</option>
+                {showBedrockPerms && <option value="visitor" disabled={isJava}>Visitor</option>}
+                {showBedrockPerms && <option value="member" disabled={isJava}>Member</option>}
+                {(showBedrockPerms || showJavaPerms) && <option value="operator">{isJava ? 'Operator (Java op)' : 'Operator'}</option>}
               </select>
               <button
                 onClick={() => saveAccess(

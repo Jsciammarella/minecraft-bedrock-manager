@@ -14,6 +14,9 @@ function CreateServer() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [remote, setRemote] = useState(false);
+  const [java, setJava] = useState(false);
+  const [acceptEula, setAcceptEula] = useState(false);
+  const [javaVersions, setJavaVersions] = useState(['latest']);
   
   const [formData, setFormData] = useState({
     name: '',
@@ -33,6 +36,12 @@ function CreateServer() {
 
   useEffect(() => {
     loadPorts();
+    serverApi.javaVersions()
+      .then((res) => {
+        const ids = res.data?.versions || [];
+        setJavaVersions(['latest', ...ids.filter((id) => id && id !== 'latest')]);
+      })
+      .catch(() => setJavaVersions(['latest']));
   }, []);
 
   const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
@@ -106,12 +115,29 @@ function CreateServer() {
             remoteIpv4Port: parseInt(formData.remoteIpv4Port, 10),
             remoteIpv6Port: formData.remoteIpv6Port === '' ? undefined : parseInt(formData.remoteIpv6Port, 10),
           }
-        : {
+        : java
+          ? {
+              kind: 'java',
+              name: formData.name,
+              port: parseInt(formData.port, 10),
+              version: formData.version,
+              maxPlayers: parseInt(formData.maxPlayers, 10),
+              description: formData.description,
+              gamemode: formData.gamemode,
+              difficulty: formData.difficulty,
+              acceptEula: true,
+            }
+          : {
             ...formData,
             port: parseInt(formData.port, 10),
             ipv6Port: formData.ipv6Port === '' ? undefined : parseInt(formData.ipv6Port, 10),
             maxPlayers: parseInt(formData.maxPlayers, 10),
           };
+      if (java && !remote && !acceptEula) {
+        setError('You must agree to the Minecraft EULA to create a Java Edition server');
+        setLoading(false);
+        return;
+      }
       await serverApi.create(payload);
       await refresh();
       navigate('/');
@@ -137,7 +163,9 @@ function CreateServer() {
           <p className="text-mc-textMuted mt-1">
             {remote
               ? 'Forward a local UDP port to a pingable Minecraft Bedrock host'
-              : 'Set up a new Minecraft Bedrock server'}
+              : java
+                ? 'Set up a new Minecraft Java Edition server'
+                : 'Set up a new Minecraft Bedrock server'}
           </p>
         </div>
       </div>
@@ -175,7 +203,41 @@ function CreateServer() {
             />
           </div>
           <div className="flex-shrink-0 pb-1">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-col items-end gap-3">
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-medium text-mc-text">Java server</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={java}
+                  aria-label="Create as a Java Edition server"
+                  disabled={remote}
+                  onClick={() => {
+                    setJava((value) => {
+                      const next = !value;
+                      if (next) {
+                        setRemote(false);
+                        setFormData((prev) => {
+                          const preferred = ipv4Available.find((item) => item.port === 25565)
+                            || ipv4Available.find((item) => item.port !== 19132 && item.port !== 19133);
+                          return {
+                            ...prev,
+                            port: preferred ? String(preferred.port) : prev.port,
+                            maxPlayers: prev.maxPlayers === '10' ? '20' : prev.maxPlayers,
+                            difficulty: prev.difficulty === 'peaceful' ? 'easy' : prev.difficulty,
+                          };
+                        });
+                      }
+                      return next;
+                    });
+                    setError('');
+                  }}
+                  className={`toggle ${java ? 'toggle-active' : 'toggle-inactive'} ${remote ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  <span className={`toggle-thumb ${java ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+              </div>
+              <div className="flex items-center gap-3">
               <span className="text-sm font-medium text-mc-text">Remote server</span>
               <button
                 type="button"
@@ -188,6 +250,7 @@ function CreateServer() {
                   setRemote((value) => {
                     const next = !value;
                     if (next) {
+                      setJava(false);
                       setFormData((prev) => {
                         const v4 = Number(prev.port);
                         const v6 = Number(prev.ipv6Port);
@@ -215,8 +278,15 @@ function CreateServer() {
                 <span className={`toggle-thumb ${remote ? 'translate-x-6' : 'translate-x-1'}`} />
               </button>
             </div>
+            </div>
           </div>
         </div>
+        {java && !remote && (
+          <p className="text-xs text-mc-textMuted -mt-4">
+            Downloads the official vanilla Minecraft Java Edition server.jar. Players connect with a Java Edition client on TCP.
+            Geyser (Bedrock clients on Java) is not enabled yet.
+          </p>
+        )}
         {remote && (
           <p className="text-xs text-mc-textMuted -mt-4">
             This host listens on the local ports below and forwards UDP game traffic to another Bedrock server.
@@ -249,7 +319,9 @@ function CreateServer() {
           <p className="mt-2 text-xs text-mc-textMuted">
             {remote
               ? 'UDP 19132 stays free so this host can advertise the remote as a LAN game. UDP 19133 is reserved for IPv6 discovery.'
-              : 'Defaults to the next free IPv4 port. UDP 19133 is reserved for IPv6 discovery.'}
+              : java
+                ? 'Java Edition listens on TCP. 25565 is used when it is free. UDP 19132/19133 stay reserved for Bedrock discovery.'
+                : 'Defaults to the next free IPv4 port. UDP 19133 is reserved for IPv6 discovery.'}
           </p>
         </div>
 
@@ -261,8 +333,9 @@ function CreateServer() {
               name="ipv6Port"
               value={formData.ipv6Port}
               onChange={handleChange}
-              className="input"
-              required
+              className={`input ${java ? 'opacity-50' : ''}`}
+              disabled={java}
+              required={!java}
             >
               <option value="">Select an available IPv6 port...</option>
               {ipv6Choices.map(({ port }) => (
@@ -270,7 +343,9 @@ function CreateServer() {
               ))}
           </select>
           <p className="mt-2 text-xs text-mc-textMuted">
-            Defaults to 1000 below the IPv4 port when that IPv6 port is free.
+            {java
+              ? 'Java Edition uses one TCP port for IPv4 and IPv6. This Bedrock IPv6 port is unused.'
+              : 'Defaults to 1000 below the IPv4 port when that IPv6 port is free.'}
           </p>
         </div>
 
@@ -339,11 +414,19 @@ function CreateServer() {
             className="input"
           >
             <option value="latest">Latest</option>
-            <option value="1.20.80">1.20.80</option>
-            <option value="1.20.70">1.20.70</option>
-            <option value="1.20.60">1.20.60</option>
-            <option value="1.20.50">1.20.50</option>
-            <option value="1.20.40">1.20.40</option>
+            {java
+              ? javaVersions.filter((id) => id !== 'latest').map((id) => (
+                <option key={id} value={id}>{id}</option>
+              ))
+              : (
+                <>
+                  <option value="1.20.80">1.20.80</option>
+                  <option value="1.20.70">1.20.70</option>
+                  <option value="1.20.60">1.20.60</option>
+                  <option value="1.20.50">1.20.50</option>
+                  <option value="1.20.40">1.20.40</option>
+                </>
+              )}
           </select>
         </div>
 
@@ -405,6 +488,29 @@ function CreateServer() {
             placeholder="A short description for your server..."
           />
         </div>
+        {java && (
+          <label className="flex items-start gap-3 p-3 bg-mc-darker rounded-lg cursor-pointer">
+            <input
+              type="checkbox"
+              checked={acceptEula}
+              onChange={(e) => setAcceptEula(e.target.checked)}
+              className="mt-1"
+              required={java}
+            />
+            <span className="text-sm text-mc-text">
+              I agree to the{' '}
+              <a
+                href="https://aka.ms/MinecraftEULA"
+                target="_blank"
+                rel="noreferrer"
+                className="text-mc-accent hover:underline"
+              >
+                Minecraft EULA
+              </a>
+              . Required to run a Java Edition dedicated server.
+            </span>
+          </label>
+        )}
           </>
         )}
 
@@ -423,7 +529,7 @@ function CreateServer() {
             ) : (
               <>
                 <Server className="w-4 h-4" />
-                {remote ? 'Create Remote Server' : 'Create Server'}
+                {remote ? 'Create Remote Server' : java ? 'Create Java Server' : 'Create Server'}
               </>
             )}
           </button>

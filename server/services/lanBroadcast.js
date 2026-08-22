@@ -450,7 +450,8 @@ function statusFor(server) {
   const id = Number(server.id);
   const native = Number(server.port) === DISCOVERY_PORT
     && server.kind !== 'bedrock_connect'
-    && server.kind !== 'remote';
+    && server.kind !== 'remote'
+    && server.kind !== 'java';
   return {
     enabled: Number(server.lan_broadcast) === 1,
     active: native || isActive(id),

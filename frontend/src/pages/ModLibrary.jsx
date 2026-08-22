@@ -958,13 +958,17 @@ function ModLibrary() {
               ) : (
                 installTargets.map(server => {
                   const isTarget = installing && installingServerId === server.id;
+                  const javaLocked = server.kind === 'java';
                   return (
                     <button
                       key={server.id}
-                      onClick={() => handleInstall(installModal.id, server.id)}
-                      disabled={installing}
+                      onClick={() => {
+                        if (javaLocked) return;
+                        handleInstall(installModal.id, server.id);
+                      }}
+                      disabled={installing || javaLocked}
                       className={`w-full flex items-center gap-3 p-3 bg-mc-darker rounded-lg text-left transition-colors ${
-                        installing && !isTarget
+                        javaLocked || (installing && !isTarget)
                           ? 'opacity-40 cursor-not-allowed'
                           : installing
                             ? 'border border-yellow-500/40 cursor-not-allowed'
@@ -975,7 +979,9 @@ function ModLibrary() {
                       <div className="flex-1">
                         <p className="text-sm font-medium text-white">{server.name}</p>
                         <p className="text-xs text-mc-textMuted">
-                          {isTarget ? 'Installing…' : `Port ${server.port} • ${server.status}`}
+                          {javaLocked
+                            ? 'Java Edition — Bedrock addons are disabled'
+                            : isTarget ? 'Installing…' : `Port ${server.port} • ${server.status}`}
                         </p>
                       </div>
                       {isTarget ? (

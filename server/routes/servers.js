@@ -89,6 +89,15 @@ router.post('/bedrock-connect', async (req, res) => {
   }
 });
 
+router.get('/java/versions', async (req, res) => {
+  try {
+    const javaEdition = require('../services/javaEdition');
+    res.json(await javaEdition.listReleaseVersions());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get single server
 router.get('/:id', async (req, res) => {
   try {
