@@ -15,6 +15,10 @@ router.post('/login', (req, res) => {
   }
 });
 
+router.get('/password-policy', (_req, res) => {
+  res.json(auth.getPasswordPolicy());
+});
+
 router.post('/logout', (req, res) => {
   const token = auth.tokenFromRequest(req);
   auth.destroySession(token);

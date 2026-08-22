@@ -41,17 +41,16 @@ function RequireAuth() {
 }
 
 function RequireUserManagement() {
-  const { canAccessUserManagement, canViewUsers, canViewGroups, canViewPermissions, canViewSettings } = useAuth();
+  const { canAccessUserManagement, canViewUsers, canViewGroups, canViewPermissions } = useAuth();
   const location = useLocation();
-  if (!canAccessUserManagement) return <Navigate to="/" replace />;
+  if (location.pathname === '/users/settings') return <Outlet />;
+  if (!canAccessUserManagement) return <Navigate to="/users/settings" replace />;
   if (location.pathname === '/users' && !canViewUsers) {
     const fallback = canViewGroups
       ? '/users/groups'
       : canViewPermissions
         ? '/users/permissions'
-        : canViewSettings
-          ? '/users/settings'
-          : '/';
+        : '/users/settings';
     return <Navigate to={fallback} replace />;
   }
   return <Outlet />;

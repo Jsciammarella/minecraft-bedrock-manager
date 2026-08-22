@@ -102,8 +102,55 @@ function testUserManagement() {
   }, login.user);
   assert.equal(operator.permissions.includes('servers.create'), true);
   assert.equal(operator.permissions.includes('catalog.download_mods'), true);
+  assert.equal(operator.permissions.includes('plugins.upload'), true);
+  assert.equal(operator.permissions.includes('menu.view.dashboard'), true);
   assert.equal(operator.permissions.includes('users.change_password'), false);
-  assert.equal(operator.permissions.includes('bedrock_connect.enable_dns_proxy'), false);
+  assert.equal(reader.permissions.includes('menu.view.library'), true);
+  assert.equal(reader.permissions.includes('menu.view.catalog'), false);
+  assert.equal(reader.permissions.includes('menu.view.users'), false);
+  assert.equal(reader.permissions.includes('plugins.upload'), false);
+  assert.equal(operator.permissions.includes('library.delete'), true);
+  assert.equal(reader.permissions.includes('library.delete'), false);
+  assert.equal(reader.permissions.includes('catalog.enable_file'), false);
+
+  const renamed = auth.updateUser(operator.id, { username: 'hacked-name' }, login.user);
+  assert.equal(renamed.username, 'operator');
+
+  const previousPolicy = auth.getPasswordPolicy();
+  auth.saveSettings({
+    passwordMinLength: 8,
+    passwordRequireNumber: true,
+    passwordHistory: 1,
+  });
+  assert.throws(
+    () => auth.createUser({
+      username: 'weakpass',
+      fullName: 'Weak Pass',
+      password: 'noletter',
+    }, login.user),
+    /number/i
+  );
+  assert.throws(
+    () => auth.createUser({
+      username: 'weakpass',
+      fullName: 'Weak Pass',
+      password: 'short',
+    }, login.user),
+    /at least 8/i
+  );
+  auth.setPassword(operator.id, 'standard9');
+  assert.throws(
+    () => auth.setPassword(operator.id, 'standard'),
+    /last 1 password/i
+  );
+  auth.saveSettings({
+    passwordMinLength: previousPolicy.minLength,
+    passwordRequireNumber: previousPolicy.requireNumber,
+    passwordHistory: previousPolicy.history,
+    passwordRequireUpper: previousPolicy.requireUpper,
+    passwordRequireLower: previousPolicy.requireLower,
+    passwordRequireSpecial: previousPolicy.requireSpecial,
+  });
 
   const withUserDeny = auth.updateUser(operator.id, {
     userPermissions: { 'servers.create': 'deny' },
@@ -165,6 +212,22 @@ async function testPluginHost() {
     true
   );
 
+  const withPerms = pluginHost.parseManifest({
+    id: 'hello-world',
+    name: 'Hello',
+    permissions: [
+      { key: 'greet', name: 'Send greeting' },
+      { key: 'servers.create', name: 'Should be ignored' },
+    ],
+  }, 'hello-world');
+  assert.equal(withPerms.ok, true);
+  assert(withPerms.manifest.permissions.some((item) => item.key === 'plugin.hello-world.greet'));
+  assert.equal(
+    withPerms.manifest.permissions.some((item) => item.key === 'servers.create'),
+    false,
+    'plugin permissions cannot override platform keys'
+  );
+
   pluginHost.resetForTests();
   const exampleDir = path.join(__dirname, '../examples/plugins');
   const loadedPlugins = pluginHost.loadPlugins([exampleDir]);
@@ -178,6 +241,8 @@ async function testPluginHost() {
     );
   });
   const helloPlugin = pluginHost.getPlugin('hello-world');
+  assert(helloPlugin.permissions.some((item) => item.key === 'plugin.hello-world.greet'));
+  assert(pluginHost.getDynamicPermissions().some((item) => item.key === 'menu.view.plugin.hello-world.main'));
   assert(pluginHost.resolveUiFile(helloPlugin, 'index.html'));
   assert.equal(pluginHost.resolveUiFile(helloPlugin, '../backend.js'), null);
   assert.equal(pluginHost.resolveUiFile(helloPlugin, '..\\backend.js'), null);
@@ -203,8 +268,7 @@ async function testPluginHost() {
     const theftRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/../backend.js`);
     assert.equal(theftRes.status, 404, 'plugin UI must not serve files outside ui/');
     const backendRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/hello`);
-    const backendBody = await backendRes.json();
-    assert.equal(backendBody.plugin, 'hello-world');
+    assert.equal(backendRes.status, 403, 'plugin permission should be required when no user is attached');
   } finally {
     await new Promise((resolve) => pluginServer.close(resolve));
   }

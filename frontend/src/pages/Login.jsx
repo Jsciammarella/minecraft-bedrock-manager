@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { Loader2, Server } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { authApi } from '../services/api';
+import { DEFAULT_PASSWORD_POLICY, validateLogin } from '../utils/passwordPolicy';
 
 function Login() {
   const { user, loading, login } = useAuth();
@@ -10,6 +12,13 @@ function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [policy, setPolicy] = useState(DEFAULT_PASSWORD_POLICY);
+
+  useEffect(() => {
+    authApi.passwordPolicy()
+      .then((res) => setPolicy(res.data || DEFAULT_PASSWORD_POLICY))
+      .catch(() => setPolicy(DEFAULT_PASSWORD_POLICY));
+  }, []);
 
   if (loading) {
     return (
@@ -26,6 +35,11 @@ function Login() {
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    const validationError = validateLogin(username, password, policy);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -40,7 +54,7 @@ function Login() {
   return (
     <div className="min-h-screen bg-mc-dark flex items-center justify-center p-4">
       <div className="w-full max-w-md">
-        <div className="flex items-center justify-center gap-3 mb-8">
+        <div className="flex items-center gap-3 mb-8 justify-center">
           <div className="w-12 h-12 bg-mc-accent rounded-xl flex items-center justify-center">
             <Server className="w-7 h-7 text-mc-darker" />
           </div>
@@ -66,7 +80,12 @@ function Login() {
               className="input"
               required
               autoFocus
+              minLength={policy.usernameMin}
+              maxLength={policy.usernameMax}
             />
+            <p className="text-xs text-mc-textMuted mt-2">
+              {policy.usernameMin}–{policy.usernameMax} characters. Use {policy.usernameAllowed} only.
+            </p>
           </div>
           <div>
             <label className="block text-sm font-medium text-mc-text mb-2" htmlFor="password">Password</label>
@@ -79,6 +98,7 @@ function Login() {
               onChange={(e) => setPassword(e.target.value)}
               className="input"
               required
+              maxLength={policy.maxLength}
             />
           </div>
           <button type="submit" disabled={busy} className="btn btn-primary w-full">

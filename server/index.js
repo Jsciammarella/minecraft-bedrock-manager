@@ -63,6 +63,7 @@ app.use(express.static(path.join(__dirname, '../public')));
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api')) return next();
   if (req.method === 'GET' && req.path === '/api/health') return next();
+  if (req.method === 'GET' && req.path === '/api/auth/password-policy') return next();
   if (req.method === 'POST' && req.path === '/api/auth/login') return next();
   if (req.method === 'POST' && req.path === '/api/auth/logout') return next();
   return attachUser(req, res, next);
@@ -79,6 +80,7 @@ app.use('/api/ports', portRoutes);
 app.use('/api/bedrock-connect', bedrockConnectRoutes);
 app.use('/api/v1', apiRoutes);
 pluginHost.loadPlugins();
+authService.syncDynamicPermissions();
 app.use('/api/plugins', pluginRoutes);
 logger.info(`Loaded ${pluginHost.getMenuItems().length} plugin menu item(s)`);
 

@@ -81,9 +81,6 @@ router.put('/users/:id', (req, res) => {
     if (body.isActive != null && !canManageUserAccounts(req.user)) {
       return res.status(403).json({ error: 'You do not have permission to activate or deactivate users' });
     }
-    if (body.username != null && !req.user.isAdmin && !auth.hasPermission(req.user, 'users.change_name')) {
-      return res.status(403).json({ error: 'You do not have permission to change usernames' });
-    }
     if (body.playerId !== undefined && !canManageUserAccounts(req.user)) {
       return res.status(403).json({ error: 'You do not have permission to link players' });
     }

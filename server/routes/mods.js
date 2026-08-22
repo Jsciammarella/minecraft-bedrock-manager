@@ -92,7 +92,7 @@ function unlinkUploads(files) {
 
 // Upload a mod. Handle Multer here so validation errors are always useful JSON.
 // Accepts a single "file" field (older clients) or multiple "files" archives as one library mod.
-router.post('/upload', (req, res) => {
+router.post('/upload', requirePermission('library.upload'), (req, res) => {
   upload.fields([
     { name: 'files', maxCount: 20 },
     { name: 'file', maxCount: 20 },
@@ -116,7 +116,7 @@ router.post('/upload', (req, res) => {
   });
 });
 
-router.post('/import-curseforge', async (req, res) => {
+router.post('/import-curseforge', requirePermission('library.import_curseforge'), async (req, res) => {
   req.setTimeout(20 * 60 * 1000);
   res.setTimeout(20 * 60 * 1000);
   try {
@@ -127,7 +127,7 @@ router.post('/import-curseforge', async (req, res) => {
   }
 });
 
-router.post('/import-mcpedl', async (req, res) => {
+router.post('/import-mcpedl', requirePermission('library.import_mcpedl'), async (req, res) => {
   req.setTimeout(20 * 60 * 1000);
   res.setTimeout(20 * 60 * 1000);
   try {
@@ -138,7 +138,7 @@ router.post('/import-mcpedl', async (req, res) => {
   }
 });
 
-router.put('/:id', (req, res) => {
+router.put('/:id', requirePermission('library.change_settings'), (req, res) => {
   imageUpload.single('thumbnail')(req, res, async (uploadError) => {
     if (uploadError) {
       const tooLarge = uploadError.code === 'LIMIT_FILE_SIZE';
@@ -173,7 +173,7 @@ router.get('/:id/thumbnail', async (req, res) => {
 });
 
 // Delete a mod from library
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requirePermission('library.delete'), async (req, res) => {
   try {
     const uninstallFromServers = req.query.uninstallFromAll === '1' || req.query.uninstallFromAll === 'true';
     await modManager.deleteMod(req.params.id, { uninstallFromServers });
@@ -244,11 +244,17 @@ router.put('/catalog/multi-file-mode', requirePermission('catalog.change_file_ha
 router.put('/catalog/settings', async (req, res) => {
   try {
     const body = req.body || {};
-    if (body.curseforgeApiKey != null || body.clearCurseforgeApiKey) {
-      assertPermission(req, 'catalog.set_curseforge_key');
+    const wantsGit = body.git != null;
+    const wantsFiles = body.files != null;
+    const wantsCurseforge = body.curseforgeApiKey != null || body.clearCurseforgeApiKey;
+    if (!wantsGit && !wantsFiles && !wantsCurseforge) {
+      const err = new Error('You do not have permission to do that');
+      err.status = 403;
+      throw err;
     }
-    if (body.git) assertPermission(req, 'catalog.enable_git');
-    if (body.files) assertPermission(req, 'catalog.enable_file');
+    if (wantsCurseforge) assertPermission(req, 'catalog.set_curseforge_key');
+    if (wantsGit) assertPermission(req, 'catalog.enable_git');
+    if (wantsFiles) assertPermission(req, 'catalog.enable_file');
     const previous = gitCatalog.getConfig();
     const saved = catalog.saveSettings(body);
     const next = gitCatalog.getConfig();

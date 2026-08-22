@@ -13,7 +13,19 @@ const KEYS = {
   SESSION_HOURS: 'auth_session_hours',
   DEFAULT_GROUP_ID: 'auth_default_group_id',
   AUTH_SECRET: 'auth_secret',
+  PASSWORD_MIN_LENGTH: 'auth_password_min_length',
+  PASSWORD_HISTORY: 'auth_password_history',
+  PASSWORD_REQUIRE_UPPER: 'auth_password_require_upper',
+  PASSWORD_REQUIRE_LOWER: 'auth_password_require_lower',
+  PASSWORD_REQUIRE_NUMBER: 'auth_password_require_number',
+  PASSWORD_REQUIRE_SPECIAL: 'auth_password_require_special',
 };
+
+const USERNAME_MIN = 2;
+const USERNAME_MAX = 64;
+const USERNAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
+const PASSWORD_MAX = 200;
+const DEFAULT_PASSWORD_MIN = 6;
 
 function nowIso() {
   return new Date().toISOString();
@@ -49,14 +61,50 @@ function getDefaultGroupId() {
   return Number.isInteger(raw) && raw > 0 ? raw : null;
 }
 
+function settingFlag(key) {
+  return settingsStore.get(key) === '1';
+}
+
+function clampInt(value, fallback, min, max) {
+  const raw = Number(value);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(raw)));
+}
+
+function getPasswordPolicy() {
+  return {
+    minLength: clampInt(settingsStore.get(KEYS.PASSWORD_MIN_LENGTH), DEFAULT_PASSWORD_MIN, 1, PASSWORD_MAX),
+    maxLength: PASSWORD_MAX,
+    history: clampInt(settingsStore.get(KEYS.PASSWORD_HISTORY), 0, 0, 24),
+    requireUpper: settingFlag(KEYS.PASSWORD_REQUIRE_UPPER),
+    requireLower: settingFlag(KEYS.PASSWORD_REQUIRE_LOWER),
+    requireNumber: settingFlag(KEYS.PASSWORD_REQUIRE_NUMBER),
+    requireSpecial: settingFlag(KEYS.PASSWORD_REQUIRE_SPECIAL),
+    usernameMin: USERNAME_MIN,
+    usernameMax: USERNAME_MAX,
+    usernamePattern: USERNAME_PATTERN.source,
+    usernameAllowed: 'letters, numbers, periods, underscores, and hyphens',
+  };
+}
+
 function publicSettings() {
   return {
     sessionHours: getSessionHours(),
     defaultGroupId: getDefaultGroupId(),
+    ...getPasswordPolicy(),
   };
 }
 
-function saveSettings({ sessionHours, defaultGroupId } = {}) {
+function saveSettings({
+  sessionHours,
+  defaultGroupId,
+  passwordMinLength,
+  passwordHistory,
+  passwordRequireUpper,
+  passwordRequireLower,
+  passwordRequireNumber,
+  passwordRequireSpecial,
+} = {}) {
   if (sessionHours != null) {
     const hours = Number(sessionHours);
     if (!Number.isFinite(hours) || hours < 1 || hours > 24 * 30) {
@@ -72,10 +120,36 @@ function saveSettings({ sessionHours, defaultGroupId } = {}) {
     if (!group) throw new Error('Default group not found');
     settingsStore.set(KEYS.DEFAULT_GROUP_ID, String(id));
   }
+  if (passwordMinLength != null) {
+    settingsStore.set(KEYS.PASSWORD_MIN_LENGTH, String(clampInt(passwordMinLength, DEFAULT_PASSWORD_MIN, 1, PASSWORD_MAX)));
+  }
+  if (passwordHistory != null) {
+    settingsStore.set(KEYS.PASSWORD_HISTORY, String(clampInt(passwordHistory, 0, 0, 24)));
+  }
+  if (passwordRequireUpper != null) {
+    settingsStore.set(KEYS.PASSWORD_REQUIRE_UPPER, passwordRequireUpper ? '1' : '0');
+  }
+  if (passwordRequireLower != null) {
+    settingsStore.set(KEYS.PASSWORD_REQUIRE_LOWER, passwordRequireLower ? '1' : '0');
+  }
+  if (passwordRequireNumber != null) {
+    settingsStore.set(KEYS.PASSWORD_REQUIRE_NUMBER, passwordRequireNumber ? '1' : '0');
+  }
+  if (passwordRequireSpecial != null) {
+    settingsStore.set(KEYS.PASSWORD_REQUIRE_SPECIAL, passwordRequireSpecial ? '1' : '0');
+  }
   return publicSettings();
 }
 
-function ensurePermissionRows() {
+function listedPermissionKeys() {
+  return db.prepare('SELECT key FROM permission_defs ORDER BY key').all().map((row) => row.key);
+}
+
+function knownPermission(key) {
+  return Boolean(db.prepare('SELECT 1 FROM permission_defs WHERE key = ?').get(key));
+}
+
+function upsertPermissionDefs(perms) {
   const upsert = db.prepare(`
     INSERT INTO permission_defs (key, name, description, category, allow_user, allow_group)
     VALUES (@key, @name, @description, @category, 1, 1)
@@ -85,9 +159,68 @@ function ensurePermissionRows() {
       category = excluded.category
   `);
   const tx = db.transaction(() => {
-    for (const perm of catalog.PERMISSIONS) upsert.run(perm);
+    for (const perm of perms) upsert.run(perm);
   });
   tx();
+}
+
+function ensurePermissionRows() {
+  upsertPermissionDefs(catalog.PERMISSIONS);
+}
+
+function seedUnusedDefaultGroupPerms() {
+  const insertAllow = db.prepare(`
+    INSERT OR IGNORE INTO group_permissions (group_id, permission_key, value)
+    VALUES (?, ?, 'allow')
+  `);
+  const insertDeny = db.prepare(`
+    INSERT OR IGNORE INTO group_permissions (group_id, permission_key, value)
+    VALUES (?, ?, 'deny')
+  `);
+  const find = db.prepare('SELECT id FROM groups WHERE slug = ? OR name = ?');
+  const countPerms = db.prepare('SELECT COUNT(*) AS n FROM group_permissions WHERE group_id = ?');
+  const assigned = new Set([
+    ...db.prepare('SELECT DISTINCT permission_key AS k FROM group_permissions').all().map((row) => row.k),
+    ...db.prepare('SELECT DISTINCT permission_key AS k FROM user_permissions').all().map((row) => row.k),
+  ]);
+  const keys = listedPermissionKeys();
+  const unusedKeys = keys.filter((key) => !assigned.has(key));
+  const allowSet = new Set(catalog.READ_ONLY_MENU_ALLOW);
+
+  for (const def of catalog.DEFAULT_GROUPS) {
+    const row = find.get(def.slug, def.name);
+    if (!row) continue;
+    const empty = countPerms.get(row.id).n === 0;
+    if (empty) {
+      for (const key of def.keys) insertAllow.run(row.id, key);
+      if (def.slug === 'read-only') {
+        for (const key of keys) {
+          if (catalog.isMenuPermission(key) && !allowSet.has(key)) insertDeny.run(row.id, key);
+        }
+      }
+      continue;
+    }
+    for (const key of unusedKeys) {
+      if (def.slug === 'administrators') {
+        insertAllow.run(row.id, key);
+        continue;
+      }
+      if (def.slug === 'standard') {
+        if (
+          def.keys.includes(key)
+          || catalog.isMenuPermission(key)
+          || catalog.isPluginPermission(key)
+          || key === 'plugins.upload'
+        ) {
+          insertAllow.run(row.id, key);
+        }
+        continue;
+      }
+      if (def.slug === 'read-only' && catalog.isMenuPermission(key) && !allowSet.has(key)) {
+        insertDeny.run(row.id, key);
+      }
+    }
+  }
 }
 
 function ensureDefaultGroups() {
@@ -96,23 +229,43 @@ function ensureDefaultGroups() {
     VALUES (?, ?, 1)
   `);
   const find = db.prepare('SELECT id FROM groups WHERE slug = ? OR name = ?');
-  const countPerms = db.prepare('SELECT COUNT(*) AS n FROM group_permissions WHERE group_id = ?');
-  const insertPerm = db.prepare(`
-    INSERT OR IGNORE INTO group_permissions (group_id, permission_key, value)
-    VALUES (?, ?, 'allow')
-  `);
 
   for (const def of catalog.DEFAULT_GROUPS) {
     let row = find.get(def.slug, def.name);
     if (!row) {
       insertGroup.run(def.name, def.slug);
-      row = find.get(def.slug, def.name);
-    }
-    if (!row) continue;
-    if (countPerms.get(row.id).n === 0) {
-      for (const key of def.keys) insertPerm.run(row.id, key);
     }
   }
+  seedUnusedDefaultGroupPerms();
+}
+
+function syncDynamicPermissions() {
+  let pluginHost;
+  try {
+    pluginHost = require('./pluginHost');
+  } catch {
+    return;
+  }
+  const dynamic = typeof pluginHost.getDynamicPermissions === 'function'
+    ? pluginHost.getDynamicPermissions()
+    : [];
+  if (dynamic.length) upsertPermissionDefs(dynamic);
+  const keep = new Set([
+    ...catalog.ALL_KEYS,
+    ...dynamic.map((item) => item.key),
+  ]);
+  const extra = db.prepare(`
+    SELECT key FROM permission_defs
+    WHERE key LIKE 'plugin.%' OR key LIKE 'menu.view.plugin.%'
+  `).all();
+  const remove = db.prepare('DELETE FROM permission_defs WHERE key = ?');
+  const tx = db.transaction(() => {
+    for (const row of extra) {
+      if (!keep.has(row.key)) remove.run(row.key);
+    }
+  });
+  tx();
+  seedUnusedDefaultGroupPerms();
 }
 
 function ensureDefaultAdmin() {
@@ -196,15 +349,16 @@ function userPermissionMap(userId, flags) {
 
 function evaluatePermissions(userRow, groups) {
   const granted = {};
+  const keys = listedPermissionKeys();
   if (userRow.is_admin === 1) {
-    for (const key of catalog.ALL_KEYS) granted[key] = true;
+    for (const key of keys) granted[key] = true;
     return granted;
   }
   const flags = permissionFlags();
   const activeGroupIds = groups.filter((g) => g.is_active === 1).map((g) => g.id);
   const groupMap = groupPermissionMap(activeGroupIds, flags);
   const userMap = userPermissionMap(userRow.id, flags);
-  for (const key of catalog.ALL_KEYS) {
+  for (const key of keys) {
     const groupVal = groupMap[key];
     const userVal = userMap[key];
     if (groupVal === 'deny') {
@@ -215,7 +369,9 @@ function evaluatePermissions(userRow, groups) {
       granted[key] = false;
       continue;
     }
-    granted[key] = groupVal === 'allow' || userVal === 'allow';
+    granted[key] = groupVal === 'allow'
+      || userVal === 'allow'
+      || catalog.isMenuPermission(key);
   }
   return granted;
 }
@@ -256,7 +412,7 @@ function publicUser(row, { includePermissions = false, includeSensitive = false 
   };
   if (includePermissions) {
     const granted = evaluatePermissions(row, groups);
-    payload.permissions = catalog.ALL_KEYS.filter((key) => granted[key]);
+    payload.permissions = listedPermissionKeys().filter((key) => granted[key]);
   }
   if (includeSensitive) {
     payload.userPermissions = {};
@@ -303,12 +459,21 @@ function getUser(id, opts) {
   return publicUser(row, opts);
 }
 
+function isValidUsername(username) {
+  const value = String(username || '').trim();
+  return value.length >= USERNAME_MIN
+    && value.length <= USERNAME_MAX
+    && USERNAME_PATTERN.test(value);
+}
+
 function normalizeUsername(username) {
   const value = String(username || '').trim();
   if (!value) throw new Error('Username is required');
-  if (value.length < 2 || value.length > 64) throw new Error('Username must be 2-64 characters');
-  if (!/^[a-zA-Z0-9._-]+$/.test(value)) {
-    throw new Error('Username can only contain letters, numbers, dots, underscores, and hyphens');
+  if (value.length < USERNAME_MIN || value.length > USERNAME_MAX) {
+    throw new Error(`Username must be ${USERNAME_MIN}-${USERNAME_MAX} characters`);
+  }
+  if (!USERNAME_PATTERN.test(value)) {
+    throw new Error('Username can only contain letters, numbers, periods, underscores, and hyphens');
   }
   return value;
 }
@@ -320,10 +485,53 @@ function normalizeFullName(fullName) {
   return value;
 }
 
-function assertPassword(password) {
+function passwordMatchesStored(password, stored) {
+  return Boolean(stored) && verifyPassword(password, stored);
+}
+
+function assertPassword(password, { userId } = {}) {
   const value = String(password || '');
-  if (value.length < 6) throw new Error('Password must be at least 6 characters');
-  if (value.length > 200) throw new Error('Password is too long');
+  const policy = getPasswordPolicy();
+  if (!value) throw new Error('Password is required');
+  if (/[\x00-\x1F\x7F]/.test(value)) {
+    throw new Error('Password cannot contain control characters');
+  }
+  if (value.length < policy.minLength) {
+    throw new Error(`Password must be at least ${policy.minLength} characters`);
+  }
+  if (value.length > policy.maxLength) {
+    throw new Error(`Password cannot be longer than ${policy.maxLength} characters`);
+  }
+  if (policy.requireUpper && !/[A-Z]/.test(value)) {
+    throw new Error('Password must include an uppercase letter');
+  }
+  if (policy.requireLower && !/[a-z]/.test(value)) {
+    throw new Error('Password must include a lowercase letter');
+  }
+  if (policy.requireNumber && !/[0-9]/.test(value)) {
+    throw new Error('Password must include a number');
+  }
+  if (policy.requireSpecial && !/[^A-Za-z0-9]/.test(value)) {
+    throw new Error('Password must include a special character');
+  }
+  if (userId) {
+    const row = getUserRow(userId);
+    if (row && passwordMatchesStored(value, row.password_hash)) {
+      throw new Error('New password must be different from the current password');
+    }
+    if (policy.history > 0) {
+      const previous = db.prepare(`
+        SELECT password_hash
+        FROM password_history
+        WHERE user_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+      `).all(userId, policy.history);
+      if (previous.some((item) => passwordMatchesStored(value, item.password_hash))) {
+        throw new Error(`Password cannot match the last ${policy.history} password${policy.history === 1 ? '' : 's'}`);
+      }
+    }
+  }
   return value;
 }
 
@@ -390,7 +598,7 @@ function replaceUserPermissions(userId, permissions) {
     `);
     const flags = permissionFlags();
     for (const [key, value] of Object.entries(permissions || {})) {
-      if (!catalog.permissionByKey(key)) continue;
+      if (!knownPermission(key)) continue;
       if (value !== 'allow' && value !== 'deny') continue;
       if (flags[key] && flags[key].allowUser === false) continue;
       insert.run(userId, key, value);
@@ -411,7 +619,6 @@ function updateUser(id, data, actor) {
     player_id: row.player_id,
   };
 
-  if (data.username != null) next.username = normalizeUsername(data.username);
   if (data.fullName != null) next.full_name = normalizeFullName(data.fullName);
   if (data.isActive != null) next.is_active = data.isActive ? 1 : 0;
   if (data.isAdmin != null) {
@@ -430,11 +637,6 @@ function updateUser(id, data, actor) {
       if (taken) throw new Error('That player is already linked to another user');
       next.player_id = player.id;
     }
-  }
-
-  if (next.username.toLowerCase() !== row.username.toLowerCase()) {
-    const clash = getUserByUsername(next.username);
-    if (clash && clash.id !== row.id) throw new Error('Username is already taken');
   }
 
   const disablingAdmin = row.is_admin === 1 && (next.is_active === 0 || next.is_admin === 0);
@@ -468,11 +670,31 @@ function updateUser(id, data, actor) {
   return getUser(id, { includePermissions: true, includeSensitive: true });
 }
 
+function rememberPasswordHash(userId, passwordHash) {
+  if (!userId || !passwordHash) return;
+  db.prepare('INSERT INTO password_history (user_id, password_hash, created_at) VALUES (?, ?, ?)')
+    .run(userId, passwordHash, nowIso());
+  db.prepare(`
+    DELETE FROM password_history
+    WHERE user_id = ?
+      AND id NOT IN (
+        SELECT id FROM (
+          SELECT id FROM password_history
+          WHERE user_id = ?
+          ORDER BY id DESC
+          LIMIT 24
+        )
+      )
+  `).run(userId, userId);
+}
+
 function setPassword(id, password, { invalidateSessions = false, keepSessionId = null } = {}) {
   const row = getUserRow(id);
   if (!row) throw Object.assign(new Error('User not found'), { status: 404 });
+  const value = assertPassword(password, { userId: id });
+  if (row.password_hash) rememberPasswordHash(id, row.password_hash);
   db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
-    .run(hashPassword(assertPassword(password)), nowIso(), id);
+    .run(hashPassword(value), nowIso(), id);
   if (invalidateSessions) {
     if (keepSessionId) {
       db.prepare('DELETE FROM sessions WHERE user_id = ? AND id != ?').run(id, keepSessionId);
@@ -581,7 +803,7 @@ function replaceGroupPermissions(groupId, permissions) {
       VALUES (?, ?, ?)
     `);
     for (const [key, value] of Object.entries(permissions || {})) {
-      if (!catalog.permissionByKey(key)) continue;
+      if (!knownPermission(key)) continue;
       if (value !== 'allow' && value !== 'deny') continue;
       if (flags[key] && flags[key].allowGroup === false) continue;
       insert.run(groupId, key, value);
@@ -689,8 +911,13 @@ function destroySession(token) {
 }
 
 function login(username, password) {
-  const row = getUserByUsername(username);
-  if (!row || !verifyPassword(password, row.password_hash)) {
+  const loginName = String(username || '').trim();
+  const secret = String(password || '');
+  if (!isValidUsername(loginName) || !secret || secret.length > PASSWORD_MAX) {
+    throw Object.assign(new Error('Invalid username or password'), { status: 401 });
+  }
+  const row = getUserByUsername(loginName);
+  if (!row || !verifyPassword(secret, row.password_hash)) {
     throw Object.assign(new Error('Invalid username or password'), { status: 401 });
   }
   if (row.is_active !== 1) {
@@ -771,6 +998,8 @@ module.exports = {
   updatePermissionDef,
   publicSettings,
   saveSettings,
+  getPasswordPolicy,
+  isValidUsername,
   login,
   getSessionUser,
   destroySession,
@@ -781,4 +1010,5 @@ module.exports = {
   evaluatePermissions,
   loadGroupsForUser,
   countAdmins,
+  syncDynamicPermissions,
 };
