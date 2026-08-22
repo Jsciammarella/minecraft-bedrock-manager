@@ -19,6 +19,8 @@ const playerRoutes = require('./routes/players');
 const portRoutes = require('./routes/ports');
 const apiRoutes = require('./routes/api');
 const bedrockConnectRoutes = require('./routes/bedrockConnect');
+const pluginHost = require('./services/pluginHost');
+const pluginRoutes = require('./routes/plugins');
 const dnsProxy = require('./services/dnsProxy');
 
 const app = express();
@@ -60,6 +62,9 @@ app.use('/api/players', playerRoutes);
 app.use('/api/ports', portRoutes);
 app.use('/api/bedrock-connect', bedrockConnectRoutes);
 app.use('/api/v1', apiRoutes); // Public API
+pluginHost.loadPlugins();
+app.use('/api/plugins', pluginRoutes);
+logger.info(`Loaded ${pluginHost.getMenuItems().length} plugin menu item(s)`);
 
 // Health endpoint
 app.get('/api/health', (req, res) => {
