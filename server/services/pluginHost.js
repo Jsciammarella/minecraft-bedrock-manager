@@ -6,10 +6,13 @@ const { promisify } = require('util');
 const express = require('express');
 const logger = require('./logger');
 const platform = require('./platform');
+const pluginCapabilities = require('./pluginCapabilities');
+const pluginAudit = require('./pluginAudit');
 
 const execFileAsync = promisify(execFile);
 
-const BUNDLED_PLUGINS_DIR = path.join(__dirname, '../bundled-plugins');
+const BUNDLED_PLUGINS_DIR = process.env.MC_MANAGER_BUNDLED_PLUGINS_DIR
+  || path.join(__dirname, '../bundled-plugins');
 const USER_PLUGINS_DIR = process.env.MC_MANAGER_USER_PLUGINS_DIR
   || path.join(__dirname, '../../data/plugins');
 const PLUGIN_DATA_DIR = process.env.MC_MANAGER_PLUGIN_DATA_DIR
@@ -46,6 +49,9 @@ const RESERVED_PLUGIN_IDS = new Set([
   'static',
   'ui',
   'users',
+  'gateways',
+  'gateway',
+  'java',
 ]);
 
 const CORE_MENU_PATHS = [
@@ -59,6 +65,7 @@ const CORE_MENU_PATHS = [
   '/bedrock-connect',
   '/ports',
   '/plugins',
+  '/gateways',
 ];
 
 const ALLOWED_ICONS = new Set([
@@ -129,6 +136,7 @@ function normalizeIcon(value) {
 }
 
 function parsePages(rawPages, pluginId, pluginName) {
+  if (Array.isArray(rawPages) && rawPages.length === 0) return [];
   const source = Array.isArray(rawPages) && rawPages.length
     ? rawPages
     : [{ id: 'home', title: pluginName, file: 'index.html' }];
@@ -158,6 +166,7 @@ function parsePages(rawPages, pluginId, pluginName) {
 }
 
 function parseMenus(rawManifest, pluginId, pluginName, pages) {
+  if (!pages.length) return [];
   const source = Array.isArray(rawManifest.menus) && rawManifest.menus.length
     ? rawManifest.menus
     : rawManifest.menu
@@ -194,7 +203,7 @@ function parseMenus(rawManifest, pluginId, pluginName, pages) {
   return menus;
 }
 
-function parseManifest(raw, folderName) {
+function parseManifest(raw, folderName, { source = 'user' } = {}) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, error: 'plugin.json must be an object' };
   }
@@ -226,6 +235,11 @@ function parseManifest(raw, folderName) {
   if (backend && (backend.includes('..') || path.isAbsolute(backend))) {
     return { ok: false, error: 'backend path must be a file inside the plugin folder' };
   }
+  const caps = pluginCapabilities.parseCapabilities(raw.capabilities, source);
+  if (!caps.ok) return caps;
+  const downloadHosts = source === 'bundled' && Array.isArray(raw.downloadHosts)
+    ? raw.downloadHosts.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+    : [];
   return {
     ok: true,
     manifest: {
@@ -238,6 +252,10 @@ function parseManifest(raw, folderName) {
       backend,
       pages,
       menus,
+      capabilities: caps.capabilities,
+      rejectedPrivileged: caps.rejectedPrivileged,
+      downloadHosts,
+      providers: Array.isArray(raw.providers) ? raw.providers : [],
     },
   };
 }
@@ -262,6 +280,8 @@ function listPluginFolders(dir) {
 }
 
 function publicPlugin(plugin) {
+  const backendDeclared = Boolean(plugin.backend);
+  const backendEnabled = Boolean(plugin.backendEnabled);
   return {
     id: plugin.id,
     name: plugin.name,
@@ -271,6 +291,11 @@ function publicPlugin(plugin) {
     enabled: plugin.enabled,
     icon: plugin.menus?.[0]?.icon || 'puzzle',
     source: plugin.source,
+    trustLevel: plugin.trustLevel,
+    capabilities: plugin.capabilities || [],
+    backendDeclared,
+    backendEnabled,
+    notices: plugin.notices || [],
     menus: plugin.enabled ? plugin.menus : [],
     pages: plugin.enabled ? plugin.pages.map((page) => ({
       id: page.id,
@@ -281,8 +306,47 @@ function publicPlugin(plugin) {
   };
 }
 
+function createProviderServices(plugin) {
+  const dataDir = path.join(PLUGIN_DATA_DIR, plugin.id);
+  fs.mkdirSync(dataDir, { recursive: true });
+  const controlledDownload = require('./controlledDownload');
+  const controlledFs = require('./controlledFs');
+  const javaRuntime = require('./javaRuntime');
+  return {
+    dataDir,
+    allowHosts: plugin.downloadHosts || [],
+    http: {
+      getJson: (url, opts = {}) => controlledDownload.getJson(url, {
+        allowHosts: plugin.downloadHosts || [],
+        ...opts,
+      }),
+      getText: (url, opts = {}) => controlledDownload.getText(url, {
+        allowHosts: plugin.downloadHosts || [],
+        ...opts,
+      }),
+    },
+    download: (opts) => controlledDownload.downloadToFile({
+      allowHosts: plugin.downloadHosts || [],
+      ...opts,
+    }),
+    fs: {
+      pluginData: controlledFs.scoped(dataDir),
+      scoped: (root) => controlledFs.scoped(root),
+    },
+    java: {
+      ensureJava: (req) => javaRuntime.ensureJava(req),
+    },
+    audit: pluginAudit,
+    logger,
+  };
+}
+
 function loadBackend(plugin) {
   if (!plugin.enabled || !plugin.backend) return;
+  if (plugin.source === 'user' && !plugin.backendEnabled) {
+    logger.info(`Plugin ${plugin.id} backend is declared but disabled until an administrator enables uploaded backend execution`);
+    return;
+  }
   const backendPath = path.resolve(plugin.root, plugin.backend);
   if (!isInsideDir(plugin.root, backendPath) || !fs.existsSync(backendPath)) {
     logger.warn(`Plugin ${plugin.id} backend was not found inside the plugin folder`);
@@ -300,11 +364,19 @@ function loadBackend(plugin) {
       logger.warn(`Plugin ${plugin.id} backend does not export register()`);
       return;
     }
+    const javaLoaderRegistry = require('./javaLoaderRegistry');
+    const gatewayRegistry = require('./gatewayRegistry');
+    const services = plugin.source === 'bundled' ? createProviderServices(plugin) : { dataDir, logger };
     register({
       id: plugin.id,
       router,
       dataDir,
       logger,
+      trustLevel: plugin.trustLevel,
+      capabilities: plugin.capabilities || [],
+      services,
+      registerJavaLoader: (provider) => javaLoaderRegistry.register(plugin, provider),
+      registerGateway: (provider) => gatewayRegistry.register(plugin, provider),
     });
     plugin.router = router;
     backendModules.push(resolved);
@@ -330,7 +402,8 @@ function loadPlugins(dirs = defaultPluginDirs()) {
         logger.warn(`Skipping plugin in ${folderName}: invalid plugin.json (${err.message})`);
         continue;
       }
-      const parsed = parseManifest(raw, folderName);
+      const source = pluginCapabilities.sourceFromDir(dir, BUNDLED_PLUGINS_DIR, USER_PLUGINS_DIR);
+      const parsed = parseManifest(raw, folderName, { source });
       if (!parsed.ok) {
         logger.warn(`Skipping plugin in ${folderName}: ${parsed.error}`);
         continue;
@@ -340,16 +413,31 @@ function loadPlugins(dirs = defaultPluginDirs()) {
         continue;
       }
       seen.add(parsed.manifest.id);
+      const backendEnabled = isBackendEnabled(parsed.manifest.id, source, Boolean(parsed.manifest.backend));
+      const trustLevel = pluginCapabilities.trustLevelFor(source, parsed.manifest.capabilities, {
+        backendDeclared: Boolean(parsed.manifest.backend),
+        backendEnabled,
+      });
+      const notices = [];
+      if (source === 'user' && parsed.manifest.backend) {
+        notices.push('Uploaded backend plugins run in the manager process. Enable backend execution only for code you trust.');
+      }
+      if (parsed.manifest.rejectedPrivileged?.length) {
+        notices.push('Privileged provider capabilities were ignored because this plugin is not bundled.');
+      }
       const plugin = {
         ...parsed.manifest,
         enabled: isPluginEnabled(parsed.manifest.id, parsed.manifest.enabled),
+        backendEnabled,
+        trustLevel,
+        notices,
         root: folder,
-        source: path.resolve(dir) === path.resolve(USER_PLUGINS_DIR) ? 'user' : 'bundled',
+        source,
         router: null,
       };
       loadBackend(plugin);
       next.push(plugin);
-      logger.info(`Loaded plugin ${plugin.id} (${plugin.enabled ? 'enabled' : 'disabled'})`);
+      logger.info(`Loaded plugin ${plugin.id} (${plugin.enabled ? 'enabled' : 'disabled'}, ${plugin.source})`);
     }
   }
   lastDirs = dirs;
@@ -358,11 +446,14 @@ function loadPlugins(dirs = defaultPluginDirs()) {
 }
 
 function unloadPlugins() {
+  const ids = loaded.map((plugin) => plugin.id);
   for (const file of backendModules) {
     delete require.cache[file];
   }
   backendModules = [];
   loaded = [];
+  try { require('./javaLoaderRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
+  try { require('./gatewayRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
 }
 
 function resetForTests() {
@@ -376,24 +467,47 @@ function reloadPlugins() {
   return loadPlugins(dirs);
 }
 
-function readEnabledState() {
+function readPluginState() {
   try {
     const raw = JSON.parse(fs.readFileSync(PLUGIN_STATE_PATH, 'utf8'));
-    return raw && raw.enabled && typeof raw.enabled === 'object' ? raw.enabled : {};
+    return {
+      enabled: raw && raw.enabled && typeof raw.enabled === 'object' ? raw.enabled : {},
+      backendEnabled: raw && raw.backendEnabled && typeof raw.backendEnabled === 'object' ? raw.backendEnabled : {},
+    };
   } catch {
-    return {};
+    return { enabled: {}, backendEnabled: {} };
   }
 }
 
-function writeEnabledState(enabledMap) {
+function writePluginState(state) {
   fs.mkdirSync(path.dirname(PLUGIN_STATE_PATH), { recursive: true });
-  fs.writeFileSync(PLUGIN_STATE_PATH, `${JSON.stringify({ enabled: enabledMap }, null, 2)}\n`);
+  fs.writeFileSync(PLUGIN_STATE_PATH, `${JSON.stringify({
+    enabled: state.enabled || {},
+    backendEnabled: state.backendEnabled || {},
+  }, null, 2)}\n`);
+}
+
+function readEnabledState() {
+  return readPluginState().enabled;
+}
+
+function writeEnabledState(enabledMap) {
+  const state = readPluginState();
+  state.enabled = enabledMap;
+  writePluginState(state);
 }
 
 function isPluginEnabled(id, manifestEnabled) {
-  const state = readEnabledState();
-  if (Object.prototype.hasOwnProperty.call(state, id)) return Boolean(state[id]);
+  const state = readPluginState();
+  if (Object.prototype.hasOwnProperty.call(state.enabled, id)) return Boolean(state.enabled[id]);
   return manifestEnabled !== false;
+}
+
+function isBackendEnabled(id, source, backendDeclared) {
+  if (!backendDeclared) return false;
+  if (source === 'bundled' || source === 'external') return true;
+  const state = readPluginState();
+  return Boolean(state.backendEnabled[id]);
 }
 
 function setPluginEnabled(id, enabled) {
@@ -402,9 +516,35 @@ function setPluginEnabled(id, enabled) {
     err.status = 404;
     throw err;
   }
-  const state = readEnabledState();
-  state[id] = Boolean(enabled);
-  writeEnabledState(state);
+  const state = readPluginState();
+  state.enabled[id] = Boolean(enabled);
+  writePluginState(state);
+  pluginAudit.record('plugin.enabled', { targetType: 'plugin', targetId: id, detail: { enabled: Boolean(enabled) } });
+  reloadPlugins();
+  return publicPlugin(getPlugin(id));
+}
+
+function setPluginBackendEnabled(id, enabled) {
+  const plugin = getPlugin(id);
+  if (!plugin) {
+    const err = new Error('Plugin not found');
+    err.status = 404;
+    throw err;
+  }
+  if (plugin.source !== 'user') {
+    const err = new Error('Only uploaded plugins have a backend execution toggle');
+    err.status = 400;
+    throw err;
+  }
+  if (!plugin.backend) {
+    const err = new Error('This plugin does not declare a backend');
+    err.status = 400;
+    throw err;
+  }
+  const state = readPluginState();
+  state.backendEnabled[id] = Boolean(enabled);
+  writePluginState(state);
+  pluginAudit.record('plugin.backend', { targetType: 'plugin', targetId: id, detail: { backendEnabled: Boolean(enabled) } });
   reloadPlugins();
   return publicPlugin(getPlugin(id));
 }
@@ -452,12 +592,19 @@ function assertInstallablePlugin(folder) {
     err.cause = cause;
     throw err;
   }
-  const parsed = parseManifest(raw, folderName);
+  const parsed = parseManifest(raw, folderName, { source: 'user' });
   if (!parsed.ok) {
     const err = new Error(parsed.error || INVALID_ARCHIVE_MESSAGE);
     err.status = 400;
     throw err;
   }
+  const requested = Array.isArray(raw.capabilities) ? raw.capabilities : [];
+  if (requested.some((item) => pluginCapabilities.isPrivilegedCapability(item))) {
+    const err = new Error('Uploaded plugins cannot declare system-provider capabilities');
+    err.status = 400;
+    throw err;
+  }
+  pluginAudit.record('plugin.install.check', { targetType: 'plugin', targetId: parsed.manifest.id });
   return parsed.manifest;
 }
 
@@ -641,5 +788,6 @@ module.exports = {
   reloadPlugins,
   resetForTests,
   resolveUiFile,
+  setPluginBackendEnabled,
   setPluginEnabled,
 };

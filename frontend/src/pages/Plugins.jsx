@@ -194,9 +194,36 @@ function Plugins() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="text-white font-semibold">{plugin.name}</h3>
                     <span className="text-xs text-mc-textMuted">v{plugin.version}</span>
+                    {plugin.source === 'bundled' && <span className="text-xs text-mc-accent">bundled</span>}
+                    {plugin.source === 'user' && <span className="text-xs text-amber-300">uploaded</span>}
+                    {plugin.trustLevel && <span className="text-xs text-mc-textMuted">{plugin.trustLevel}</span>}
                   </div>
                   {plugin.description && (
                     <p className="text-sm text-mc-textMuted mt-1">{plugin.description}</p>
+                  )}
+                  {plugin.notices?.map((notice) => (
+                    <p key={notice} className="text-xs text-amber-300 mt-1">{notice}</p>
+                  ))}
+                  {plugin.source === 'user' && plugin.backendDeclared && (
+                    <label className="mt-2 flex items-center gap-2 text-xs text-mc-text">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(plugin.backendEnabled)}
+                        disabled={busyId === plugin.id}
+                        onChange={async () => {
+                          setBusyId(plugin.id);
+                          try {
+                            const res = await pluginApi.setBackendEnabled(plugin.id, !plugin.backendEnabled);
+                            applyPayload(res.data);
+                          } catch (err) {
+                            setError(err.response?.data?.error || err.message);
+                          } finally {
+                            setBusyId('');
+                          }
+                        }}
+                      />
+                      Enable uploaded backend execution
+                    </label>
                   )}
                 </div>
                 <button

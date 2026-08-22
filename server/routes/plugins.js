@@ -59,6 +59,20 @@ router.post('/upload', (req, res) => {
   });
 });
 
+router.put('/:pluginId/backend-enabled', (req, res) => {
+  const value = req.body?.enabled ?? req.body?.backendEnabled;
+  let enabled;
+  if (value === true || value === 'true' || value === 1 || value === '1') enabled = true;
+  else if (value === false || value === 'false' || value === 0 || value === '0') enabled = false;
+  else return res.status(400).json({ error: 'enabled must be true or false' });
+  try {
+    const plugin = pluginHost.setPluginBackendEnabled(req.params.pluginId, enabled);
+    sendPluginState(res, { plugin });
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
 router.put('/:pluginId/enabled', (req, res) => {
   const value = req.body?.enabled;
   let enabled;

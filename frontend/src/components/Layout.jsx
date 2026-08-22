@@ -1,6 +1,6 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { 
-  Server, Plus, Package, Users, Network, Globe,
+  Server, Plus, Package, Users, Network, Globe, Radio,
   ChevronLeft, ChevronRight, Home, Download, Menu, X
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
@@ -68,6 +68,7 @@ function Layout() {
     { icon: Download, label: 'Mod Catalog', path: '/mods/catalog' },
     { icon: Users, label: 'Players', path: '/players' },
     { icon: Globe, label: 'BedrockConnect', path: '/bedrock-connect' },
+    { icon: Radio, label: 'Geyser', path: '/gateways' },
     { icon: Network, label: 'Ports', path: '/ports' },
   ];
 

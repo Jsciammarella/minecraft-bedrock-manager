@@ -68,8 +68,13 @@ class ModManager {
     try {
       for (const file of unique) {
         const destPath = this.storeUploadedFile(file);
+        const ext = path.extname(file.originalname).toLowerCase();
         try {
-          await packInstaller.verifyArchive(destPath);
+          if (ext === '.jar') {
+            require('./zipGuard').assertSafeZipNames(require('./zipGuard').listStoredZipEntries(destPath));
+          } else {
+            await packInstaller.verifyArchive(destPath);
+          }
         } catch (err) {
           if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
           throw err;
@@ -93,12 +98,18 @@ class ModManager {
     const primary = stored[0];
     const extraFiles = stored.length > 1 ? modArchives.serializeExtraFiles(stored.slice(1)) : null;
     const fileSize = stored.reduce((sum, file) => sum + (file.size || 0), 0);
-    const type = metadata.type || primary.kind || 'addon';
-    const displayName = metadata.name || path.parse(unique[0].originalname).name || primary.name;
+    const isJava = path.extname(primary.path).toLowerCase() === '.jar';
+    let javaMeta = {};
+    if (isJava) {
+      try { javaMeta = require('./javaModMetadata').inspectJar(primary.path); } catch { javaMeta = { edition: 'java', warning: 'Java mods are executable code. Only install mods you trust.' }; }
+    }
+    const type = metadata.type || javaMeta.artifactType || primary.kind || 'addon';
+    const displayName = metadata.name || javaMeta.name || path.parse(unique[0].originalname).name || primary.name;
 
     const insert = db.prepare(`
-      INSERT INTO mods (name, slug, type, description, file_path, file_size, extra_files, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'upload')
+      INSERT INTO mods (name, slug, type, description, file_path, file_size, extra_files, source,
+        edition, artifact_type, loader, minecraft_versions, environment, dependencies, license, sha256, warning, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'upload', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const slug = this.getAvailableSlug(displayName);
@@ -111,7 +122,17 @@ class ModManager {
         metadata.description || '',
         primary.path,
         fileSize,
-        extraFiles
+        extraFiles,
+        javaMeta.edition || 'bedrock',
+        javaMeta.artifactType || type,
+        metadata.loader || javaMeta.loader || 'any',
+        JSON.stringify(javaMeta.minecraftVersions || []),
+        javaMeta.environment || 'unknown',
+        JSON.stringify(javaMeta.dependencies || []),
+        javaMeta.license || '',
+        javaMeta.sha256 || '',
+        javaMeta.warning || '',
+        JSON.stringify(javaMeta.metadata || {})
       );
     } catch (err) {
       for (const item of stored) {
@@ -131,12 +152,15 @@ class ModManager {
   async installModToServer(serverId, modId) {
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
     if (!server) throw new Error('Server not found');
-    if (server.kind === 'bedrock_connect' || server.kind === 'remote' || server.kind === 'java') {
+    if (server.kind === 'bedrock_connect' || server.kind === 'remote') {
       throw new Error(server.kind === 'remote'
         ? 'Remote servers do not support mods'
-        : server.kind === 'java'
-          ? 'Java Edition servers do not support Bedrock addons yet'
-          : 'Bedrock Connect does not support mods');
+        : 'Bedrock Connect does not support mods');
+    }
+    if (server.kind === 'java') {
+      const result = require('./javaModInstall').install(server, modId);
+      if (result.restartRequired) serverManager.markRestartRequired(serverId, 'Java mods changed');
+      return { success: true, ...result };
     }
 
     const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
@@ -178,12 +202,17 @@ class ModManager {
   async uninstallModFromServer(serverId, modId) {
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
     if (!server) throw new Error('Server not found');
-    if (server.kind === 'bedrock_connect' || server.kind === 'remote' || server.kind === 'java') {
+    if (server.kind === 'bedrock_connect' || server.kind === 'remote') {
       throw new Error(server.kind === 'remote'
         ? 'Remote servers do not support mods'
-        : server.kind === 'java'
-          ? 'Java Edition servers do not support Bedrock addons yet'
-          : 'Bedrock Connect does not support mods');
+        : 'Bedrock Connect does not support mods');
+    }
+    if (server.kind === 'java') {
+      const row = db.prepare('SELECT id FROM server_mods WHERE server_id = ? AND mod_id = ?').get(serverId, modId);
+      if (!row) throw new Error('Mod is not installed on this server');
+      const result = require('./javaModInstall').remove(server, row.id);
+      if (result.restartRequired) serverManager.markRestartRequired(serverId, 'Java mods changed');
+      return { success: true, ...result };
     }
 
     const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);

@@ -2,10 +2,33 @@
 
 Plugins add **their own left-hand menu items and pages**. They cannot change how
 core screens look or behave: Dashboard, server details, New Server, Mod Library,
-Mod Catalog, Players, BedrockConnect, or Ports.
+Mod Catalog, Players, BedrockConnect, Geyser, or Ports.
+
+Trust is derived from **where the plugin is installed**, not from a field in
+`plugin.json`. Uploaded plugins can never become Java loader or gateway providers
+by declaring privileged capabilities.
 
 The sidebar scrolls only when core items plus plugin items no longer fit. If
 they fit, there is no extra scrollbar.
+
+## Trust levels
+
+| Source | Trust | What it can do |
+| --- | --- | --- |
+| `server/bundled-plugins/` | `system-provider` | Register Java loaders and gateways; use core download, filesystem, Java, and port services |
+| `data/plugins/` (upload) | `ui` (default) | Sandboxed pages only. Optional `backend.js` stays **disabled** until an administrator enables it |
+| Extra/example dirs | `external` | Same UI model as uploads; example backends load so developers can test |
+
+Privileged capabilities (`provider:java-loader`, `provider:gateway`,
+`download:official-sources`, `runtime:java`, `filesystem:server-java`,
+`ports:udp`, …) are rejected for anything outside `server/bundled-plugins/`.
+Unknown capabilities fail plugin load.
+
+Uploaded `backend.js` still runs in the manager Node process if enabled. Treat
+that as trusted code. Isolated workers are a follow-up.
+
+First-party Java loaders and Geyser live under `server/bundled-plugins/` and are
+documented in [`java-providers.md`](./java-providers.md).
 
 ## Install
 

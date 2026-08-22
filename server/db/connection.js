@@ -244,5 +244,110 @@ const modColumns = new Set(db.prepare('PRAGMA table_info(mods)').all().map(colum
 if (!modColumns.has('extra_files')) {
   db.exec('ALTER TABLE mods ADD COLUMN extra_files TEXT');
 }
+const ensureModColumn = (name, definition) => {
+  if (!modColumns.has(name)) {
+    db.exec(`ALTER TABLE mods ADD COLUMN ${name} ${definition}`);
+    modColumns.add(name);
+  }
+};
+ensureModColumn('edition', "TEXT NOT NULL DEFAULT 'bedrock'");
+ensureModColumn('artifact_type', "TEXT NOT NULL DEFAULT 'addon'");
+ensureModColumn('loader', "TEXT NOT NULL DEFAULT 'any'");
+ensureModColumn('minecraft_versions', 'TEXT');
+ensureModColumn('environment', "TEXT NOT NULL DEFAULT 'unknown'");
+ensureModColumn('dependencies', 'TEXT');
+ensureModColumn('source_url', 'TEXT');
+ensureModColumn('license', 'TEXT');
+ensureModColumn('sha256', 'TEXT');
+ensureModColumn('metadata_json', 'TEXT');
+ensureModColumn('warning', 'TEXT');
+
+if (!serverModColumns.has('status')) {
+  db.exec("ALTER TABLE server_mods ADD COLUMN status TEXT NOT NULL DEFAULT 'installed'");
+}
+if (!serverModColumns.has('pending_action')) {
+  db.exec('ALTER TABLE server_mods ADD COLUMN pending_action TEXT');
+}
+if (!serverModColumns.has('staged_path')) {
+  db.exec('ALTER TABLE server_mods ADD COLUMN staged_path TEXT');
+}
+if (!serverModColumns.has('previous_path')) {
+  db.exec('ALTER TABLE server_mods ADD COLUMN previous_path TEXT');
+}
+
+ensureServerColumn('loader_provider_id', 'TEXT');
+ensureServerColumn('loader_version', 'TEXT');
+ensureServerColumn('minecraft_version', 'TEXT');
+ensureServerColumn('java_major', 'INTEGER');
+ensureServerColumn('loader_state', 'TEXT');
+ensureServerColumn('loader_metadata', 'TEXT');
+
+db.exec(`
+  UPDATE servers
+  SET loader_provider_id = 'vanilla',
+      minecraft_version = COALESCE(NULLIF(minecraft_version, ''), version),
+      loader_state = COALESCE(NULLIF(loader_state, ''), 'ready')
+  WHERE kind = 'java' AND (loader_provider_id IS NULL OR loader_provider_id = '')
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    action TEXT NOT NULL,
+    actor TEXT,
+    target_type TEXT,
+    target_id TEXT,
+    detail TEXT
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS install_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_type TEXT NOT NULL DEFAULT 'server',
+    owner_id INTEGER,
+    project TEXT,
+    download_url TEXT,
+    version TEXT,
+    sha256 TEXT,
+    license TEXT,
+    installed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gateways (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id TEXT NOT NULL,
+    name TEXT UNIQUE NOT NULL,
+    bedrock_listen_address TEXT NOT NULL DEFAULT '0.0.0.0',
+    bedrock_udp_port INTEGER NOT NULL,
+    target_type TEXT NOT NULL,
+    target_server_id INTEGER,
+    target_host TEXT,
+    target_tcp_port INTEGER,
+    authentication TEXT NOT NULL DEFAULT 'online',
+    geyser_version TEXT,
+    java_major INTEGER,
+    status TEXT NOT NULL DEFAULT 'stopped',
+    configuration_path TEXT,
+    data_path TEXT NOT NULL,
+    metadata TEXT,
+    floodgate_key_path TEXT,
+    offline_confirmed INTEGER NOT NULL DEFAULT 0,
+    floodgate_confirmed INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (target_server_id) REFERENCES servers(id) ON DELETE SET NULL
+  );
+`);
+
+if (!portUsageColumns.has('gateway_id')) {
+  db.exec('ALTER TABLE port_usage ADD COLUMN gateway_id INTEGER');
+}
+
+db.exec(`CREATE INDEX IF NOT EXISTS idx_gateways_status ON gateways(status)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action)`);
 
 module.exports = db;

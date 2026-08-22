@@ -534,7 +534,7 @@ function ServerDetail() {
   const isRemote = server.kind === 'remote';
   const isJava = server.kind === 'java';
   const gameplayLocked = isBC || isRemote;
-  const modsLocked = gameplayLocked || isJava;
+  const modsLocked = gameplayLocked;
   const isBuilding = server.status === 'creating';
   const createFailed = String(server.pending_restart_reason || '').startsWith('Create failed');
   const lan = server.stats?.lan || server.lan || {};
@@ -559,7 +559,18 @@ function ServerDetail() {
       )}
       {isJava && (
         <div className="mb-4 p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
-          This is a Java Edition server. Bedrock addons, console LAN proxy, and IPv6 game ports stay visible but are disabled. Geyser is not enabled yet.
+          <p>
+            Java {server.minecraftVersion || server.version}
+            {server.loaderProviderId ? ` · ${server.loaderProviderId}` : ''}
+            {server.loaderVersion ? ` ${server.loaderVersion}` : ''}
+            {server.javaMajor ? ` · Java ${server.javaMajor}` : ''}
+          </p>
+          <p className="mt-1">Bedrock addons and the console LAN proxy stay visible but are disabled. Use Geyser for Bedrock clients.</p>
+          {(server.geyserGateways || []).map((gateway) => (
+            <p key={gateway.id} className="mt-1 text-mc-text">
+              Geyser: Bedrock UDP {gateway.bedrock_udp_port} ({gateway.status}, {gateway.authentication})
+            </p>
+          ))}
         </div>
       )}
       {location.state?.message && (

@@ -11,7 +11,9 @@ const portRanges = require('./portRanges');
 const playerPresence = require('./playerPresence');
 const platform = require('./platform');
 const javaEdition = require('./javaEdition');
-const javaRuntime = require('./javaRuntime');
+const javaLoaderRegistry = require('./javaLoaderRegistry');
+const javaLoaderHost = require('./javaLoaderHost');
+const javaModInstall = require('./javaModInstall');
 const execAsync = promisify(exec);
 
 const BASE_DIR = path.join(__dirname, '../../data/servers');
@@ -209,9 +211,18 @@ class ServerManager {
     if (!server) return server;
     const lanBroadcast = require('./lanBroadcast');
     const lan = lanBroadcast.statusFor(server);
+    const extra = this.isJava(server) ? {
+      loaderProviderId: server.loader_provider_id || 'vanilla',
+      loaderVersion: server.loader_version || '',
+      minecraftVersion: server.minecraft_version || server.version,
+      javaMajor: server.java_major || null,
+      loaderState: server.loader_state || '',
+      geyserGateways: require('./gatewayManager').forServer(server.id),
+    } : {};
     if (this.isBedrockConnect(server) || this.isJava(server)) {
       return javaEdition.attachFields({
         ...server,
+        ...extra,
         lan: { ...lan, enabled: false, active: false, native: false, error: null },
         remoteReachable: null,
       });
@@ -817,6 +828,7 @@ class ServerManager {
     this.invalidateServerCache(serverId);
     logger.info(`Server ${server.name} is now on port ${port}`);
     require('./bedrockConnectList').scheduleSync();
+    try { require('./gatewayManager').syncLocalTargetPort(serverId, port); } catch { /* ignore */ }
     try {
       if (this.isRemote(this.getServer(serverId)) && this.getServer(serverId).status === 'running') {
         await this.restartRemoteGateway(serverId);
@@ -1007,7 +1019,9 @@ class ServerManager {
   async createJavaServer(config) {
     const name = String(config.name || '').trim();
     const port = parseInt(config.port, 10);
-    const version = config.version || 'latest';
+    const version = config.minecraftVersion || config.version || 'latest';
+    const loaderProvider = String(config.loaderProvider || config.loader_provider || 'vanilla').trim() || 'vanilla';
+    const loaderVersion = config.loaderVersion || config.loader_version || 'latest-compatible';
     const maxPlayers = parseInt(config.maxPlayers ?? config.max_players ?? 20, 10) || 20;
     const description = config.description || config.server_description || 'Minecraft Java Server';
     const gamemode = config.gamemode || 'survival';
@@ -1046,14 +1060,16 @@ class ServerManager {
 
     const insert = db.prepare(`
       INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
-        server_description, server_motd, status, data_path, lan_broadcast, kind)
-      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'creating', ?, 0, 'java')
+        server_description, server_motd, status, data_path, lan_broadcast, kind,
+        loader_provider_id, loader_version, minecraft_version, loader_state)
+      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'creating', ?, 0, 'java', ?, ?, ?, 'installing')
     `);
     const result = insert.run(
       name, version, port, maxPlayers,
       difficulty, gamemode,
       description, description,
-      serverPath
+      serverPath,
+      loaderProvider, loaderVersion === 'latest-compatible' ? '' : loaderVersion, version
     );
     const serverId = result.lastInsertRowid;
     this.registerPort(serverId, port, 'tcp', 'ipv4');
@@ -1069,6 +1085,8 @@ class ServerManager {
       gamemode,
       difficulty,
       version,
+      loaderProvider,
+      loaderVersion,
       serverPath,
     }).finally(() => this.provisionJobs.delete(Number(serverId)));
     this.provisionJobs.set(Number(serverId), job);
@@ -1078,21 +1096,69 @@ class ServerManager {
   }
 
   async finishCreateJavaServer(serverId, config) {
-    const { name, port, maxPlayers, description, gamemode, difficulty, version, serverPath } = config;
+    const { name, port, maxPlayers, description, gamemode, difficulty, version, loaderProvider, loaderVersion, serverPath } = config;
     try {
+      let minecraftVersion = version;
+      let resolvedLoader = loaderProvider || 'vanilla';
+      let resolvedLoaderVersion = loaderVersion || 'vanilla';
+      let javaMajor = 17;
+      let metadata = {};
       if (String(process.env.ALLOW_STUB_SERVER || '') === '1') {
         javaEdition.createStubJar(serverPath);
+        metadata = { loader: 'vanilla', stub: true };
       } else {
-        const jar = await javaEdition.ensureJar(version);
-        javaEdition.installJarInto(serverPath, jar.path, jar.id, jar.java);
-        db.prepare('UPDATE servers SET version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-          .run(jar.id, serverId);
-        try {
-          await javaEdition.ensureJavaForServer({ data_path: serverPath, version: jar.id });
-        } catch (err) {
-          logger.warn(`Java runtime will be installed when this server first starts: ${err.message}`);
+        const entry = javaLoaderRegistry.get(resolvedLoader);
+        if (entry) {
+          const plan = await entry.provider.planInstallation({
+            minecraftVersion: version,
+            loaderVersion,
+            version,
+          });
+          javaLoaderHost.validatePlan(plan);
+          await javaLoaderHost.executeInstallPlan(plan, {
+            serverDir: serverPath,
+            allowHosts: entry.downloadHosts,
+            ownerId: serverId,
+          });
+          minecraftVersion = plan.result?.minecraftVersion || version;
+          resolvedLoaderVersion = plan.result?.loaderVersion || resolvedLoader;
+          javaMajor = plan.result?.javaMajor || 17;
+          metadata = plan.result || {};
+          javaEdition.writeEula(serverPath);
+          try {
+            await javaEdition.ensureJavaForServer({ data_path: serverPath, version: minecraftVersion });
+          } catch (err) {
+            logger.warn(`Java runtime will be installed when this server first starts: ${err.message}`);
+          }
+        } else if (resolvedLoader === 'vanilla') {
+          const jar = await javaEdition.ensureJar(version);
+          javaEdition.installJarInto(serverPath, jar.path, jar.id, jar.java);
+          minecraftVersion = jar.id;
+          javaMajor = jar.java?.major || 17;
+          metadata = jar.java || {};
+          try {
+            await javaEdition.ensureJavaForServer({ data_path: serverPath, version: jar.id });
+          } catch (err) {
+            logger.warn(`Java runtime will be installed when this server first starts: ${err.message}`);
+          }
+        } else {
+          throw new Error(`Java loader "${resolvedLoader}" is not installed`);
         }
       }
+      db.prepare(`
+        UPDATE servers
+        SET version = ?, minecraft_version = ?, loader_provider_id = ?, loader_version = ?,
+          java_major = ?, loader_state = 'ready', loader_metadata = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        minecraftVersion,
+        minecraftVersion,
+        resolvedLoader,
+        resolvedLoaderVersion,
+        javaMajor,
+        JSON.stringify(metadata),
+        serverId
+      );
       if (!this.getServer(serverId)) return;
 
       const server = this.getServer(serverId);
@@ -1441,29 +1507,48 @@ done
   }
 
   async startJavaServer(server) {
+    const loaderId = server.loader_provider_id || 'vanilla';
     const jar = javaEdition.installedJar(server.data_path);
-    if (!jar) {
-      throw new Error('Minecraft Java server.jar was not found. Recreate the server or run an update.');
+    if (loaderId === 'vanilla') {
+      if (!jar) {
+        throw new Error('Minecraft Java server.jar was not found. Recreate the server or run an update.');
+      }
+      if (javaEdition.isStubJar(jar.jarPath)) {
+        throw new Error('This instance has a placeholder Java jar, not the official Minecraft server. Delete it and create the server again.');
+      }
     }
-    if (javaEdition.isStubJar(jar.jarPath)) {
-      throw new Error('This instance has a placeholder Java jar, not the official Minecraft server. Delete it and create the server again.');
+    const javaRuntime = require('./javaRuntime');
+    try { javaModInstall.applyPending(server); } catch (err) {
+      logger.warn(`Pending Java mods were not applied: ${err.message}`);
     }
-    const javaBin = await javaEdition.ensureJavaForServer(server);
+    let launch;
+    try {
+      launch = await javaLoaderHost.resolveLaunch(server);
+    } catch {
+      if (javaEdition.isStubJar(jar.jarPath)) {
+        throw new Error('This instance has a placeholder Java jar, not the official Minecraft server. Delete it and create the server again.');
+      }
+      const javaBin = await javaEdition.ensureJavaForServer(server);
+      launch = {
+        javaBin,
+        args: javaEdition.spawnArgs(server.data_path),
+        cwd: server.data_path,
+        env: { ...require('./childEnv').sanitizedChildEnv(), JAVA_HOME: path.isAbsolute(javaBin) ? javaRuntime.javaHomeFromBin(javaBin) : undefined },
+      };
+    }
     javaEdition.writeEula(server.data_path);
     this.writeRuntimeServerProperties(server);
 
     const sessionKey = this.sessionKey(server.id);
     try {
       const { spawn: spawnPty } = require('node-pty');
-      const env = { ...process.env };
-      if (path.isAbsolute(javaBin)) env.JAVA_HOME = javaRuntime.javaHomeFromBin(javaBin);
-      logger.info(`Starting Java server ${server.name} with ${javaBin}`);
-      const pty = spawnPty(javaBin, javaEdition.spawnArgs(server.data_path), {
+      logger.info(`Starting Java server ${server.name} with ${launch.javaBin}`);
+      const pty = spawnPty(launch.javaBin, launch.args, {
         name: 'xterm-color',
         cols: 120,
         rows: 30,
-        cwd: server.data_path,
-        env,
+        cwd: launch.cwd,
+        env: launch.env,
       });
 
       this.ptySessions.set(sessionKey, pty);
@@ -1761,6 +1846,13 @@ done
 
     // Unregister ports
     this.unregisterPorts(serverId);
+
+    try {
+      const gatewayManager = require('./gatewayManager');
+      for (const row of db.prepare('SELECT id FROM gateways WHERE target_server_id = ?').all(serverId)) {
+        try { gatewayManager.stop(row.id); } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
 
     const pending = this.getPendingBedrockConnect();
     if (pending && (Number(pending.occupantId) === Number(serverId) || this.isBedrockConnect(server))) {
@@ -2159,26 +2251,52 @@ done
     }
 
     if (this.isJava(server)) {
-      const fromVersion = server.version;
+      const fromVersion = server.minecraft_version || server.version;
       const backupPath = path.join(server.data_path, 'backup_' + Date.now());
       await this.backupServerData(server.data_path, backupPath, { java: true });
       try {
-        const jar = await javaEdition.ensureJar(targetVersion || 'latest');
-        javaEdition.installJarInto(server.data_path, jar.path, jar.id, jar.java);
+        const loaderId = server.loader_provider_id || 'vanilla';
+        const entry = javaLoaderRegistry.get(loaderId);
+        let toVersion = targetVersion || 'latest';
+        if (entry) {
+          const plan = await entry.provider.planUpdate(server, { minecraftVersion: targetVersion || 'latest', version: targetVersion });
+          await javaLoaderHost.executeInstallPlan(plan, {
+            serverDir: server.data_path,
+            allowHosts: entry.downloadHosts,
+            ownerId: serverId,
+          });
+          toVersion = plan.result?.minecraftVersion || toVersion;
+          db.prepare(`
+            UPDATE servers
+            SET version = ?, minecraft_version = ?, loader_version = ?, java_major = ?, loader_metadata = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(
+            toVersion,
+            toVersion,
+            plan.result?.loaderVersion || server.loader_version,
+            plan.result?.javaMajor || server.java_major,
+            JSON.stringify(plan.result || {}),
+            serverId
+          );
+        } else {
+          const jar = await javaEdition.ensureJar(targetVersion || 'latest');
+          javaEdition.installJarInto(server.data_path, jar.path, jar.id, jar.java);
+          toVersion = jar.id;
+          db.prepare('UPDATE servers SET version = ?, minecraft_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+            .run(jar.id, jar.id, serverId);
+        }
         await this.restoreServerData(server.data_path, backupPath, { java: true });
         this.writeRuntimeServerProperties(this.getServer(serverId));
-        db.prepare('UPDATE servers SET version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-          .run(jar.id, serverId);
         db.prepare(`
           INSERT INTO update_history (server_id, from_version, to_version, status, notes)
           VALUES (?, ?, ?, 'completed', ?)
-        `).run(serverId, fromVersion, jar.id, 'Java server jar updated');
+        `).run(serverId, fromVersion, toVersion, 'Java server updated');
         this.invalidateServerCache(serverId);
         if (server.status === 'running') {
-          this.markRestartRequired(serverId, `Java ${jar.id} is ready`);
+          this.markRestartRequired(serverId, `Java ${toVersion} is ready`);
         }
-        logger.info(`Java server ${server.name} updated from ${fromVersion} to ${jar.id}`);
-        return { success: true, fromVersion, toVersion: jar.id };
+        logger.info(`Java server ${server.name} updated from ${fromVersion} to ${toVersion}`);
+        return { success: true, fromVersion, toVersion };
       } catch (err) {
         logger.error(`Java update failed for ${server.name}, restoring backup`);
         await this.restoreServerData(server.data_path, backupPath, { java: true });
@@ -3378,6 +3496,8 @@ done
     try { require('./udpGateway').stopAll(); } catch { /* ignore */ }
     try { require('./remotePing').stopAll(); } catch { /* ignore */ }
     try { require('./dnsProxy').stop(); } catch { /* ignore */ }
+    try { require('./gatewayManager').stopAll(); } catch { /* ignore */ }
+    try { require('./controlledProcess').stopAll(); } catch { /* ignore */ }
   }
 }
 

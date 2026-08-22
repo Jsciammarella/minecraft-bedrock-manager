@@ -22,6 +22,14 @@ export const serverApi = {
   updateVersion: (id, version) => api.post(`/servers/${id}/update`, { version }, { timeout: 120000 }),
   checkUpdates: () => api.get('/servers/check-updates'),
   javaVersions: () => api.get('/servers/java/versions'),
+  javaProviders: () => api.get('/java/providers'),
+  javaProviderVersions: (providerId) => api.get(`/java/providers/${encodeURIComponent(providerId)}/versions`),
+  javaLoaderVersions: (providerId, minecraftVersion) => api.get(`/java/providers/${encodeURIComponent(providerId)}/loader-versions`, { params: { minecraftVersion } }),
+  javaValidate: (providerId, data) => api.post(`/java/providers/${encodeURIComponent(providerId)}/validate`, data),
+  javaMods: (id) => api.get(`/servers/${id}/java/mods`),
+  installJavaMod: (id, modId) => api.post(`/servers/${id}/java/mods`, { modId }),
+  removeJavaMod: (id, installationId) => api.delete(`/servers/${id}/java/mods/${installationId}`),
+  pendingJavaMods: (id) => api.get(`/servers/${id}/java/mods/pending`),
   previewBedrockConnect: () => api.get('/servers/bedrock-connect/preview'),
   createBedrockConnect: (data) => api.post('/servers/bedrock-connect', data, { timeout: 120000 }),
   bedrockConnectVersions: () => api.get('/servers/bedrock-connect/versions'),
@@ -142,10 +150,24 @@ export const bedrockConnectApi = {
 
 // ========== PUBLIC API ==========
 
+export const gatewayApi = {
+  providers: () => api.get('/gateway-providers'),
+  list: () => api.get('/gateways'),
+  create: (data) => api.post('/gateways', data, { timeout: 10 * 60 * 1000 }),
+  get: (id) => api.get(`/gateways/${id}`),
+  update: (id, data) => api.patch(`/gateways/${id}`, data),
+  remove: (id) => api.delete(`/gateways/${id}`),
+  start: (id) => api.post(`/gateways/${id}/start`, undefined, { timeout: 10 * 60 * 1000 }),
+  stop: (id) => api.post(`/gateways/${id}/stop`),
+  restart: (id) => api.post(`/gateways/${id}/restart`, undefined, { timeout: 10 * 60 * 1000 }),
+  logs: (id) => api.get(`/gateways/${id}/logs`),
+};
+
 export const pluginApi = {
   list: () => api.get('/plugins'),
   meta: (id) => api.get(`/plugins/${encodeURIComponent(id)}/meta`),
   setEnabled: (id, enabled) => api.put(`/plugins/${encodeURIComponent(id)}/enabled`, { enabled }),
+  setBackendEnabled: (id, enabled) => api.put(`/plugins/${encodeURIComponent(id)}/backend-enabled`, { enabled }),
   upload: (formData) => api.post('/plugins/upload', formData, { timeout: 120000 }),
 };
 

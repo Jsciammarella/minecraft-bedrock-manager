@@ -64,6 +64,11 @@ app.use('/api/bedrock-connect', bedrockConnectRoutes);
 app.use('/api/v1', apiRoutes); // Public API
 pluginHost.loadPlugins();
 app.use('/api/plugins', pluginRoutes);
+app.use('/api/java', require('./routes/java'));
+app.use('/api/gateways', require('./routes/gateways'));
+app.get('/api/gateway-providers', (req, res) => {
+  res.json({ providers: require('./services/gatewayRegistry').list() });
+});
 logger.info(`Loaded ${pluginHost.getMenuItems().length} plugin menu item(s)`);
 
 // Health endpoint
@@ -200,6 +205,9 @@ server.listen(PORT, '0.0.0.0', () => {
     });
   dnsProxy.sync().catch((err) => {
     logger.warn(`DNS proxy restore failed: ${err.message}`);
+  });
+  require('./services/gatewayManager').restoreRunning().catch((err) => {
+    logger.warn(`Geyser restore failed: ${err.message}`);
   });
 });
 

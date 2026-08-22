@@ -17,6 +17,11 @@ function CreateServer() {
   const [java, setJava] = useState(false);
   const [acceptEula, setAcceptEula] = useState(false);
   const [javaVersions, setJavaVersions] = useState(['latest']);
+  const [javaProviders, setJavaProviders] = useState([{ id: 'vanilla', name: 'Vanilla' }]);
+  const [loaderProvider, setLoaderProvider] = useState('vanilla');
+  const [loaderVersions, setLoaderVersions] = useState(['latest-compatible']);
+  const [loaderVersion, setLoaderVersion] = useState('latest-compatible');
+  const [loaderNotice, setLoaderNotice] = useState('');
   
   const [formData, setFormData] = useState({
     name: '',
@@ -36,6 +41,12 @@ function CreateServer() {
 
   useEffect(() => {
     loadPorts();
+    serverApi.javaProviders()
+      .then((res) => {
+        const providers = res.data?.providers || [];
+        if (providers.length) setJavaProviders(providers);
+      })
+      .catch(() => {});
     serverApi.javaVersions()
       .then((res) => {
         const ids = res.data?.versions || [];
@@ -43,6 +54,31 @@ function CreateServer() {
       })
       .catch(() => setJavaVersions(['latest']));
   }, []);
+
+  useEffect(() => {
+    if (!java || remote) return undefined;
+    const provider = javaProviders.find((item) => item.id === loaderProvider);
+    setLoaderNotice((provider?.notices || []).join(' '));
+    if (loaderProvider === 'vanilla') {
+      setLoaderVersions(['vanilla']);
+      setLoaderVersion('vanilla');
+      return undefined;
+    }
+    serverApi.javaProviderVersions(loaderProvider)
+      .then((res) => {
+        const ids = res.data?.versions || [];
+        if (ids.length) setJavaVersions(['latest', ...ids]);
+      })
+      .catch(() => {});
+    const mc = formData.version === 'latest' ? undefined : formData.version;
+    serverApi.javaLoaderVersions(loaderProvider, mc)
+      .then((res) => {
+        const ids = res.data?.versions || [];
+        setLoaderVersions(['latest-compatible', ...ids]);
+      })
+      .catch(() => setLoaderVersions(['latest-compatible']));
+    return undefined;
+  }, [java, remote, loaderProvider, formData.version, javaProviders]);
 
   const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
   const ipv6Available = (ports.available || []).filter((item) => item.family === 'ipv6');
@@ -126,6 +162,9 @@ function CreateServer() {
               gamemode: formData.gamemode,
               difficulty: formData.difficulty,
               acceptEula,
+              minecraftVersion: formData.version,
+              loaderProvider,
+              loaderVersion,
             }
           : {
             ...formData,
@@ -283,8 +322,8 @@ function CreateServer() {
         </div>
         {java && !remote && (
           <p className="text-xs text-mc-textMuted -mt-4">
-            Downloads the official vanilla Minecraft Java Edition server.jar. Players connect with a Java Edition client on TCP.
-            Geyser (Bedrock clients on Java) is not enabled yet.
+            Downloads official server software when you create the server. Players connect with a Java Edition client on TCP.
+            Optional Geyser gateways are configured after creation. Compatible with Fabric and NeoForge through bundled providers.
           </p>
         )}
         {remote && (
@@ -404,9 +443,26 @@ function CreateServer() {
 
         {!remote && (
           <>
+        {java && (
+          <div>
+            <label className="block text-sm font-medium text-mc-text mb-2">Server software</label>
+            <select
+              value={loaderProvider}
+              onChange={(e) => setLoaderProvider(e.target.value)}
+              className="input"
+            >
+              {javaProviders.map((provider) => (
+                <option key={provider.id} value={provider.id}>{provider.name || provider.id}</option>
+              ))}
+            </select>
+            {loaderNotice && <p className="text-xs text-mc-textMuted mt-2">{loaderNotice}</p>}
+          </div>
+        )}
         {/* Version */}
         <div>
-          <label className="block text-sm font-medium text-mc-text mb-2">Version</label>
+          <label className="block text-sm font-medium text-mc-text mb-2">
+            {java ? 'Minecraft version' : 'Version'}
+          </label>
           <select
             name="version"
             value={formData.version}
@@ -429,8 +485,20 @@ function CreateServer() {
               )}
           </select>
         </div>
-
-        {/* Max Players */}
+        {java && loaderProvider !== 'vanilla' && (
+          <div>
+            <label className="block text-sm font-medium text-mc-text mb-2">Loader version</label>
+            <select
+              value={loaderVersion}
+              onChange={(e) => setLoaderVersion(e.target.value)}
+              className="input"
+            >
+              {loaderVersions.map((id) => (
+                <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <div>
           <label className="block text-sm font-medium text-mc-text mb-2">Max Players</label>
           <input

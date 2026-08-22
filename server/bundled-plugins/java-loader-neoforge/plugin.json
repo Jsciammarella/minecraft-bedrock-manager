@@ -1,0 +1,28 @@
+{
+  "id": "java-loader-neoforge",
+  "name": "NeoForge Loader",
+  "version": "1.0.0",
+  "author": "Minecraft Bedrock Manager",
+  "description": "Downloads the official NeoForge installer and installs a dedicated server. Compatible with NeoForge.",
+  "pages": [],
+  "menus": [],
+  "backend": "backend.js",
+  "capabilities": [
+    "provider:java-loader",
+    "download:official-sources",
+    "filesystem:server-java",
+    "filesystem:server-mods",
+    "runtime:java"
+  ],
+  "downloadHosts": [
+    "maven.neoforged.net"
+  ],
+  "providers": [
+    {
+      "type": "java-loader",
+      "id": "neoforge",
+      "name": "NeoForge",
+      "edition": "java"
+    }
+  ]
+}

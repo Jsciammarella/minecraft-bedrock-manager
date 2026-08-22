@@ -2,7 +2,8 @@ const path = require('path');
 
 const ARCHIVE_EXTS = ['.mcaddon', '.mcpack', '.mcworld', '.zip', '.mctemplate'];
 const STRUCTURE_EXTS = ['.mcstructure'];
-const IMPORT_EXTS = [...ARCHIVE_EXTS, ...STRUCTURE_EXTS];
+const JAVA_EXTS = ['.jar'];
+const IMPORT_EXTS = [...ARCHIVE_EXTS, ...STRUCTURE_EXTS, ...JAVA_EXTS];
 
 function extOf(filePath) {
   return path.extname(filePath || '').toLowerCase();
@@ -14,6 +15,10 @@ function isArchiveExt(ext) {
 
 function isStructureExt(ext) {
   return STRUCTURE_EXTS.includes(String(ext || '').toLowerCase());
+}
+
+function isJavaExt(ext) {
+  return JAVA_EXTS.includes(String(ext || '').toLowerCase());
 }
 
 function isImportExt(ext) {
@@ -33,6 +38,8 @@ function typeFromExt(filePath, fallback = 'addon') {
     case '.mcaddon':
     case '.zip':
       return 'addon';
+    case '.jar':
+      return 'mod';
     default:
       return fallback;
   }
@@ -71,7 +78,8 @@ function matchesFileChoice(filePath, selected) {
 module.exports = {
   ARCHIVE_EXTS,
   STRUCTURE_EXTS,
-  IMPORT_EXTS,
+  JAVA_EXTS,
+  isJavaExt,
   extOf,
   isArchiveExt,
   isStructureExt,

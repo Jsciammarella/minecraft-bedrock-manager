@@ -27,6 +27,7 @@ const connectHost = require('../server/services/connectHost');
 const portRanges = require('../server/services/portRanges');
 const pluginHost = require('../server/services/pluginHost');
 const pluginRoutes = require('../server/routes/plugins');
+const { runJavaProviderTests } = require('./java-provider-test');
 
 function zipStore(files) {
   const locals = [];
@@ -200,6 +201,7 @@ async function run() {
   ).get('table', 'server_player_access');
   assert(accessTable, 'server_player_access migration was not created');
   await testPluginHost();
+  await runJavaProviderTests({ pluginHost, testRoot });
 
   const blocker = dgram.createSocket('udp4');
   await new Promise((resolve, reject) => {
@@ -1193,6 +1195,7 @@ async function run() {
   if (javaJob) await javaJob;
   const storedJava = serverManager.getServer(javaCreated.id);
   assert.equal(storedJava.kind, 'java');
+  assert.equal(storedJava.loader_provider_id, 'vanilla');
   assert.equal(storedJava.status, 'stopped');
   assert.equal(Number(storedJava.max_players), 12);
   assert.equal(storedJava.pvp, 1);
@@ -1493,6 +1496,7 @@ async function run() {
     mcpedlUrlImport: 'ok',
     windowsPlatformAdapter: 'ok',
     pluginHost: 'ok',
+    javaProviders: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));

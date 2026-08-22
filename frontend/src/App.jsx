@@ -13,6 +13,7 @@ import PortManager from './pages/PortManager';
 import BedrockConnectPage from './pages/BedrockConnect';
 import Plugins from './pages/Plugins';
 import PluginPage from './pages/PluginPage';
+import Gateways from './pages/Gateways';
 
 function App() {
   return (
@@ -29,6 +30,7 @@ function App() {
         <Route path="mods/catalog/settings" element={<ModCatalogSettings />} />
         <Route path="players" element={<PlayerManagement />} />
         <Route path="bedrock-connect" element={<BedrockConnectPage />} />
+        <Route path="gateways" element={<Gateways />} />
         <Route path="ports" element={<PortManager />} />
         <Route path="plugins" element={<Plugins />} />
         <Route path="plugins/:pluginId" element={<PluginPage />} />

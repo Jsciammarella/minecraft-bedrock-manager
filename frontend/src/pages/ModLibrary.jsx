@@ -25,6 +25,7 @@ function ModLibrary() {
   const [success, setSuccess] = useState('');
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState('all');
+  const [filterEdition, setFilterEdition] = useState('all');
   const [page, setPage] = useState(1);
   const [expandedMod, setExpandedMod] = useState(null);
 
@@ -298,7 +299,14 @@ function ModLibrary() {
   const filteredMods = mods.filter(mod => {
     const matchesSearch = !search || mod.name.toLowerCase().includes(search.toLowerCase());
     const matchesType = filterType === 'all' || mod.type === filterType;
-    return matchesSearch && matchesType;
+    const matchesEdition = filterEdition === 'all'
+      || (filterEdition === 'java' && (mod.edition === 'java' || mod.loader === 'fabric' || mod.loader === 'neoforge'))
+      || (filterEdition === 'bedrock' && (mod.edition || 'bedrock') !== 'java')
+      || (filterEdition === 'fabric' && mod.loader === 'fabric')
+      || (filterEdition === 'neoforge' && mod.loader === 'neoforge')
+      || (filterEdition === 'server' && (mod.environment === 'server' || mod.environment === 'both'))
+      || (filterEdition === 'client' && (mod.environment === 'client' || mod.environment === 'both'));
+    return matchesSearch && matchesType && matchesEdition;
   });
 
   const totalPages = Math.max(1, Math.ceil(filteredMods.length / LIBRARY_PAGE_SIZE));
@@ -444,6 +452,23 @@ function ModLibrary() {
             <option value="template">Templates</option>
             <option value="structure">Structures</option>
             <option value="skin">Skins</option>
+            <option value="mod">Java mods</option>
+          </select>
+          <select
+            value={filterEdition}
+            onChange={(e) => {
+              setFilterEdition(e.target.value);
+              setPage(1);
+            }}
+            className="input w-40"
+          >
+            <option value="all">All editions</option>
+            <option value="bedrock">Bedrock</option>
+            <option value="java">Java</option>
+            <option value="fabric">Fabric</option>
+            <option value="neoforge">NeoForge</option>
+            <option value="server">Server-side</option>
+            <option value="client">Client-side</option>
           </select>
         </div>
       </div>
@@ -958,17 +983,19 @@ function ModLibrary() {
               ) : (
                 installTargets.map(server => {
                   const isTarget = installing && installingServerId === server.id;
-                  const javaLocked = server.kind === 'java';
+                  const javaLocked = server.kind === 'java' && (installModal.edition || 'bedrock') !== 'java';
+                  const bedrockLocked = server.kind !== 'java' && installModal.edition === 'java';
+                  const locked = javaLocked || bedrockLocked;
                   return (
                     <button
                       key={server.id}
                       onClick={() => {
-                        if (javaLocked) return;
+                        if (locked) return;
                         handleInstall(installModal.id, server.id);
                       }}
-                      disabled={installing || javaLocked}
+                      disabled={installing || locked}
                       className={`w-full flex items-center gap-3 p-3 bg-mc-darker rounded-lg text-left transition-colors ${
-                        javaLocked || (installing && !isTarget)
+                        locked || (installing && !isTarget)
                           ? 'opacity-40 cursor-not-allowed'
                           : installing
                             ? 'border border-yellow-500/40 cursor-not-allowed'

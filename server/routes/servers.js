@@ -288,4 +288,70 @@ router.put('/:id/lan-broadcast', async (req, res) => {
   }
 });
 
+router.get('/:id/java/mods', (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    if (server.kind !== 'java') return res.status(400).json({ error: 'Not a Java server' });
+    const javaModInstall = require('../services/javaModInstall');
+    res.json({ mods: javaModInstall.list(server.id) });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+router.get('/:id/java/mods/pending', (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    const javaModInstall = require('../services/javaModInstall');
+    res.json({ pending: javaModInstall.pending(server.id) });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+router.post('/:id/java/mods/validate', (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    const db = require('../db/connection');
+    const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(req.body?.modId);
+    const javaModInstall = require('../services/javaModInstall');
+    res.json(javaModInstall.validate(server, mod));
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+router.post('/:id/java/mods', (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    const javaModInstall = require('../services/javaModInstall');
+    const result = javaModInstall.install(server, req.body?.modId);
+    if (result.restartRequired) {
+      serverManager.markRestartRequired(server.id, 'Java mods changed');
+    }
+    res.status(201).json({ ...result, mods: javaModInstall.list(server.id) });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+router.delete('/:id/java/mods/:installationId', (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    const javaModInstall = require('../services/javaModInstall');
+    const result = javaModInstall.remove(server, req.params.installationId);
+    if (result.restartRequired) {
+      serverManager.markRestartRequired(server.id, 'Java mods changed');
+    }
+    res.json({ ...result, mods: javaModInstall.list(server.id) });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
 module.exports = router;
