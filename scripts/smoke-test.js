@@ -7,6 +7,8 @@ const dgram = require('dgram');
 const zlib = require('zlib');
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-manager-smoke-'));
 process.env.MC_MANAGER_DB_PATH = path.join(testRoot, 'mc_manager.db');
+process.env.MC_MANAGER_USER_PLUGINS_DIR = path.join(testRoot, 'plugins');
+process.env.MC_MANAGER_PLUGIN_DATA_DIR = path.join(testRoot, 'plugin-data');
 const db = require('../server/db/connection');
 const serverManager = require('../server/services/serverManager');
 const curseforge = require('../server/services/curseforgeClient');
@@ -22,6 +24,8 @@ const curseforgeImporter = require('../server/services/curseforgeImporter');
 const mcpedlImporter = require('../server/services/mcpedlImporter');
 const connectHost = require('../server/services/connectHost');
 const portRanges = require('../server/services/portRanges');
+const pluginHost = require('../server/services/pluginHost');
+const pluginRoutes = require('../server/routes/plugins');
 
 function zipStore(files) {
   const locals = [];
@@ -63,11 +67,82 @@ function zipStore(files) {
   return Buffer.concat([localBuf, centralBuf, end]);
 }
 
+async function testPluginHost() {
+  const reserved = pluginHost.parseManifest({ id: 'servers', name: 'Nope', menu: { label: 'Servers' } }, 'servers');
+  assert.equal(reserved.ok, false, 'core ids cannot be used as plugins');
+  const mismatched = pluginHost.parseManifest({ id: 'other', name: 'Nope' }, 'hello-world');
+  assert.equal(mismatched.ok, false, 'plugin id must match its folder name');
+  assert.equal(
+    pluginHost.isAllowedPluginApiPath('hello-world', '/api/servers'),
+    true
+  );
+  assert.equal(
+    pluginHost.isAllowedPluginApiPath('hello-world', '/api/plugins/other-plugin/hello'),
+    false,
+    'plugins cannot call another plugin backend'
+  );
+  assert.equal(
+    pluginHost.isAllowedPluginNavigatePath('hello-world', '/mods'),
+    false,
+    'plugins cannot navigate to core pages'
+  );
+  assert.equal(
+    pluginHost.isAllowedPluginNavigatePath('hello-world', '/plugins/hello-world/about'),
+    true
+  );
+
+  pluginHost.resetForTests();
+  const exampleDir = path.join(__dirname, '../examples/plugins');
+  const loadedPlugins = pluginHost.loadPlugins([exampleDir]);
+  const hello = loadedPlugins.find((plugin) => plugin.id === 'hello-world');
+  assert(hello && hello.enabled, 'example hello-world plugin should load');
+  assert(hello.menus.every((menu) => menu.path.startsWith('/plugins/hello-world')));
+  pluginHost.CORE_MENU_PATHS.forEach((corePath) => {
+    assert(
+      !hello.menus.some((menu) => menu.path === corePath),
+      `plugin menu must not replace ${corePath}`
+    );
+  });
+  const helloPlugin = pluginHost.getPlugin('hello-world');
+  assert(pluginHost.resolveUiFile(helloPlugin, 'index.html'));
+  assert.equal(pluginHost.resolveUiFile(helloPlugin, '../backend.js'), null);
+  assert.equal(pluginHost.resolveUiFile(helloPlugin, '..\\backend.js'), null);
+  const injected = pluginHost.injectHtmlSdk('<html><head></head><body></body></html>');
+  assert(injected.includes('/api/plugins/sdk.js'));
+
+  const pluginApp = require('express')();
+  pluginApp.use('/api/servers', (req, res) => res.json({ core: true }));
+  pluginApp.use('/api/plugins', pluginRoutes);
+  const pluginServer = pluginApp.listen(0);
+  const pluginPort = pluginServer.address().port;
+  const pluginOrigin = `http://127.0.0.1:${pluginPort}`;
+  try {
+    const listRes = await fetch(`${pluginOrigin}/api/plugins`);
+    const listBody = await listRes.json();
+    assert(listBody.menus.some((item) => item.path === '/plugins/hello-world'));
+    const coreRes = await fetch(`${pluginOrigin}/api/servers`);
+    assert.deepEqual(await coreRes.json(), { core: true }, 'plugin routes must not replace /api/servers');
+    const uiRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/index.html`);
+    const uiHtml = await uiRes.text();
+    assert(uiRes.ok, 'example plugin UI should be served');
+    assert(uiHtml.includes('/api/plugins/sdk.js'), 'plugin HTML should receive the SDK');
+    const theftRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/../backend.js`);
+    assert.equal(theftRes.status, 404, 'plugin UI must not serve files outside ui/');
+    const backendRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/hello`);
+    const backendBody = await backendRes.json();
+    assert.equal(backendBody.plugin, 'hello-world');
+  } finally {
+    await new Promise((resolve) => pluginServer.close(resolve));
+  }
+  pluginHost.resetForTests();
+}
+
 async function run() {
   const accessTable = db.prepare(
     'SELECT name FROM sqlite_master WHERE type = ? AND name = ?'
   ).get('table', 'server_player_access');
   assert(accessTable, 'server_player_access migration was not created');
+  await testPluginHost();
 
   const blocker = dgram.createSocket('udp4');
   await new Promise((resolve, reject) => {
@@ -1274,6 +1349,7 @@ async function run() {
     remoteGateway: 'ok',
     mcpedlUrlImport: 'ok',
     windowsPlatformAdapter: 'ok',
+    pluginHost: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));

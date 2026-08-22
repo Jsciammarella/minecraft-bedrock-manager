@@ -122,6 +122,10 @@ Remotes appear in the Bedrock Connect in-game list with this host's LAN IPv4 and
 
 An upgrade or restart should not require recreating a remote. Start it again from the dashboard after `upgrade.sh` finishes.
 
+### Plugins
+
+Drop-in folders can add their own sidebar items and pages. They cannot change Dashboard, server details, catalog, library, players, BedrockConnect, or ports. Copy a folder into `data/plugins/` and restart. See [docs/plugins.md](docs/plugins.md) and the [hello-world example](examples/plugins/hello-world).
+
 ### Players and access
 
 Per-server allowlists, operator permissions, and bans. Scan running servers (Bedrock `list`) to pick up who is online. Allow and ban pickers can create a missing player when you type a name. Bans are enforced by the manager when it sees a join; Bedrock Dedicated Server does not ship a Java-style ban list file.
@@ -259,6 +263,8 @@ Runtime state is not in Git:
 | `~/Minecraft Bedrock Manager/catalog/` (Windows: Public Documents) | Default local file catalog |
 | `data/bedrock-connect/` | Runtime Bedrock Connect JAR archive |
 | `data/phantom/` | Runtime Phantom binary |
+| `data/plugins/` | User-installed plugin folders |
+| `data/plugin-data/` | Private files for plugin backends |
 | `data/logs/` | Application logs |
 | `.env` | Local configuration |
 

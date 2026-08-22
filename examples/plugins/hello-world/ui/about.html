@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>About Hello World</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      font-family: Inter, Segoe UI, sans-serif;
+      background: #1a1a2e;
+      color: #e2e8f0;
+      padding: 1.5rem;
+    }
+    a { color: #4ade80; }
+    p { color: #94a3b8; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1>About</h1>
+  <p>A plugin may have more than one page. Extra pages stay under this plugin’s menu item and are not allowed to replace core application pages.</p>
+  <p><a href="#" id="home">Back to Hello World</a></p>
+  <script>
+    document.getElementById('home').addEventListener('click', function (event) {
+      event.preventDefault();
+      MBM.navigate('/plugins/hello-world');
+    });
+  </script>
+</body>
+</html>
