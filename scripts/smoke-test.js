@@ -74,7 +74,10 @@ function testUserManagement() {
   const login = auth.login('admin', 'mcadmin');
   assert.equal(login.user.username, 'admin');
   assert.equal(login.user.isAdmin, true);
-  assert.equal(login.user.permissions.length, catalog.ALL_KEYS.length);
+  assert.deepEqual(
+    new Set(login.user.permissions),
+    new Set(auth.listPermissionDefs().map((item) => item.key)),
+  );
 
   const groups = auth.listGroups();
   const adminGroup = groups.find((group) => group.name === 'Administrators');
