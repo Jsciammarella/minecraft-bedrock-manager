@@ -161,6 +161,9 @@ Copy-Tree (Join-Path $RepoRoot 'public') (Join-Path $Stage 'public')
 if (Test-Path (Join-Path $RepoRoot 'docs')) {
   Copy-Tree (Join-Path $RepoRoot 'docs') (Join-Path $Stage 'docs')
 }
+if (Test-Path (Join-Path $RepoRoot 'examples')) {
+  Copy-Tree (Join-Path $RepoRoot 'examples') (Join-Path $Stage 'examples')
+}
 Copy-Item (Join-Path $RepoRoot 'package.json') $Stage
 Copy-Item (Join-Path $RepoRoot 'package-lock.json') $Stage
 Copy-Item (Join-Path $RepoRoot '.env.example') $Stage

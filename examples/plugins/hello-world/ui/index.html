@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hello World</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #1a1a2e;
+      --surface: #252545;
+      --line: #2d2d50;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #4ade80;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, Segoe UI, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 1.5rem;
+    }
+    h1 { margin: 0 0 0.35rem; font-size: 1.5rem; }
+    p { color: var(--muted); line-height: 1.5; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 0.75rem;
+      padding: 1rem 1.25rem;
+      margin-top: 1rem;
+    }
+    button, a.button {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      margin-top: 0.75rem;
+      margin-right: 0.5rem;
+      padding: 0.5rem 0.9rem;
+      border: 0;
+      border-radius: 0.5rem;
+      background: var(--accent);
+      color: #16162a;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    ul { margin: 0.5rem 0 0; padding-left: 1.2rem; }
+    .error { color: #ef4444; }
+  </style>
+</head>
+<body>
+  <h1>Hello World</h1>
+  <p>This page belongs to a plugin. It cannot change Dashboard, servers, catalog, library, players, BedrockConnect, or ports.</p>
+  <div class="card">
+    <strong>Manager API</strong>
+    <p id="status">Loading servers…</p>
+    <ul id="servers"></ul>
+    <p id="backend"></p>
+    <button type="button" id="reload">Refresh</button>
+    <a class="button" href="#" id="about">About this plugin</a>
+  </div>
+  <script>
+    async function load() {
+      const status = document.getElementById('status');
+      const list = document.getElementById('servers');
+      const backend = document.getElementById('backend');
+      list.innerHTML = '';
+      try {
+        const overview = await MBM.get('/api/v1/overview');
+        const servers = overview.servers || [];
+        status.textContent = servers.length
+          ? `${servers.length} server${servers.length === 1 ? '' : 's'} visible through the manager API.`
+          : 'No servers yet. Create one from the Dashboard; this plugin can only read them.';
+        servers.forEach((server) => {
+          const item = document.createElement('li');
+          item.textContent = `${server.name} (${server.status})`;
+          list.appendChild(item);
+        });
+      } catch (err) {
+        status.className = 'error';
+        status.textContent = err.message || 'Could not read the manager API.';
+      }
+      try {
+        const hello = await MBM.get('/api/plugins/hello-world/hello');
+        backend.textContent = hello.message;
+      } catch (err) {
+        backend.textContent = '';
+      }
+    }
+    document.getElementById('reload').addEventListener('click', load);
+    document.getElementById('about').addEventListener('click', function (event) {
+      event.preventDefault();
+      MBM.navigate('/plugins/hello-world/about');
+    });
+    load();
+  </script>
+</body>
+</html>
