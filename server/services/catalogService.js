@@ -1,10 +1,17 @@
-const curseforge = require('./curseforgeClient');
 const gitCatalog = require('./gitCatalogClient');
 const fileCatalog = require('./fileCatalogClient');
 const settingsStore = require('./settingsStore');
+const catalogProviderRegistry = require('./catalogProviderRegistry');
+const coreCatalogProviders = require('./coreCatalogProviders');
+const catalogLibrary = require('./catalogLibrary');
+const pluginAudit = require('./pluginAudit');
 
 const CATALOG_PAGE_SIZE = 40;
 const LOCAL_FETCH_SIZE = 10000;
+const LOCAL_PROVIDER_IDS = new Set(['git', 'file']);
+const LEGACY_CURSEFORGE_SOURCE = 'curseforge';
+const BEDROCK_CURSEFORGE_ID = 'curseforge-bedrock';
+const JAVA_CURSEFORGE_ID = 'curseforge-java';
 
 function clampPageSize(value) {
   const size = parseInt(value, 10);
@@ -12,13 +19,49 @@ function clampPageSize(value) {
   return Math.min(size, CATALOG_PAGE_SIZE);
 }
 
+function ensureProviders() {
+  coreCatalogProviders.registerAll();
+}
+
+function normalizeEdition(value) {
+  const edition = String(value || 'all').toLowerCase();
+  if (edition === 'java' || edition === 'bedrock') return edition;
+  return 'all';
+}
+
 function sourceStatus() {
+  ensureProviders();
   const settings = settingsStore.publicCatalogSettings();
+  const java = catalogProviderRegistry.get(JAVA_CURSEFORGE_ID);
   return {
     curseforge: settings.curseforge.configured,
     git: Boolean(settings.git.enabled && settings.git.url),
     file: fileCatalog.isConfigured(),
+    [JAVA_CURSEFORGE_ID]: Boolean(java),
   };
+}
+
+function publicSources() {
+  ensureProviders();
+  const available = sourceStatus();
+  const providers = catalogProviderRegistry.list();
+  const sources = {};
+  for (const provider of providers) {
+    const key = provider.id === BEDROCK_CURSEFORGE_ID ? LEGACY_CURSEFORGE_SOURCE : provider.id;
+    let isAvailable = true;
+    if (provider.id === BEDROCK_CURSEFORGE_ID) isAvailable = Boolean(available.curseforge);
+    else if (provider.id === JAVA_CURSEFORGE_ID) isAvailable = Boolean(available[JAVA_CURSEFORGE_ID]);
+    else if (provider.id === 'git') isAvailable = Boolean(available.git);
+    else if (provider.id === 'file') isAvailable = Boolean(available.file);
+    sources[key] = {
+      available: isAvailable,
+      label: provider.name,
+      providerId: provider.id,
+      editions: provider.editions,
+      source: provider.source,
+    };
+  }
+  return { sources, providers };
 }
 
 function configureError(source) {
@@ -28,54 +71,146 @@ function configureError(source) {
   if (source === 'file') {
     return 'File catalog is not configured. Enable a local folder, SMB share, or NFS path in Catalog Settings.';
   }
+  if (source === JAVA_CURSEFORGE_ID) {
+    return 'CurseForge Java requires the existing CurseForge API key. Open Catalog Settings to add it.';
+  }
   return 'That catalog source is not configured.';
 }
 
-async function collectLocal(label, fn, source, errors) {
+function unsupportedCombination(source, edition, providerId) {
+  const sourceLabel = providerId || source || 'that source';
+  const editionLabel = edition === 'all' ? 'the selected edition' : edition;
+  return {
+    results: [],
+    total: 0,
+    page: 1,
+    warning: `No catalog results: ${sourceLabel} does not include ${editionLabel} projects. Choose a matching source and edition.`,
+    emptyReason: 'unsupported-combination',
+  };
+}
+
+function matchingEntries({ source = 'all', provider, edition = 'all' } = {}) {
+  ensureProviders();
+  let list = catalogProviderRegistry.entries();
+  const providerId = String(provider || '').trim();
+  const sourceId = String(source || 'all').trim() || 'all';
+  if (providerId) {
+    list = list.filter((entry) => entry.id === providerId);
+  } else if (sourceId !== 'all') {
+    if (sourceId === LEGACY_CURSEFORGE_SOURCE) {
+      list = list.filter((entry) => entry.id === BEDROCK_CURSEFORGE_ID);
+    } else {
+      list = list.filter((entry) => entry.id === sourceId || (entry.provider.getMetadata()?.source === sourceId && entry.id !== JAVA_CURSEFORGE_ID));
+    }
+  }
+  if (edition !== 'all') {
+    list = list.filter((entry) => {
+      const meta = entry.provider.getMetadata() || {};
+      const editions = Array.isArray(meta.editions) ? meta.editions : [meta.edition || 'bedrock'];
+      return editions.includes(edition);
+    });
+  }
+  return list;
+}
+
+function errorId(entry) {
+  return entry.id === BEDROCK_CURSEFORGE_ID ? LEGACY_CURSEFORGE_SOURCE : entry.id;
+}
+
+function categoryForProvider(entry, category) {
+  const requested = String(category || '').trim();
+  if (!requested) return '';
+  if (requested.startsWith('curseforge-java:')) {
+    return entry.id === JAVA_CURSEFORGE_ID ? requested : '__skip__';
+  }
+  if (entry.id === JAVA_CURSEFORGE_ID) return '__skip__';
+  return requested;
+}
+
+async function searchProvider(entry, query, options, errors, strict) {
   try {
-    const result = await fn();
-    return (result.results || []).map((item) => ({ ...item, source: item.source || label }));
+    if (typeof entry.provider.isAvailable === 'function' && !entry.provider.isAvailable() && LOCAL_PROVIDER_IDS.has(entry.id)) {
+      return { results: [], total: 0 };
+    }
+    const result = await entry.provider.search(query, options);
+    return {
+      results: result.results || [],
+      total: result.total || 0,
+    };
   } catch (err) {
-    errors.push({ source: label, error: err.message });
-    if (source === label) throw err;
-    return [];
+    const message = err.message || 'Catalog search failed';
+    errors.push({ source: errorId(entry), providerId: entry.id, error: message });
+    if (entry.id === JAVA_CURSEFORGE_ID && err.code === 'CURSEFORGE_API_KEY_REQUIRED') {
+      pluginAudit.record('catalog.search.unconfigured', {
+        targetType: 'catalog-source',
+        targetId: entry.id,
+      });
+    }
+    if (strict) throw err;
+    return { results: [], total: 0 };
   }
 }
 
 async function searchMods(query = '', options = {}) {
   const source = options.source || 'all';
+  const provider = options.provider || '';
+  const edition = normalizeEdition(options.edition);
   const page = parseInt(options.page, 10) || 1;
   const pageSize = clampPageSize(options.pageSize);
-  options = { ...options, page, pageSize };
+  options = { ...options, page, pageSize, edition, provider, source };
   const available = sourceStatus();
   const errors = [];
-  let curseforgeResult = { results: [], total: 0, page };
+  const matched = matchingEntries({ source, provider, edition });
 
-  if ((source === 'git' || source === 'file') && !available[source]) {
+  if ((source === 'git' || source === 'file') && !available[source] && (edition === 'all' || edition === 'bedrock')) {
     throw new Error(configureError(source));
   }
+  if ((source === JAVA_CURSEFORGE_ID || provider === JAVA_CURSEFORGE_ID) && !catalogProviderRegistry.get(JAVA_CURSEFORGE_ID)) {
+    return withMeta(unsupportedCombination(source, edition, JAVA_CURSEFORGE_ID), errors, available, {
+      warning: 'CurseForge Java is disabled. Enable the CurseForge Java Catalog plugin to search Java projects.',
+    });
+  }
+  if ((provider || (source && source !== 'all')) && !matched.length) {
+    return withMeta(unsupportedCombination(source, edition, provider), errors, available);
+  }
+  if (!matched.length) {
+    return withMeta({
+      results: [],
+      total: 0,
+      page,
+      warning: edition === 'java'
+        ? 'No Java catalog sources are enabled. Enable the CurseForge Java Catalog plugin to search Java projects.'
+        : 'No catalog sources match the selected filters.',
+      emptyReason: 'no-providers',
+    }, errors, available);
+  }
 
-  const wantCurseforge = source === 'all' || source === 'curseforge';
-  const wantGit = source === 'all' || source === 'git';
-  const wantFile = source === 'all' || source === 'file';
+  const locals = matched.filter((entry) => LOCAL_PROVIDER_IDS.has(entry.id));
+  const remotes = matched.filter((entry) => !LOCAL_PROVIDER_IDS.has(entry.id));
+
+  if (matched.length === 1 && !LOCAL_PROVIDER_IDS.has(matched[0].id)) {
+    const category = categoryForProvider(matched[0], options.category);
+    if (category === '__skip__') {
+      return withMeta(unsupportedCombination(source, edition, matched[0].id), errors, available);
+    }
+    const result = await searchProvider(matched[0], query, { ...options, category }, errors, true);
+    return withMeta({ results: result.results, total: result.total, page }, errors, available);
+  }
+
   const local = [];
-
-  if (wantGit && available.git) {
-    local.push(...await collectLocal('git', () => gitCatalog.searchMods(query, {
+  for (const entry of locals) {
+    const category = categoryForProvider(entry, options.category);
+    if (category === '__skip__') continue;
+    const result = await searchProvider(entry, query, {
       ...options,
+      category,
       page: 1,
       pageSize: LOCAL_FETCH_SIZE,
-    }), source, errors));
-  }
-  if (wantFile && available.file) {
-    local.push(...await collectLocal('file', () => fileCatalog.searchMods(query, {
-      ...options,
-      page: 1,
-      pageSize: LOCAL_FETCH_SIZE,
-    }), source, errors));
+    }, errors, source === entry.id);
+    local.push(...result.results);
   }
 
-  if (source === 'git' || source === 'file') {
+  if (!remotes.length) {
     const start = Math.max(0, (page - 1) * pageSize);
     return withMeta({
       results: local.slice(start, start + pageSize),
@@ -84,69 +219,100 @@ async function searchMods(query = '', options = {}) {
     }, errors, available);
   }
 
-  if (source === 'curseforge') {
-    try {
-      curseforgeResult = await curseforge.searchMods(query, options);
-    } catch (err) {
-      errors.push({ source: 'curseforge', error: err.message });
-      throw err;
-    }
-    return withMeta(markSource(curseforgeResult, 'curseforge'), errors, available);
-  }
-
   const start = Math.max(0, (page - 1) * pageSize);
   const localSlice = local.slice(start, start + pageSize);
-  const remaining = pageSize - localSlice.length;
-  const cfOffset = Math.max(0, start - local.length);
+  let remaining = pageSize - localSlice.length;
+  let remoteOffset = Math.max(0, start - local.length);
+  const remoteResults = [];
+  let remoteTotal = 0;
 
-  if (wantCurseforge) {
-    try {
-      const cfPageSize = remaining > 0 ? remaining : 1;
-      const cfOffsetActual = remaining > 0 ? cfOffset : 0;
-      curseforgeResult = await curseforge.searchMods(query, {
-        ...options,
-        offset: cfOffsetActual,
-        pageSize: cfPageSize,
-      });
-      if (remaining === 0) {
-        curseforgeResult = { ...curseforgeResult, results: [] };
-      }
-    } catch (err) {
-      errors.push({ source: 'curseforge', error: err.message });
+  for (const entry of remotes) {
+    const category = categoryForProvider(entry, options.category);
+    if (category === '__skip__') continue;
+    const slot = remotes.length > 1 && edition === 'all' && remaining > 0
+      ? Math.max(1, Math.ceil(remaining / (remotes.length)))
+      : remaining;
+    const result = await searchProvider(entry, query, {
+      ...options,
+      category,
+      offset: remaining > 0 ? remoteOffset : 0,
+      pageSize: remaining > 0 ? (remotes.length > 1 && edition === 'all' ? slot : remaining) : 1,
+    }, errors, source !== 'all' && matched.length === 1);
+    remoteTotal += result.total || 0;
+    if (remaining > 0) {
+      const take = result.results.slice(0, remaining);
+      remoteResults.push(...take);
+      remaining -= take.length;
     }
   }
 
-  const cfResults = (curseforgeResult.results || []).map((item) => ({ ...item, source: item.source || 'curseforge' }));
-  const anyLocal = available.git || available.file;
-
   let warning;
-  if (!anyLocal && errors.some((item) => item.source === 'curseforge')) {
+  const anyLocal = available.git || available.file;
+  const cfFailed = errors.some((item) => item.providerId === BEDROCK_CURSEFORGE_ID || item.source === LEGACY_CURSEFORGE_SOURCE);
+  const javaFailed = errors.some((item) => item.providerId === JAVA_CURSEFORGE_ID);
+  if (!anyLocal && cfFailed && !javaFailed) {
     warning = 'CurseForge is unavailable. Open Catalog Settings to add a Git repository, file catalog, or CurseForge API key.';
-  } else if (!available.curseforge && !anyLocal && (curseforgeResult.results || []).length === 0 && local.length === 0) {
+  } else if (javaFailed) {
+    warning = errors.find((item) => item.providerId === JAVA_CURSEFORGE_ID)?.error;
+  } else if (!available.curseforge && !anyLocal && !remoteResults.length && !local.length) {
     warning = 'No catalog sources are configured. Open Catalog Settings to add a Git repository, file catalog, or CurseForge API key.';
   }
 
   return withMeta({
-    results: [...localSlice, ...cfResults],
-    total: local.length + (curseforgeResult.total || 0),
+    results: [...localSlice, ...remoteResults],
+    total: local.length + remoteTotal,
     page,
   }, errors, available, warning);
 }
 
-async function getCategories() {
-  const categories = await curseforge.getCategories();
-  const seen = new Set(categories.map((item) => item.id));
-  for (const extra of [...gitCatalog.getDiscoveredCategories(), ...fileCatalog.getDiscoveredCategories()]) {
-    if (!seen.has(extra.id)) {
-      categories.push(extra);
-      seen.add(extra.id);
+async function getCategories(options = {}) {
+  const edition = normalizeEdition(options.edition);
+  const matched = matchingEntries({
+    source: options.source || 'all',
+    provider: options.provider,
+    edition,
+  });
+  const categories = [];
+  const seen = new Set();
+  for (const entry of matched) {
+    try {
+      const items = await entry.provider.getCategories(options);
+      for (const item of items || []) {
+        const id = String(item.id);
+        if (seen.has(id)) continue;
+        seen.add(id);
+        categories.push(item);
+      }
+    } catch {
+      /* skip a failed provider's categories */
     }
   }
   return categories;
 }
 
+function resolveDownloadEntry(body = {}) {
+  const provider = String(body.provider || '').trim();
+  const source = String(body.source || LEGACY_CURSEFORGE_SOURCE).trim();
+  const edition = normalizeEdition(body.edition);
+  if (provider) {
+    return catalogProviderRegistry.requireProvider(provider);
+  }
+  if (source === JAVA_CURSEFORGE_ID) {
+    return catalogProviderRegistry.requireProvider(JAVA_CURSEFORGE_ID);
+  }
+  const matched = matchingEntries({ source, edition });
+  if (matched.length === 1) return matched[0];
+  if (source === LEGACY_CURSEFORGE_SOURCE || source === 'curseforge') {
+    return catalogProviderRegistry.requireProvider(BEDROCK_CURSEFORGE_ID);
+  }
+  const byId = catalogProviderRegistry.get(source);
+  if (byId) return byId;
+  throw Object.assign(new Error('Catalog source is not available'), { status: 400 });
+}
+
 async function downloadMod(slug, body = {}) {
-  const source = body.source || 'curseforge';
+  ensureProviders();
+  const entry = resolveDownloadEntry(body);
   const selectedFiles = Array.isArray(body.files) ? body.files.map(String).filter(Boolean) : [];
   let files = [];
   try {
@@ -155,32 +321,47 @@ async function downloadMod(slug, body = {}) {
     files = [];
   }
   const mode = settingsStore.getMultiFileMode();
-  if (mode === 'manual' && files.length > 1 && !selectedFiles.length) {
-    return { needsSelection: true, files };
+  const javaCatalog = entry.id === JAVA_CURSEFORGE_ID;
+  const mixedLoaders = new Set(files.map((file) => file.loader || 'unknown')).size > 1;
+  const unknownCompat = files.some((file) => !file.loader || file.loader === 'unknown');
+  if (!selectedFiles.length && files.length > 1 && (mode === 'manual' || javaCatalog && (mixedLoaders || unknownCompat))) {
+    return {
+      needsSelection: true,
+      files,
+      warning: javaCatalog
+        ? 'Choose a file that matches your Minecraft version and loader. The newest file is not always compatible.'
+        : undefined,
+    };
   }
 
-  if (source === 'git') {
-    return gitCatalog.downloadMod(slug, body.serverId, selectedFiles);
-  }
-  if (source === 'file') {
-    return fileCatalog.downloadMod(slug, body.serverId, body.fileKind, selectedFiles);
-  }
-  return curseforge.downloadMod(
+  const projectId = body.curseforgeId || slug;
+  const downloaded = await entry.provider.download(projectId, selectedFiles, {
     slug,
-    body.projectClass,
-    body.serverId,
-    { modId: body.curseforgeId, fileId: body.fileId },
-    selectedFiles
-  );
+    projectClass: body.projectClass,
+    curseforgeId: body.curseforgeId,
+    fileId: body.fileId,
+    fileKind: body.fileKind,
+    serverId: body.serverId,
+  });
+  if (downloaded?.needsSelection) return downloaded;
+  if (downloaded?.plan) {
+    return catalogLibrary.importDownloadPlan(downloaded, {
+      allowHosts: entry.downloadHosts || entry.provider.getMetadata()?.downloadHosts || [],
+      providerId: entry.id,
+    });
+  }
+  return downloaded;
 }
 
 async function listDownloadFiles(slug, body = {}) {
-  const source = body.source || 'curseforge';
-  if (source === 'git') return gitCatalog.listDownloadFiles(slug);
-  if (source === 'file') return fileCatalog.listDownloadFiles(slug, body.fileKind);
-  const modId = body.curseforgeId || await curseforge.findModIdBySlug(slug, body.projectClass);
-  if (!modId) return [];
-  return curseforge.listDownloadableFiles(modId);
+  ensureProviders();
+  const entry = resolveDownloadEntry(body);
+  return entry.provider.listDownloadFiles(body.curseforgeId || slug, {
+    slug,
+    projectClass: body.projectClass,
+    curseforgeId: body.curseforgeId,
+    fileKind: body.fileKind,
+  });
 }
 
 function setMultiFileMode(mode) {
@@ -189,13 +370,17 @@ function setMultiFileMode(mode) {
 }
 
 async function getDetails(slug, query = {}) {
-  if (query.source === 'git') {
-    return gitCatalog.getMod(slug) || null;
-  }
-  if (query.source === 'file') {
-    return fileCatalog.getMod(slug, query.fileKind) || null;
-  }
-  return curseforge.getModDetails(slug, query.projectClass);
+  ensureProviders();
+  const entry = resolveDownloadEntry(query);
+  return entry.provider.getDetails(query.curseforgeId || slug, {
+    slug,
+    projectClass: query.projectClass,
+    fileKind: query.fileKind,
+  });
+}
+
+function listProviders() {
+  return publicSources();
 }
 
 function getSettings() {
@@ -333,23 +518,15 @@ async function testFileConnection(body = {}) {
   });
 }
 
-function markSource(result, source) {
-  return {
-    ...result,
-    results: (result.results || []).map((item) => ({ ...item, source: item.source || source })),
-  };
-}
-
 function withMeta(result, errors, available, warning) {
+  const { sources, providers } = publicSources();
+  const warningText = warning && typeof warning === 'object' ? warning.warning : warning;
   return {
     ...result,
-    sources: {
-      curseforge: { available: available.curseforge },
-      git: { available: available.git },
-      file: { available: available.file },
-    },
+    sources,
+    providers,
     errors,
-    warning,
+    warning: warningText || result.warning,
   };
 }
 
@@ -357,6 +534,7 @@ module.exports = {
   searchMods,
   getCategories,
   downloadMod,
+  listDownloadFiles,
   getDetails,
   getSettings,
   saveSettings,
@@ -364,4 +542,6 @@ module.exports = {
   testGitConnection,
   testFileConnection,
   sourceStatus,
+  listProviders,
+  ensureProviders,
 };

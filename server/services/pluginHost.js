@@ -336,6 +336,9 @@ function createProviderServices(plugin) {
     java: {
       ensureJava: (req) => javaRuntime.ensureJava(req),
     },
+    catalogHttp: (plugin.capabilities || []).includes('provider:catalog-source')
+      ? require('./catalogHttp').forPlugin()
+      : undefined,
     audit: pluginAudit,
     logger,
   };
@@ -366,6 +369,7 @@ function loadBackend(plugin) {
     }
     const javaLoaderRegistry = require('./javaLoaderRegistry');
     const gatewayRegistry = require('./gatewayRegistry');
+    const catalogProviderRegistry = require('./catalogProviderRegistry');
     const services = plugin.source === 'bundled' ? createProviderServices(plugin) : { dataDir, logger };
     register({
       id: plugin.id,
@@ -377,6 +381,9 @@ function loadBackend(plugin) {
       services,
       registerJavaLoader: (provider) => javaLoaderRegistry.register(plugin, provider),
       registerGateway: (provider) => gatewayRegistry.register(plugin, provider),
+      registerCatalogSource: plugin.source === 'bundled'
+        ? (provider) => catalogProviderRegistry.register(plugin, provider)
+        : undefined,
     });
     plugin.router = router;
     backendModules.push(resolved);
@@ -454,6 +461,7 @@ function unloadPlugins() {
   loaded = [];
   try { require('./javaLoaderRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./gatewayRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
+  try { require('./catalogProviderRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
 }
 
 function resetForTests() {

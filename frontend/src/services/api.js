@@ -97,9 +97,12 @@ export const modApi = {
   }),
   
   catalogSearch: (params) => api.get('/mods/catalog/search', { params, timeout: 90000 }),
-  catalogCategories: () => api.get('/mods/catalog/categories'),
+  catalogProviders: () => api.get('/mods/catalog/providers'),
+  catalogCategories: (params) => api.get('/mods/catalog/categories', { params }),
   catalogDownload: (mod, serverId, files) => api.post(`/mods/catalog/download/${encodeURIComponent(mod.slug)}`, {
     source: mod.source || 'curseforge',
+    provider: mod.providerId,
+    edition: mod.edition,
     projectClass: mod.projectClass,
     curseforgeId: mod.curseforgeId,
     fileId: mod.fileId,

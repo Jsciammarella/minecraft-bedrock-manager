@@ -19,10 +19,12 @@ function ModCatalog() {
   const [warning, setWarning] = useState('');
   const [success, setSuccess] = useState('');
   const [sources, setSources] = useState({ curseforge: { available: false }, git: { available: false }, file: { available: false } });
+  const [providers, setProviders] = useState([]);
 
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
   const [source, setSource] = useState('all');
+  const [edition, setEdition] = useState('all');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [sortBy, setSortBy] = useState('relevancy');
@@ -36,15 +38,22 @@ function ModCatalog() {
   const wasSyncing = useRef(false);
 
   useEffect(() => {
+    loadProviders();
     loadCategories();
     loadMultiFileMode();
     searchMods();
   }, []);
 
   useEffect(() => {
+    if (source === 'curseforge-java' && !providers.some((item) => item.id === 'curseforge-java')) {
+      setSource('all');
+    }
+  }, [providers, source]);
+
+  useEffect(() => {
     if (wasSyncing.current && !status.running) {
       loadCategories();
-      searchMods(page, source);
+      searchMods(page, source, edition);
       if (status.error) {
         setError(status.error);
       } else if (status.lastSync) {
@@ -80,20 +89,41 @@ function ModCatalog() {
     }
   };
 
-  const loadCategories = async () => {
+  const loadProviders = async () => {
     try {
-      const res = await modApi.catalogCategories();
+      const res = await modApi.catalogProviders();
+      setProviders(res.data?.providers || []);
+      if (res.data?.sources) setSources(res.data.sources);
+    } catch {
+      /* keep defaults until catalog search fills them */
+    }
+  };
+
+  const loadCategories = async (requestedSource = source, requestedEdition = edition) => {
+    try {
+      const res = await modApi.catalogCategories({
+        source: requestedSource,
+        edition: requestedEdition,
+        provider: requestedSource === 'all' || requestedSource === 'curseforge'
+          ? (requestedSource === 'curseforge' ? 'curseforge-bedrock' : '')
+          : requestedSource,
+      });
       setCategories(res.data);
     } catch (err) {
       console.error('Failed to load categories:', err);
     }
   };
 
-  const searchMods = async (requestedPage = page, requestedSource = source) => {
+  const searchMods = async (requestedPage = page, requestedSource = source, requestedEdition = edition) => {
     setSearching(true);
     setError('');
     setWarning('');
     try {
+      const provider = requestedSource === 'all'
+        ? ''
+        : requestedSource === 'curseforge'
+          ? 'curseforge-bedrock'
+          : requestedSource;
       const res = await modApi.catalogSearch({
         q: search,
         category,
@@ -101,12 +131,15 @@ function ModCatalog() {
         pageSize: CATALOG_PAGE_SIZE,
         sortBy,
         source: requestedSource,
+        provider,
+        edition: requestedEdition,
       });
       setMods(res.data.results || []);
       setTotal(Number(res.data.total) || 0);
       setSources(res.data.sources || sources);
+      if (res.data.providers) setProviders(res.data.providers);
       if (res.data.warning) setWarning(res.data.warning);
-      const sourceErrors = (res.data.errors || []).filter(item => item.source !== 'curseforge' || requestedSource === 'curseforge');
+      const sourceErrors = (res.data.errors || []).filter(item => item.source !== 'curseforge' || requestedSource === 'curseforge' || requestedSource === 'curseforge-java');
       if (requestedSource !== 'all' && sourceErrors.length) {
         setError(sourceErrors.map(item => item.error).join(' '));
       } else if (requestedSource === 'all' && (res.data.results || []).length === 0 && (res.data.errors || []).length) {
@@ -124,7 +157,8 @@ function ModCatalog() {
   const handleSearch = (e) => {
     e.preventDefault();
     setPage(1);
-    searchMods(1, source);
+    loadCategories(source, edition);
+    searchMods(1, source, edition);
   };
 
   const handleRefresh = async () => {
@@ -153,7 +187,7 @@ function ModCatalog() {
       const res = await modApi.catalogDownload(mod, undefined, files);
       if (res.data?.needsSelection) {
         const choices = res.data.files || [];
-        setFilePicker({ mod, files: choices });
+        setFilePicker({ mod, files: choices, warning: res.data.warning });
         setSelectedFiles(choices.map((file) => file.id));
         setDownloadModal(null);
         return;
@@ -182,11 +216,15 @@ function ModCatalog() {
       texture_pack: 'badge-warning',
       world: 'badge-success',
       skin: 'badge-danger',
+      mod: 'badge-info',
     };
     return <span className={`badge ${colors[type] || 'badge-info'}`}>{(type || 'addon').replace('_', ' ')}</span>;
   };
 
-  const getSourceBadge = (modSource, fileKind) => {
+  const getSourceBadge = (modSource, fileKind, mod = {}) => {
+    if (mod.providerId === 'curseforge-java' || (mod.edition === 'java' && modSource === 'curseforge')) {
+      return <span className="badge badge-info">CurseForge Java</span>;
+    }
     if (modSource === 'git') {
       return <span className="badge badge-success">Git</span>;
     }
@@ -194,13 +232,13 @@ function ModCatalog() {
       const label = fileKind === 'smb' ? 'SMB' : fileKind === 'nfs' ? 'NFS' : 'Local';
       return <span className="badge badge-warning">{label}</span>;
     }
-    return <span className="badge badge-info">CurseForge</span>;
+    return <span className="badge badge-info">CurseForge Bedrock</span>;
   };
 
   const goToPage = (nextPage) => {
     const safePage = Math.max(1, nextPage);
     setPage(safePage);
-    searchMods(safePage, source);
+    searchMods(safePage, source, edition);
   };
 
   const totalPages = Math.max(1, Math.ceil((total || 0) / CATALOG_PAGE_SIZE));
@@ -211,9 +249,11 @@ function ModCatalog() {
     ? 'Searching Git catalog...'
     : source === 'file'
       ? 'Searching file catalog...'
-      : source === 'curseforge'
-        ? 'Searching CurseForge...'
-        : 'Searching catalog...';
+      : source === 'curseforge-java'
+        ? 'Searching CurseForge Java...'
+        : source === 'curseforge'
+          ? 'Searching CurseForge Bedrock...'
+          : 'Searching catalog...';
 
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto">
@@ -286,7 +326,7 @@ function ModCatalog() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="input pl-10"
-                placeholder="Search for addons, texture packs, maps..."
+                placeholder="Search for addons, mods, texture packs, maps..."
               />
             </div>
             <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 items-center mt-3">
@@ -307,13 +347,22 @@ function ModCatalog() {
           <div className="flex flex-wrap items-center gap-3">
             <select
               value={source}
-              onChange={(e) => setSource(e.target.value)}
-              className="input w-40"
+              onChange={(e) => {
+                const next = e.target.value;
+                setSource(next);
+                setPage(1);
+                setCategory('');
+                loadCategories(next, edition);
+                searchMods(1, next, edition);
+              }}
+              className="input w-44"
             >
               <option value="all">All Sources</option>
-              <option value="curseforge">CurseForge</option>
-              <option value="git">Git Repository</option>
-              <option value="file">File Catalog</option>
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id === 'curseforge-bedrock' ? 'curseforge' : provider.id}>
+                  {provider.name}
+                </option>
+              ))}
             </select>
             <select
               value={category}
@@ -341,6 +390,26 @@ function ModCatalog() {
             </button>
           </div>
         </div>
+        <div className="flex flex-wrap items-center gap-3 mt-4">
+          <label className="text-sm font-medium text-white" htmlFor="catalog-edition">Edition</label>
+          <select
+            id="catalog-edition"
+            value={edition}
+            onChange={(e) => {
+              const next = e.target.value;
+              setEdition(next);
+              setPage(1);
+              setCategory('');
+              loadCategories(source, next);
+              searchMods(1, source, next);
+            }}
+            className="input w-40"
+          >
+            <option value="all">All</option>
+            <option value="bedrock">Bedrock</option>
+            <option value="java">Java</option>
+          </select>
+        </div>
       </form>
 
       {searching ? (
@@ -355,7 +424,7 @@ function ModCatalog() {
           <Package className="w-16 h-16 text-mc-textMuted mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">No mods found</h3>
           <p className="text-mc-textMuted mb-6">
-            {sources.git?.available || sources.curseforge?.available || sources.file?.available
+            {sources.git?.available || sources.curseforge?.available || sources.file?.available || sources['curseforge-java']
               ? 'Try adjusting your search or filters'
               : 'Configure a Git repository or CurseForge API key to populate the catalog'}
           </p>
@@ -381,7 +450,7 @@ function ModCatalog() {
                 onOpen={() => setExpandedMod(mod)}
                 onDownload={() => setDownloadModal(mod)}
                 getTypeBadge={getTypeBadge}
-                getSourceBadge={getSourceBadge}
+                getSourceBadge={(modSource, fileKind) => getSourceBadge(modSource, fileKind, mod)}
               />
             ))}
           </div>
@@ -408,7 +477,7 @@ function ModCatalog() {
             onClose={() => setExpandedMod(null)}
             onDownload={() => setDownloadModal(expandedMod)}
             getTypeBadge={getTypeBadge}
-            getSourceBadge={getSourceBadge}
+            getSourceBadge={(modSource, fileKind) => getSourceBadge(modSource, fileKind, expandedMod)}
           />
         </div>
       )}
@@ -423,7 +492,9 @@ function ModCatalog() {
                 ? ' from the Git catalog'
                 : downloadModal.source === 'file'
                   ? ' from the file catalog'
-                  : ' from CurseForge'}?
+                  : downloadModal.providerId === 'curseforge-java' || downloadModal.edition === 'java'
+                    ? ' from CurseForge Java'
+                    : ' from CurseForge Bedrock'}?
             </p>
             <div className="flex items-center gap-3">
               <button
@@ -460,12 +531,13 @@ function ModCatalog() {
             <h3 className="text-lg font-semibold text-white mb-2">Choose files to download</h3>
             <p className="text-sm text-mc-textMuted mb-3">
               <strong className="text-white">{filePicker.mod.name}</strong> includes more than one file.
-              Select at least one.
+              Select at least one. The newest file is not always compatible.
             </p>
             <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
               <p className="text-xs text-amber-300">
-                Multiple files of the same type may cause unexpected behavior, the mod to malfunction, or the world not to start.
+                {filePicker.warning
+                  || 'Multiple files of the same type may cause unexpected behavior, the mod to malfunction, or the world not to start.'}
               </p>
             </div>
             <div className="space-y-2 mb-4">
@@ -483,9 +555,21 @@ function ModCatalog() {
                   <span className="min-w-0">
                     <span className="block text-sm text-white break-all">{file.name}</span>
                     <span className="block text-xs text-mc-textMuted">
+                      {file.displayName && file.displayName !== file.name ? `${file.displayName} • ` : ''}
                       {(file.type || 'file').replace('_', ' ')}
                       {file.extension ? ` • ${file.extension}` : ''}
+                      {(file.minecraftVersions || []).length ? ` • MC ${(file.minecraftVersions || []).join(', ')}` : ''}
+                      {file.loader ? ` • ${file.loader === 'unknown' ? 'loader unknown' : file.loader}` : ''}
+                      {file.fabric ? ' • Fabric' : ''}
+                      {file.neoforge ? ' • NeoForge' : ''}
+                      {file.environment && file.environment !== 'unknown' ? ` • ${file.environment}` : ''}
+                      {file.releaseType ? ` • ${file.releaseType}` : ''}
+                      {file.date ? ` • ${new Date(file.date).toLocaleDateString()}` : ''}
+                      {file.size ? ` • ${formatFileSize(file.size)}` : ''}
                     </span>
+                    {file.warning && (
+                      <span className="block text-xs text-amber-300 mt-1">{file.warning}</span>
+                    )}
                   </span>
                 </label>
               ))}
@@ -527,6 +611,13 @@ function ModCatalog() {
 }
 
 export default ModCatalog;
+
+function formatFileSize(bytes) {
+  const size = Number(bytes) || 0;
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function visiblePageNumbers(current, totalPages, windowSize = 9) {
   if (totalPages <= 1) return [];
@@ -635,6 +726,10 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
       <ModTileTags>
         {getTypeBadge(mod.type)}
         {getSourceBadge(mod.source, mod.fileKind)}
+        {mod.edition === 'java' && <span className="badge badge-warning">Java</span>}
+        {mod.loader && mod.loader !== 'unknown' && mod.edition === 'java' && (
+          <span className="badge badge-info">{mod.loader}</span>
+        )}
       </ModTileTags>
 
       <h3

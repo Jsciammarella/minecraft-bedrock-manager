@@ -132,18 +132,19 @@ async function downloadToFile({
     fs.writeFileSync(tmp, buffer);
     fs.renameSync(tmp, dest);
     const sha256Actual = crypto.createHash('sha256').update(buffer).digest('hex');
+    const publicUrl = `${parsed.origin}${parsed.pathname}`;
     pluginAudit.record('download.complete', {
       targetType: 'file',
       targetId: path.basename(dest),
-      detail: { url: parsed.toString(), bytes: buffer.length, sha256: sha256Actual, project, version },
+      detail: { url: publicUrl, bytes: buffer.length, sha256: sha256Actual, project, version },
     });
-    logger.info(`Downloaded ${parsed.toString()} (${buffer.length} bytes)`);
+    logger.info(`Downloaded ${publicUrl} (${buffer.length} bytes)`);
     return { path: dest, bytes: buffer.length, sha256: sha256Actual };
   } catch (err) {
     try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
     pluginAudit.record('download.failed', {
       targetType: 'file',
-      detail: { url: parsed.toString(), error: err.message, project },
+      detail: { url: `${parsed.origin}${parsed.pathname}`, error: err.message, project },
     });
     throw err;
   }

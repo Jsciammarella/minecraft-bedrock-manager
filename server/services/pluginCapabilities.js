@@ -10,6 +10,7 @@ const CATALOG_CAPABILITIES = new Set([
 const PRIVILEGED_CAPABILITIES = new Set([
   'provider:java-loader',
   'provider:gateway',
+  'provider:catalog-source',
   'download:official-sources',
   'filesystem:server-java',
   'filesystem:server-mods',

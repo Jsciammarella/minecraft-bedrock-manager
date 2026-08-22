@@ -15,8 +15,10 @@ Core manager
 │   ├── Vanilla (`java-loader-vanilla`)
 │   ├── Fabric (`java-loader-fabric`)
 │   └── NeoForge (`java-loader-neoforge`)
-└── Gateway provider registry
-    └── Geyser Standalone (`gateway-geyser`)
+├── Gateway provider registry
+│   └── Geyser Standalone (`gateway-geyser`)
+└── Catalog provider registry
+    └── CurseForge Java (`catalog-curseforge-java`)
 ```
 
 Geyser is a gateway, not a Java loader. It accepts Bedrock UDP and translates

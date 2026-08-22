@@ -5,8 +5,8 @@ core screens look or behave: Dashboard, server details, New Server, Mod Library,
 Mod Catalog, Players, BedrockConnect, Geyser, or Ports.
 
 Trust is derived from **where the plugin is installed**, not from a field in
-`plugin.json`. Uploaded plugins can never become Java loader or gateway providers
-by declaring privileged capabilities.
+`plugin.json`. Uploaded plugins can never become Java loader, gateway, or
+catalog-source providers by declaring privileged capabilities.
 
 The sidebar scrolls only when core items plus plugin items no longer fit. If
 they fit, there is no extra scrollbar.
@@ -15,20 +15,21 @@ they fit, there is no extra scrollbar.
 
 | Source | Trust | What it can do |
 | --- | --- | --- |
-| `server/bundled-plugins/` | `system-provider` | Register Java loaders and gateways; use core download, filesystem, Java, and port services |
+| `server/bundled-plugins/` | `system-provider` | Register Java loaders, gateways, and catalog sources; use core download, filesystem, Java, and port services |
 | `data/plugins/` (upload) | `ui` (default) | Sandboxed pages only. Optional `backend.js` stays **disabled** until an administrator enables it |
 | Extra/example dirs | `external` | Same UI model as uploads; example backends load so developers can test |
 
 Privileged capabilities (`provider:java-loader`, `provider:gateway`,
-`download:official-sources`, `runtime:java`, `filesystem:server-java`,
-`ports:udp`, …) are rejected for anything outside `server/bundled-plugins/`.
-Unknown capabilities fail plugin load.
+`provider:catalog-source`, `download:official-sources`, `runtime:java`,
+`filesystem:server-java`, `ports:udp`, …) are rejected for anything outside
+`server/bundled-plugins/`. Unknown capabilities fail plugin load.
 
 Uploaded `backend.js` still runs in the manager Node process if enabled. Treat
 that as trusted code. Isolated workers are a follow-up.
 
-First-party Java loaders and Geyser live under `server/bundled-plugins/` and are
-documented in [`java-providers.md`](./java-providers.md).
+First-party Java loaders, Geyser, and the CurseForge Java catalog live under
+`server/bundled-plugins/` and are documented in [`java-providers.md`](./java-providers.md)
+and [`catalog-providers.md`](./catalog-providers.md).
 
 ## Install
 
@@ -116,9 +117,11 @@ backend. A plugin cannot call another plugin’s API or load another plugin’s 
 
 ## Backend (optional)
 
-`backend.js` may export `register({ id, router, dataDir, logger })`. The router
+`backend.js` may export `register({ id, router, dataDir, logger, services,
+registerJavaLoader, registerGateway, registerCatalogSource })`. The router
 is mounted only at `/api/plugins/<id>/`. It cannot replace `/api/servers` or any
-other core route.
+other core route. `registerCatalogSource`, `registerJavaLoader`, and
+`registerGateway` are only provided to bundled plugins.
 
 ```js
 module.exports = {
@@ -133,5 +136,11 @@ module.exports = {
 Private files belong in `data/plugin-data/<id>/` (`dataDir`). Do not write into
 core application folders.
 
-First-party edition features can ship later as folders under
-`server/bundled-plugins/` using the same manifest.
+Catalog-source providers reuse core credential brokers. They never receive raw
+API keys. Enabling or disabling a bundled catalog plugin registers or unregisters
+its source without deleting Mod Library files. Uploaded Java mods are executable
+code; loader compatibility is checked again when installing to a Fabric or
+NeoForge server.
+
+First-party edition features ship as folders under `server/bundled-plugins/`
+using the same manifest.

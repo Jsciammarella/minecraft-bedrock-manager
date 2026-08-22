@@ -47,38 +47,57 @@ function CreateServer() {
         if (providers.length) setJavaProviders(providers);
       })
       .catch(() => {});
-    serverApi.javaVersions()
-      .then((res) => {
-        const ids = res.data?.versions || [];
-        setJavaVersions(['latest', ...ids.filter((id) => id && id !== 'latest')]);
-      })
-      .catch(() => setJavaVersions(['latest']));
   }, []);
 
   useEffect(() => {
     if (!java || remote) return undefined;
     const provider = javaProviders.find((item) => item.id === loaderProvider);
     setLoaderNotice((provider?.notices || []).join(' '));
+    let cancelled = false;
+    serverApi.javaProviderVersions(loaderProvider)
+      .then((res) => {
+        if (cancelled) return;
+        const ids = (res.data?.versions || []).filter((id) => id && id !== 'latest');
+        const options = ['latest', ...ids];
+        setJavaVersions(options);
+        setFormData((prev) => (
+          prev.version === 'latest' || ids.includes(prev.version)
+            ? prev
+            : { ...prev, version: 'latest' }
+        ));
+      })
+      .catch(() => {
+        if (!cancelled) setJavaVersions(['latest']);
+      });
+    return () => { cancelled = true; };
+  }, [java, remote, loaderProvider, javaProviders]);
+
+  useEffect(() => {
+    if (!java || remote) return undefined;
     if (loaderProvider === 'vanilla') {
       setLoaderVersions(['vanilla']);
       setLoaderVersion('vanilla');
       return undefined;
     }
-    serverApi.javaProviderVersions(loaderProvider)
+    let cancelled = false;
+    const concreteMc = formData.version !== 'latest' && javaVersions.includes(formData.version)
+      ? formData.version
+      : undefined;
+    serverApi.javaLoaderVersions(loaderProvider, concreteMc)
       .then((res) => {
-        const ids = res.data?.versions || [];
-        if (ids.length) setJavaVersions(['latest', ...ids]);
+        if (cancelled) return;
+        const ids = (res.data?.versions || []).filter((id) => id && id !== 'latest-compatible' && id !== 'vanilla');
+        const options = ['latest-compatible', ...ids];
+        setLoaderVersions(options);
+        setLoaderVersion((current) => (options.includes(current) ? current : 'latest-compatible'));
       })
-      .catch(() => {});
-    const mc = formData.version === 'latest' ? undefined : formData.version;
-    serverApi.javaLoaderVersions(loaderProvider, mc)
-      .then((res) => {
-        const ids = res.data?.versions || [];
-        setLoaderVersions(['latest-compatible', ...ids]);
-      })
-      .catch(() => setLoaderVersions(['latest-compatible']));
-    return undefined;
-  }, [java, remote, loaderProvider, formData.version, javaProviders]);
+      .catch(() => {
+        if (cancelled) return;
+        setLoaderVersions(['latest-compatible']);
+        setLoaderVersion('latest-compatible');
+      });
+    return () => { cancelled = true; };
+  }, [java, remote, loaderProvider, formData.version, javaVersions]);
 
   const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
   const ipv6Available = (ports.available || []).filter((item) => item.family === 'ipv6');
@@ -141,6 +160,22 @@ function CreateServer() {
     setSuccess('');
 
     try {
+      if (java && !remote && !acceptEula) {
+        setError('You must agree to the Minecraft EULA to create a Java Edition server');
+        setLoading(false);
+        return;
+      }
+      const minecraftVersion = javaVersions.includes(formData.version) ? formData.version : 'latest';
+      const selectedLoader = loaderVersions.includes(loaderVersion)
+        ? loaderVersion
+        : (loaderProvider === 'vanilla' ? 'vanilla' : 'latest-compatible');
+      if (java && !remote) {
+        await serverApi.javaValidate(loaderProvider, {
+          minecraftVersion,
+          version: minecraftVersion,
+          loaderVersion: selectedLoader,
+        });
+      }
       const payload = remote
         ? {
             kind: 'remote',
@@ -156,15 +191,15 @@ function CreateServer() {
               kind: 'java',
               name: formData.name,
               port: parseInt(formData.port, 10),
-              version: formData.version,
+              version: minecraftVersion,
               maxPlayers: parseInt(formData.maxPlayers, 10),
               description: formData.description,
               gamemode: formData.gamemode,
               difficulty: formData.difficulty,
               acceptEula,
-              minecraftVersion: formData.version,
+              minecraftVersion,
               loaderProvider,
-              loaderVersion,
+              loaderVersion: selectedLoader,
             }
           : {
             ...formData,
@@ -172,11 +207,6 @@ function CreateServer() {
             ipv6Port: formData.ipv6Port === '' ? undefined : parseInt(formData.ipv6Port, 10),
             maxPlayers: parseInt(formData.maxPlayers, 10),
           };
-      if (java && !remote && !acceptEula) {
-        setError('You must agree to the Minecraft EULA to create a Java Edition server');
-        setLoading(false);
-        return;
-      }
       await serverApi.create(payload);
       await refresh();
       navigate('/');
@@ -448,7 +478,12 @@ function CreateServer() {
             <label className="block text-sm font-medium text-mc-text mb-2">Server software</label>
             <select
               value={loaderProvider}
-              onChange={(e) => setLoaderProvider(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setLoaderProvider(next);
+                setLoaderVersion(next === 'vanilla' ? 'vanilla' : 'latest-compatible');
+                setFormData((prev) => ({ ...prev, version: 'latest' }));
+              }}
               className="input"
             >
               {javaProviders.map((provider) => (
@@ -465,7 +500,7 @@ function CreateServer() {
           </label>
           <select
             name="version"
-            value={formData.version}
+            value={java && !javaVersions.includes(formData.version) ? 'latest' : formData.version}
             onChange={handleChange}
             className="input"
           >
@@ -489,12 +524,12 @@ function CreateServer() {
           <div>
             <label className="block text-sm font-medium text-mc-text mb-2">Loader version</label>
             <select
-              value={loaderVersion}
+              value={loaderVersions.includes(loaderVersion) ? loaderVersion : 'latest-compatible'}
               onChange={(e) => setLoaderVersion(e.target.value)}
               className="input"
             >
-              {loaderVersions.map((id) => (
-                <option key={id} value={id}>{id}</option>
+              {loaderVersions.filter((id) => id !== 'vanilla').map((id) => (
+                <option key={id} value={id}>{id === 'latest-compatible' ? 'Latest compatible' : id}</option>
               ))}
             </select>
           </div>

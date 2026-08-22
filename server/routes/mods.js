@@ -352,6 +352,8 @@ router.get('/catalog/search', async (req, res) => {
       page: parseInt(req.query.page) || 1,
       sortBy: req.query.sortBy || 'relevancy',
       source: req.query.source || 'all',
+      provider: req.query.provider || '',
+      edition: req.query.edition || 'all',
     });
     res.json(result);
   } catch (err) {
@@ -359,9 +361,21 @@ router.get('/catalog/search', async (req, res) => {
   }
 });
 
+router.get('/catalog/providers', async (req, res) => {
+  try {
+    res.json(catalog.listProviders());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/catalog/categories', async (req, res) => {
   try {
-    const categories = await catalog.getCategories();
+    const categories = await catalog.getCategories({
+      edition: req.query.edition || 'all',
+      provider: req.query.provider || '',
+      source: req.query.source || 'all',
+    });
     res.json(categories);
   } catch (err) {
     res.status(500).json({ error: err.message });

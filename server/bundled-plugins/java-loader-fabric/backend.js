@@ -17,8 +17,13 @@ function createProvider(services) {
       return (Array.isArray(data) ? data : []).filter((item) => item.stable).map((item) => item.version);
     },
     async listLoaderVersions(minecraftVersion) {
-      const mc = encodeURIComponent(minecraftVersion || '');
-      const data = await http.getJson(`${META}/v2/versions/loader/${mc}`);
+      let mc = minecraftVersion;
+      if (!mc || mc === 'latest') {
+        const games = await this.listMinecraftVersions();
+        mc = games[0];
+      }
+      if (!mc) return [];
+      const data = await http.getJson(`${META}/v2/versions/loader/${encodeURIComponent(mc)}`);
       return (Array.isArray(data) ? data : []).map((item) => item.loader?.version).filter(Boolean);
     },
     async resolveInstallation(request) {

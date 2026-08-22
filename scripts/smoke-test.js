@@ -10,6 +10,7 @@ process.env.MC_MANAGER_DB_PATH = path.join(testRoot, 'mc_manager.db');
 process.env.MC_MANAGER_USER_PLUGINS_DIR = path.join(testRoot, 'plugins');
 process.env.MC_MANAGER_PLUGIN_DATA_DIR = path.join(testRoot, 'plugin-data');
 process.env.MC_MANAGER_PLUGIN_STATE_PATH = path.join(testRoot, 'plugin-state.json');
+process.env.MC_MANAGER_MODS_DIR = path.join(testRoot, 'mods');
 const db = require('../server/db/connection');
 const serverManager = require('../server/services/serverManager');
 const curseforge = require('../server/services/curseforgeClient');
@@ -28,6 +29,7 @@ const portRanges = require('../server/services/portRanges');
 const pluginHost = require('../server/services/pluginHost');
 const pluginRoutes = require('../server/routes/plugins');
 const { runJavaProviderTests } = require('./java-provider-test');
+const { runCatalogProviderTests } = require('./catalog-provider-test');
 
 function zipStore(files) {
   const locals = [];
@@ -202,6 +204,7 @@ async function run() {
   assert(accessTable, 'server_player_access migration was not created');
   await testPluginHost();
   await runJavaProviderTests({ pluginHost, testRoot });
+  await runCatalogProviderTests({ pluginHost, testRoot });
 
   const blocker = dgram.createSocket('udp4');
   await new Promise((resolve, reject) => {

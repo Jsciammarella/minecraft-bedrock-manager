@@ -1055,6 +1055,15 @@ class ServerManager {
       throw new Error(`TCP port ${port} is already in use by another process`);
     }
 
+    if (String(process.env.ALLOW_STUB_SERVER || '') !== '1') {
+      const entry = javaLoaderRegistry.requireLoader(loaderProvider);
+      await entry.provider.resolveInstallation({
+        minecraftVersion: version,
+        loaderVersion,
+        version,
+      });
+    }
+
     const serverPath = path.join(BASE_DIR, name);
     fs.mkdirSync(serverPath, { recursive: true });
 
