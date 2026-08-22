@@ -100,7 +100,7 @@ function testUserManagement() {
   const operator = auth.createUser({
     username: 'operator',
     fullName: 'Standard User',
-    password: 'standard',
+    password: 'standard8',
     groupIds: [standardGroup.id],
   }, login.user);
   assert.equal(operator.permissions.includes('servers.create'), true);
@@ -143,7 +143,7 @@ function testUserManagement() {
   );
   auth.setPassword(operator.id, 'standard9');
   assert.throws(
-    () => auth.setPassword(operator.id, 'standard'),
+    () => auth.setPassword(operator.id, 'standard8'),
     /last 1 password/i
   );
   auth.saveSettings({
