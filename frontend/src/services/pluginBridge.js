@@ -57,7 +57,7 @@ export async function proxyPluginApi(pluginId, method, requestPath, body) {
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
   }
-  const res = await fetch(requestPath, init);
+  const res = await fetch(requestPath, { ...init, credentials: 'include' });
   const text = await res.text();
   let data = text;
   if (text) {

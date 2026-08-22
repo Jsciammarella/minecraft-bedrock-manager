@@ -21,6 +21,7 @@ const INVALID_ARCHIVE_MESSAGE = 'The archive is an invalid plugin.';
 
 const ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
 const PAGE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+const PERM_LOCAL_RE = /^[a-z][a-z0-9_-]{0,62}$/;
 
 const RESERVED_PLUGIN_IDS = new Set([
   'api',
@@ -194,6 +195,32 @@ function parseMenus(rawManifest, pluginId, pluginName, pages) {
   return menus;
 }
 
+function parsePermissions(rawPermissions, pluginId, pluginName) {
+  const source = Array.isArray(rawPermissions) ? rawPermissions : [];
+  const permissions = [];
+  const seen = new Set();
+  source.forEach((row) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return;
+    let local = String(row.key || '').trim().toLowerCase();
+    const prefix = `plugin.${pluginId}.`;
+    if (local.startsWith(prefix)) local = local.slice(prefix.length);
+    if (!local || local.includes('.')) {
+      logger.warn(`Plugin ${pluginId} skipped permission "${row.key || ''}": plugin permissions cannot override platform permissions`);
+      return;
+    }
+    if (!PERM_LOCAL_RE.test(local) || seen.has(local)) return;
+    seen.add(local);
+    permissions.push({
+      key: `${prefix}${local}`,
+      localKey: local,
+      name: String(row.name || local).trim() || local,
+      description: String(row.description || `Permission from ${pluginName}`).trim(),
+      category: 'plugin',
+    });
+  });
+  return permissions;
+}
+
 function parseManifest(raw, folderName) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, error: 'plugin.json must be an object' };
@@ -211,6 +238,7 @@ function parseManifest(raw, folderName) {
   const name = String(raw.name || folderName).trim() || folderName;
   const pages = parsePages(raw.pages, id, name);
   const menus = parseMenus(raw, id, name, pages);
+  const permissions = parsePermissions(raw.permissions, id, name);
   for (const menu of menus) {
     if (!menu.path.startsWith(`/plugins/${id}`)) {
       return { ok: false, error: 'plugin menu paths must stay under /plugins/<id>' };
@@ -238,6 +266,7 @@ function parseManifest(raw, folderName) {
       backend,
       pages,
       menus,
+      permissions,
     },
   };
 }
@@ -305,6 +334,11 @@ function loadBackend(plugin) {
       router,
       dataDir,
       logger,
+      can: (req, localKey) => {
+        const auth = require('./authService');
+        return auth.hasPermission(req.user, `plugin.${plugin.id}.${localKey}`);
+      },
+      permissionKey: (localKey) => `plugin.${plugin.id}.${localKey}`,
     });
     plugin.router = router;
     backendModules.push(resolved);
@@ -354,6 +388,7 @@ function loadPlugins(dirs = defaultPluginDirs()) {
   }
   lastDirs = dirs;
   loaded = next;
+  syncAuthCatalog();
   return getPlugins();
 }
 
@@ -559,6 +594,37 @@ function getMenuItems() {
     });
 }
 
+function getDynamicPermissions() {
+  const permissions = [];
+  for (const plugin of loaded) {
+    for (const perm of plugin.permissions || []) {
+      permissions.push({
+        key: perm.key,
+        name: perm.name,
+        description: perm.description,
+        category: 'plugin',
+      });
+    }
+    for (const menu of plugin.menus || []) {
+      permissions.push({
+        key: `menu.view.plugin.${plugin.id}.${menu.id}`,
+        name: `View ${menu.label}`,
+        description: `Show "${menu.label}" in the left-hand menu`,
+        category: 'menu',
+      });
+    }
+  }
+  return permissions;
+}
+
+function syncAuthCatalog() {
+  try {
+    require('./authService').syncDynamicPermissions();
+  } catch (err) {
+    logger.warn(`Could not sync plugin permissions: ${err.message}`);
+  }
+}
+
 function resolveUiFile(plugin, requestPath) {
   if (!plugin || !plugin.enabled) return null;
   const uiRoot = path.resolve(plugin.root, 'ui');
@@ -628,6 +694,7 @@ module.exports = {
   USER_PLUGINS_DIR,
   defaultPluginDirs,
   getMenuItems,
+  getDynamicPermissions,
   getPlugin,
   getPlugins,
   injectHtmlSdk,

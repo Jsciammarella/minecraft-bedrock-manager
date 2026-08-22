@@ -4,6 +4,8 @@ import {
   AlertCircle, Check, ExternalLink, Globe, Loader2, Plus, Save, Trash2
 } from 'lucide-react';
 import { bedrockConnectApi } from '../services/api';
+import { useAuth } from '../context/AuthContext';
+import { scrollPageTop } from '../utils/scrollPageTop';
 
 const PLATFORMS = [
   { id: 'switch', label: 'Switch' },
@@ -161,6 +163,7 @@ function DnsInstructions({ listenIp }) {
 
 function BedrockConnectPage() {
   const navigate = useNavigate();
+  const { can } = useAuth();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -219,6 +222,7 @@ function BedrockConnectPage() {
       setError(err.response?.data?.error || err.message || 'Failed to save DNS settings');
     } finally {
       setSaving(false);
+      scrollPageTop();
     }
   };
 
@@ -340,7 +344,8 @@ function BedrockConnectPage() {
             <button
               type="button"
               onClick={() => setEnabled(value => !value)}
-              className={`toggle ${enabled ? 'toggle-active' : 'toggle-inactive'}`}
+              disabled={!can('bedrock_connect.enable_dns_proxy')}
+              className={`toggle ${enabled ? 'toggle-active' : 'toggle-inactive'} ${!can('bedrock_connect.enable_dns_proxy') ? 'opacity-50 cursor-not-allowed' : ''}`}
               aria-pressed={enabled}
             >
               <span className={`toggle-thumb ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
@@ -438,9 +443,15 @@ function BedrockConnectPage() {
         </div>
 
         <div className="card">
-          <div className="flex items-center justify-between mb-1">
-            <h2 className="text-lg font-semibold text-white">DNS overrides</h2>
-            <p className="text-xs text-mc-textMuted">{overrides.length}/{maxOverrides}</p>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-1">
+            <button type="submit" className="btn btn-primary self-start" disabled={saving}>
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              {saving ? 'Saving...' : 'Save DNS settings'}
+            </button>
+            <div className="flex items-center justify-between gap-3 flex-1">
+              <h2 className="text-lg font-semibold text-white">DNS overrides</h2>
+              <p className="text-xs text-mc-textMuted">{overrides.length}/{maxOverrides}</p>
+            </div>
           </div>
           <p className="text-sm text-mc-textMuted mb-4">
             These names answer with the IPv4 you enter instead of the public address. Use this host's LAN IP to send featured-server joins to Bedrock Connect, or another local address if you want that name to hit a different resource.
@@ -511,13 +522,6 @@ function BedrockConnectPage() {
               Add
             </button>
           </div>
-        </div>
-
-        <div className="flex justify-end">
-          <button type="submit" className="btn btn-primary" disabled={saving}>
-            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-            {saving ? 'Saving...' : 'Save DNS settings'}
-          </button>
         </div>
       </form>
     </div>

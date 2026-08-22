@@ -3,6 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { serverApi, modApi, playerApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
+import { startPermissionForKind, stopPermissionForKind, useAuth } from '../context/AuthContext';
 import {
   ArrowLeft, Play, Square, RotateCcw, Terminal, Send, Users,
   Settings, ArrowUpRight, Clock, Package, ChevronDown, ChevronUp,
@@ -67,6 +68,7 @@ function ServerDetail() {
   const location = useLocation();
   const { refresh, servers } = useApi();
   const { connected, joinServer, serverOutputs, addServerOutput } = useSocket();
+  const { can } = useAuth();
   
   const [server, setServer] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -524,6 +526,18 @@ function ServerDetail() {
   const isBC = server.kind === 'bedrock_connect';
   const isRemote = server.kind === 'remote';
   const gameplayLocked = isBC || isRemote;
+  const canStart = can(startPermissionForKind(server.kind));
+  const canStop = can(stopPermissionForKind(server.kind));
+  const canUpdate = can('servers.update');
+  const canLan = can('servers.set_lan');
+  const canConsole = can('servers.console');
+  const canAddAllow = can('servers.add_allowed_players');
+  const canRemoveAllow = can('servers.remove_allowed_players');
+  const canAddBan = can('servers.add_banned_players');
+  const canRemoveBan = can('servers.remove_banned_players');
+  const canPlayerPerms = can('servers.change_player_permissions');
+  const canAddMods = can('servers.add_mods');
+  const canRemoveMods = can('servers.remove_mods');
   const isBuilding = server.status === 'creating';
   const createFailed = String(server.pending_restart_reason || '').startsWith('Create failed');
   const lan = server.stats?.lan || server.lan || {};
@@ -648,7 +662,7 @@ function ServerDetail() {
           </div>
         </div>
         <div className="page-header-actions flex items-center gap-2">
-          {!isRemote && (
+          {!isRemote && canUpdate && (
             <button
               onClick={openUpdateModal}
               className="btn btn-secondary text-sm"
@@ -658,7 +672,7 @@ function ServerDetail() {
               Update
             </button>
           )}
-          {!gameplayLocked && (
+          {!gameplayLocked && canPlayerPerms && (
             <button
               onClick={() => navigate(`/servers/${id}/users`)}
               className="btn btn-secondary text-sm"
@@ -668,6 +682,7 @@ function ServerDetail() {
               Users
             </button>
           )}
+          {(can('servers.change_general_settings') || can('servers.change_game_settings') || can('servers.change_server_options') || can('servers.change_remote_local_ports') || can('servers.change_remote_target') || canUpdate) && (
           <button
             onClick={() => navigate(`/servers/${id}/properties`)}
             className="btn btn-secondary text-sm"
@@ -675,6 +690,7 @@ function ServerDetail() {
             <Settings className="w-4 h-4" />
             Properties
           </button>
+          )}
         </div>
       </div>
 
@@ -706,7 +722,7 @@ function ServerDetail() {
             </div>
             <button
               onClick={beginLanToggle}
-              disabled={lanLocked || lanBusy}
+              disabled={lanLocked || lanBusy || !canLan}
               className={`btn text-sm flex-shrink-0 ${
                 lanLocked
                   ? 'bg-mc-surfaceLight text-mc-textMuted'
@@ -794,6 +810,7 @@ function ServerDetail() {
             <Loader2 className="w-4 h-4 animate-spin" /> Starting...
           </button>
         ) : server.status !== 'running' ? (
+          canStart ? (
           <button
             onClick={() => handleAction('start')}
             disabled={actions.start}
@@ -802,8 +819,10 @@ function ServerDetail() {
             <Play className="w-4 h-4" />
             {actions.start ? 'Starting...' : 'Start Server'}
           </button>
+          ) : null
         ) : (
           <>
+            {canStop && (
             <button
               onClick={() => handleAction('stop')}
               disabled={actions.stop}
@@ -812,6 +831,8 @@ function ServerDetail() {
               <Square className="w-4 h-4" />
               {actions.stop ? 'Stopping...' : 'Stop Server'}
             </button>
+            )}
+            {canStart && canStop && (
             <button
               onClick={() => handleAction('restart')}
               disabled={actions.restart}
@@ -820,6 +841,7 @@ function ServerDetail() {
               <RotateCcw className="w-4 h-4" />
               Restart
             </button>
+            )}
             {server.restart_scheduled_at ? (
               <button
                 onClick={handleCancelWarnedRestart}
@@ -903,11 +925,11 @@ function ServerDetail() {
                       onKeyDown={handleCommandKeyDown}
                       placeholder={gameplayLocked ? 'Commands are not available for this server' : 'Enter command...'}
                       className="terminal-input flex-1"
-                      disabled={gameplayLocked || server.status !== 'running'}
+                      disabled={gameplayLocked || server.status !== 'running' || !canConsole}
                     />
                     <button
                       onClick={() => sendCommand(command)}
-                      disabled={gameplayLocked}
+                      disabled={gameplayLocked || !canConsole}
                       className="p-2 hover:bg-mc-surfaceLight rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <Send className="w-4 h-4" />
@@ -940,13 +962,13 @@ function ServerDetail() {
                 value={allowQuery}
                 onChange={setAllowQuery}
                 options={playerAccess.filter(player => !player.is_whitelisted && !player.is_banned)}
-                disabled={gameplayLocked}
+                disabled={gameplayLocked || !canAddAllow}
                 placeholder="Type a player name..."
                 onEnter={addAllowPlayer}
               />
               <button
                 onClick={addAllowPlayer}
-                disabled={gameplayLocked || !allowQuery.trim() || accessBusy}
+                disabled={gameplayLocked || !allowQuery.trim() || accessBusy || !canAddAllow}
                 className="btn btn-primary"
               >
                 <UserPlus className="w-4 h-4" /> Add Player

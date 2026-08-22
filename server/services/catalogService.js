@@ -269,14 +269,16 @@ function saveFileSettings(files = {}, body = {}) {
 }
 
 function saveSettings(body = {}) {
-  const git = body.git || {};
-  const files = body.files || {};
+  const git = body.git && typeof body.git === 'object' ? body.git : null;
+  const files = body.files && typeof body.files === 'object' ? body.files : null;
 
-  if (typeof git.url === 'string' && git.url.trim()) {
-    gitCatalog.assertRemoteUrl(git.url.trim());
-  }
-  if (typeof git.subdir === 'string' && git.subdir.includes('..')) {
-    throw new Error('Catalog subdirectory cannot contain ".."');
+  if (git) {
+    if (typeof git.url === 'string' && git.url.trim()) {
+      gitCatalog.assertRemoteUrl(git.url.trim());
+    }
+    if (typeof git.subdir === 'string' && git.subdir.includes('..')) {
+      throw new Error('Catalog subdirectory cannot contain ".."');
+    }
   }
 
   if (body.clearCurseforgeApiKey) {
@@ -285,29 +287,33 @@ function saveSettings(body = {}) {
     settingsStore.set(settingsStore.KEYS.CURSEFORGE_API_KEY, body.curseforgeApiKey.trim());
   }
 
-  if (typeof git.enabled === 'boolean') {
-    settingsStore.set(settingsStore.KEYS.GIT_ENABLED, git.enabled ? '1' : '0');
-  }
-  if (typeof git.url === 'string') {
-    settingsStore.set(settingsStore.KEYS.GIT_URL, git.url.trim());
-  }
-  if (typeof git.branch === 'string') {
-    settingsStore.set(settingsStore.KEYS.GIT_BRANCH, git.branch.trim() || 'main');
-  }
-  if (typeof git.username === 'string') {
-    settingsStore.set(settingsStore.KEYS.GIT_USERNAME, git.username.trim());
-  }
-  if (typeof git.subdir === 'string') {
-    settingsStore.set(settingsStore.KEYS.GIT_SUBDIR, git.subdir.trim());
-  }
-  if (body.clearGitToken) {
-    settingsStore.remove(settingsStore.KEYS.GIT_TOKEN);
-  } else if (typeof git.token === 'string' && git.token.trim()) {
-    settingsStore.set(settingsStore.KEYS.GIT_TOKEN, git.token.trim());
+  if (git) {
+    if (typeof git.enabled === 'boolean') {
+      settingsStore.set(settingsStore.KEYS.GIT_ENABLED, git.enabled ? '1' : '0');
+    }
+    if (typeof git.url === 'string') {
+      settingsStore.set(settingsStore.KEYS.GIT_URL, git.url.trim());
+    }
+    if (typeof git.branch === 'string') {
+      settingsStore.set(settingsStore.KEYS.GIT_BRANCH, git.branch.trim() || 'main');
+    }
+    if (typeof git.username === 'string') {
+      settingsStore.set(settingsStore.KEYS.GIT_USERNAME, git.username.trim());
+    }
+    if (typeof git.subdir === 'string') {
+      settingsStore.set(settingsStore.KEYS.GIT_SUBDIR, git.subdir.trim());
+    }
+    if (body.clearGitToken) {
+      settingsStore.remove(settingsStore.KEYS.GIT_TOKEN);
+    } else if (typeof git.token === 'string' && git.token.trim()) {
+      settingsStore.set(settingsStore.KEYS.GIT_TOKEN, git.token.trim());
+    }
+    gitCatalog.entriesCache = null;
   }
 
-  saveFileSettings(files, body);
-  gitCatalog.entriesCache = null;
+  if (files) {
+    saveFileSettings(files, body);
+  }
   return getSettings();
 }
 

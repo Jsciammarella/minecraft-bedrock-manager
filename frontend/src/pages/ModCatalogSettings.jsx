@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { modApi } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
 import {
   ArrowLeft, Save, Loader2, Check, AlertCircle, RefreshCw, Eye, EyeOff, GitBranch, Folder, Download
@@ -8,6 +9,11 @@ import {
 
 function ModCatalogSettings() {
   const navigate = useNavigate();
+  const { can } = useAuth();
+  const canGit = can('catalog.enable_git');
+  const canFile = can('catalog.enable_file');
+  const canCurseforge = can('catalog.set_curseforge_key');
+  const canSaveCatalog = canGit || canFile || canCurseforge;
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -113,27 +119,36 @@ function ModCatalogSettings() {
     setGitTestResult(null);
     setFileTestResults({});
     try {
-      const payload = {
-        git: {
+      const payload = {};
+      if (canGit) {
+        payload.git = {
           enabled: gitEnabled,
           url: gitUrl,
           branch: gitBranch,
           username: gitUsername,
           subdir: gitSubdir,
-        },
-        files: {
+        };
+        if (clearGitToken) payload.clearGitToken = true;
+        else if (gitToken.trim()) payload.git.token = gitToken.trim();
+      }
+      if (canFile) {
+        payload.files = {
           enabled: fileEnabled,
           local: { enabled: localEnabled, path: localPath },
           smb: { enabled: smbEnabled, path: smbPath, username: smbUsername },
           nfs: { enabled: nfsEnabled, path: nfsPath },
-        },
-      };
-      if (clearCurseforgeApiKey) payload.clearCurseforgeApiKey = true;
-      else if (curseforgeApiKey.trim()) payload.curseforgeApiKey = curseforgeApiKey.trim();
-      if (clearGitToken) payload.clearGitToken = true;
-      else if (gitToken.trim()) payload.git.token = gitToken.trim();
-      if (clearSmbPassword) payload.clearSmbPassword = true;
-      else if (smbPassword.trim()) payload.files.smb.password = smbPassword.trim();
+        };
+        if (clearSmbPassword) payload.clearSmbPassword = true;
+        else if (smbPassword.trim()) payload.files.smb.password = smbPassword.trim();
+      }
+      if (canCurseforge) {
+        if (clearCurseforgeApiKey) payload.clearCurseforgeApiKey = true;
+        else if (curseforgeApiKey.trim()) payload.curseforgeApiKey = curseforgeApiKey.trim();
+      }
+      if (!payload.git && !payload.files && !payload.curseforgeApiKey && !payload.clearCurseforgeApiKey) {
+        setError('You do not have permission to change catalog settings');
+        return;
+      }
 
       const res = await modApi.saveCatalogSettings(payload);
       const data = res.data;
@@ -271,6 +286,7 @@ function ModCatalogSettings() {
       )}
 
       <form onSubmit={handleSave} className="space-y-6">
+        <fieldset disabled={!canCurseforge} className={!canCurseforge ? 'opacity-60' : undefined}>
         <Section title="CurseForge">
           <p className="text-sm text-mc-textMuted mb-4">
             Optional. A CurseForge API key makes search and downloads reliable. Without a key, the catalog still
@@ -332,7 +348,9 @@ function ModCatalogSettings() {
             </button>
           )}
         </Section>
+        </fieldset>
 
+        <fieldset disabled={!canGit} className={!canGit ? 'opacity-60' : undefined}>
         <Section title="Git Catalog">
           <p className="text-sm text-mc-textMuted mb-4">
             Optional private or public Git repository of Bedrock packs. Works with GitLab, GitHub, Gitea, and other
@@ -482,7 +500,9 @@ function ModCatalogSettings() {
           <TestResult result={gitTestResult} className="mt-3" />
           </div>
         </Section>
+        </fieldset>
 
+        <fieldset disabled={!canFile} className={!canFile ? 'opacity-60' : undefined}>
         <Section title="File Catalog">
           <p className="text-sm text-mc-textMuted mb-4">
             Optional folder of Bedrock packs using the same layout as the Git catalog
@@ -678,8 +698,10 @@ function ModCatalogSettings() {
             </div>
           </div>
         </Section>
+        </fieldset>
 
         <div className="flex items-center gap-3 pt-4 border-t border-mc-surfaceLight">
+          {canSaveCatalog && (
           <button type="submit" disabled={saving} className="btn btn-primary flex-1">
             {saving ? (
               <>
@@ -693,6 +715,7 @@ function ModCatalogSettings() {
               </>
             )}
           </button>
+          )}
           <button type="button" onClick={loadSettings} className="btn btn-secondary">
             <RefreshCw className="w-4 h-4" />
             Reset

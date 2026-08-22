@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
+import { useAuth } from './AuthContext';
 
 const SocketContext = createContext(null);
 const MAX_CONSOLE_LINES = 200;
@@ -10,6 +11,7 @@ function stripAnsi(text) {
 }
 
 export function SocketProvider({ children }) {
+  const { user } = useAuth();
   const socketRef = useRef(null);
   const activeServerRef = useRef(null);
   const [connected, setConnected] = useState(false);
@@ -17,11 +19,16 @@ export function SocketProvider({ children }) {
   const [serverOutputs, setServerOutputs] = useState({});
 
   useEffect(() => {
+    if (!user) {
+      setConnected(false);
+      return undefined;
+    }
     const socket = io({
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionAttempts: 10,
+      withCredentials: true,
     });
 
     socketRef.current = socket;
@@ -63,8 +70,9 @@ export function SocketProvider({ children }) {
 
     return () => {
       socket.close();
+      socketRef.current = null;
     };
-  }, []);
+  }, [user]);
 
   // Expose the latest output line per server for the component that needs it
   // This is a compatibility layer - the actual outputs are stored in serverOutputs

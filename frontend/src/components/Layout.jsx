@@ -1,13 +1,15 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { 
   Server, Plus, Package, Users, Network, Globe,
-  ChevronLeft, ChevronRight, Home, Download, Menu, X
+  ChevronLeft, ChevronRight, Home, Download, Menu, X, UserCog, LogOut
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
+import { useAuth } from '../context/AuthContext';
 import { pluginApi, publicApi } from '../services/api';
 import { pluginIcon } from '../pluginIcons';
+import { pluginMenuKey, requiredMenuKey } from '../utils/menuVisibility';
 
 function Layout() {
   const location = useLocation();
@@ -19,6 +21,7 @@ function Layout() {
   const [pluginMenus, setPluginMenus] = useState([]);
   const { servers, loading } = useApi();
   const { connected } = useSocket();
+  const { user, logout, can, refresh } = useAuth();
 
   useEffect(() => {
     publicApi.health()
@@ -34,13 +37,14 @@ function Layout() {
       .then((res) => setPluginMenus(res.data?.menus || []))
       .catch(() => setPluginMenus([]));
     const refreshPluginMenus = () => {
+      refresh();
       pluginApi.list()
         .then((res) => setPluginMenus(res.data?.menus || []))
         .catch(() => setPluginMenus([]));
     };
     window.addEventListener('mbm-plugins-changed', refreshPluginMenus);
     return () => window.removeEventListener('mbm-plugins-changed', refreshPluginMenus);
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     setMobileOpen(false);
@@ -60,16 +64,38 @@ function Layout() {
     };
   }, [mobileOpen]);
 
+  useEffect(() => {
+    if (!user) return;
+    const key = requiredMenuKey(location.pathname, pluginMenus);
+    if (!key || can(key)) return;
+    const fallback = [
+      { path: '/', key: 'menu.view.dashboard' },
+      { path: '/players', key: 'menu.view.players' },
+      { path: '/mods', key: 'menu.view.library' },
+      { path: '/servers', key: 'menu.view.servers' },
+      { path: '/users/settings', key: null },
+    ].find((item) => !item.key || can(item.key));
+    if (fallback?.path && fallback.path !== location.pathname) {
+      navigate(fallback.path, { replace: true });
+    }
+  }, [location.pathname, user, pluginMenus, can, navigate]);
+
   const navItems = [
-    { icon: Home, label: 'Dashboard', path: '/', exact: true },
-    { icon: Server, label: 'Servers', path: '/servers' },
-    { icon: Plus, label: 'New Server', path: '/servers/new' },
-    { icon: Package, label: 'Mod Library', path: '/mods' },
-    { icon: Download, label: 'Mod Catalog', path: '/mods/catalog' },
-    { icon: Users, label: 'Players', path: '/players' },
-    { icon: Globe, label: 'BedrockConnect', path: '/bedrock-connect' },
-    { icon: Network, label: 'Ports', path: '/ports' },
-  ];
+    { icon: Home, label: 'Dashboard', path: '/', exact: true, menuKey: 'menu.view.dashboard' },
+    { icon: Server, label: 'Servers', path: '/servers', menuKey: 'menu.view.servers' },
+    ...(can('servers.create') || can('servers.create_remote')
+      ? [{ icon: Plus, label: 'New Server', path: '/servers/new', menuKey: 'menu.view.servers_new' }]
+      : []),
+    { icon: Package, label: 'Mod Library', path: '/mods', menuKey: 'menu.view.library' },
+    { icon: Download, label: 'Mod Catalog', path: '/mods/catalog', menuKey: 'menu.view.catalog' },
+    { icon: Users, label: 'Players', path: '/players', menuKey: 'menu.view.players' },
+    { icon: Globe, label: 'BedrockConnect', path: '/bedrock-connect', menuKey: 'menu.view.bedrock_connect' },
+    { icon: Network, label: 'Ports', path: '/ports', menuKey: 'menu.view.ports' },
+    { icon: UserCog, label: 'Users', path: '/users', menuKey: 'menu.view.users' },
+  ].filter((item) => !item.menuKey || can(item.menuKey));
+
+  const visiblePluginMenus = pluginMenus.filter((item) => can(pluginMenuKey(item.pluginId, item.id)));
+  const canViewPlugins = can('menu.view.plugins');
 
   const activeServers = servers.filter(s => s.status === 'running').length;
   const isCoreNavActive = (item) => (
@@ -86,6 +112,7 @@ function Layout() {
   const pageTitle = currentPlugin?.label
     || currentPage?.label
     || (location.pathname === '/plugins' ? 'Plugins' : null)
+    || (location.pathname.startsWith('/users') ? 'Users' : null)
     || (location.pathname.startsWith('/servers/') ? 'Server' : 'MC Manager');
   const isPluginPage = location.pathname.startsWith('/plugins/') && location.pathname !== '/plugins';
 
@@ -119,12 +146,12 @@ function Layout() {
           </button>
         );
       })}
-      {pluginMenus.length > 0 && (
+      {visiblePluginMenus.length > 0 && (
         <div className="pt-2 mt-2 border-t border-mc-surfaceLight space-y-1">
           {showLabels && (
             <p className="px-3 pb-1 text-[10px] uppercase tracking-wide text-mc-textMuted">Plugins</p>
           )}
-          {pluginMenus.map((item) => {
+          {visiblePluginMenus.map((item) => {
             const Icon = pluginIcon(item.icon);
             const isActive = location.pathname === item.path
               || location.pathname.startsWith(`${item.path}/`);
@@ -176,6 +203,7 @@ function Layout() {
             <p className="text-xs text-mc-textMuted truncate min-w-0" title={managerVersion ? `Manager version ${managerVersion}` : undefined}>
               {managerVersion ? `v. ${managerVersion}` : '\u00a0'}
             </p>
+            {canViewPlugins && (
             <button
               type="button"
               onClick={() => goTo('/plugins')}
@@ -187,9 +215,10 @@ function Layout() {
             >
               Plugins
             </button>
+            )}
           </div>
         )}
-        {!showLabels && (
+        {canViewPlugins && !showLabels && (
           <button
             type="button"
             onClick={() => goTo('/plugins')}
@@ -235,6 +264,12 @@ function Layout() {
           {showLabels && <span className="text-xs text-mc-textMuted">{connected ? 'Connected' : 'Disconnected'}</span>}
         </div>
 
+        {showLabels && user && (
+          <div className="px-1 text-xs text-mc-textMuted truncate" title={user.username}>
+            User: {user.username}
+          </div>
+        )}
+
         {showLabels && (
           <div className="px-1 text-xs text-mc-textMuted">
             {activeServers}/{servers.length} servers active
@@ -248,6 +283,17 @@ function Layout() {
         >
           {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
           {showLabels && <span>Collapse</span>}
+        </button>
+
+        <button
+          type="button"
+          onClick={logout}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs
+            text-mc-textMuted hover:text-mc-text hover:bg-mc-surfaceLight transition-all"
+          title="Sign out"
+        >
+          <LogOut className="w-4 h-4" />
+          {showLabels && <span>Sign out</span>}
         </button>
       </div>
     </>

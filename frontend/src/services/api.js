@@ -3,7 +3,19 @@ import axios from 'axios';
 const api = axios.create({
   baseURL: '/api',
   timeout: 30000,
+  withCredentials: true,
 });
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const url = String(error.config?.url || '');
+    if (error.response?.status === 401 && !url.includes('/auth/login') && !url.includes('/auth/me') && !url.includes('/auth/password-policy')) {
+      window.dispatchEvent(new Event('mbm-auth-expired'));
+    }
+    return Promise.reject(error);
+  }
+);
 
 // ========== SERVERS ==========
 
@@ -152,6 +164,32 @@ export const publicApi = {
   overview: () => api.get('/v1/overview'),
   serverStatus: (id) => api.get(`/v1/server/${id}`),
   health: () => api.get('/health'),
+};
+
+export const authApi = {
+  login: (username, password) => api.post('/auth/login', { username, password }),
+  logout: () => api.post('/auth/logout'),
+  me: () => api.get('/auth/me'),
+  changePassword: (data) => api.put('/auth/password', data),
+  passwordPolicy: () => api.get('/auth/password-policy'),
+};
+
+export const userManagementApi = {
+  users: () => api.get('/user-management/users'),
+  getUser: (id) => api.get(`/user-management/users/${id}`),
+  createUser: (data) => api.post('/user-management/users', data),
+  updateUser: (id, data) => api.put(`/user-management/users/${id}`, data),
+  deleteUser: (id) => api.delete(`/user-management/users/${id}`),
+  groups: () => api.get('/user-management/groups'),
+  getGroup: (id) => api.get(`/user-management/groups/${id}`),
+  createGroup: (data) => api.post('/user-management/groups', data),
+  updateGroup: (id, data) => api.put(`/user-management/groups/${id}`, data),
+  deleteGroup: (id) => api.delete(`/user-management/groups/${id}`),
+  permissions: () => api.get('/user-management/permissions'),
+  updatePermission: (key, data) => api.put(`/user-management/permissions/${encodeURIComponent(key)}`, data),
+  catalog: () => api.get('/user-management/catalog'),
+  settings: () => api.get('/user-management/settings'),
+  saveSettings: (data) => api.put('/user-management/settings', data),
 };
 
 export default api;

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, ChevronDown, FolderUp, Puzzle, Upload } from 'lucide-react';
 import { pluginApi } from '../services/api';
 import { pluginIcon } from '../pluginIcons';
+import { useAuth } from '../context/AuthContext';
 
 function notifyPluginMenus() {
   window.dispatchEvent(new Event('mbm-plugins-changed'));
@@ -10,6 +11,8 @@ function notifyPluginMenus() {
 
 function Plugins() {
   const navigate = useNavigate();
+  const { can, isAdmin } = useAuth();
+  const canUpload = can('plugins.upload');
   const zipInputRef = useRef(null);
   const folderInputRef = useRef(null);
   const uploadMenuRef = useRef(null);
@@ -47,6 +50,7 @@ function Plugins() {
   }, [uploadOpen]);
 
   const togglePlugin = async (plugin) => {
+    if (!isAdmin) return;
     setError('');
     setMessage('');
     setBusyId(plugin.id);
@@ -61,6 +65,7 @@ function Plugins() {
   };
 
   const uploadForm = async (formData) => {
+    if (!canUpload) return;
     setError('');
     setMessage('');
     setUploading(true);
@@ -120,6 +125,7 @@ function Plugins() {
               <code className="text-mc-text">{installDir}</code> and restart.
             </p>
           </div>
+          {canUpload && (
           <div className="relative" ref={uploadMenuRef}>
             <button
               type="button"
@@ -167,6 +173,7 @@ function Plugins() {
               onChange={onFolderChosen}
             />
           </div>
+          )}
         </div>
       </div>
 
@@ -204,10 +211,10 @@ function Plugins() {
                   role="switch"
                   aria-checked={plugin.enabled}
                   aria-label={`${plugin.enabled ? 'Disable' : 'Enable'} ${plugin.name}`}
-                  disabled={busyId === plugin.id}
+                  disabled={!isAdmin || busyId === plugin.id}
                   onClick={() => togglePlugin(plugin)}
                   className={`toggle ${plugin.enabled ? 'toggle-active' : 'toggle-inactive'} ${
-                    busyId === plugin.id ? 'opacity-50 cursor-not-allowed' : ''
+                    !isAdmin || busyId === plugin.id ? 'opacity-50 cursor-not-allowed' : ''
                   }`}
                 >
                   <span className={`toggle-thumb ${plugin.enabled ? 'translate-x-6' : 'translate-x-1'}`} />

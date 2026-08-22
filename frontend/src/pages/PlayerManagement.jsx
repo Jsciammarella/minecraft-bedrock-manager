@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { playerApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
+import { useAuth } from '../context/AuthContext';
 import {
   ArrowLeft, Users, Search, Plus, Shield, ShieldOff, Ban,
   AlertCircle, AlertTriangle, Check, Loader2, Scan, X
@@ -10,6 +11,7 @@ import {
 function PlayerManagement() {
   const navigate = useNavigate();
   const { servers } = useApi();
+  const { can } = useAuth();
 
   const [players, setPlayers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -199,6 +201,7 @@ function PlayerManagement() {
               Scan Server
             </button>
           )}
+          {can('players.add') && (
           <button
             onClick={() => setShowAddModal(true)}
             className="btn btn-primary"
@@ -206,6 +209,7 @@ function PlayerManagement() {
             <Plus className="w-4 h-4" />
             Add Player
           </button>
+          )}
         </div>
       </div>
 
@@ -330,7 +334,7 @@ function PlayerManagement() {
 
                 {/* Actions */}
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  {whitelistCount(player) > 0 ? (
+                  {can('players.remove_whitelisted') && whitelistCount(player) > 0 ? (
                     <button
                       onClick={() => handleUnwhitelistAll(player)}
                       disabled={busyPlayerId === player.id}
@@ -351,6 +355,7 @@ function PlayerManagement() {
                       <Shield className="w-4 h-4" />
                     </span>
                   )}
+                  {can('players.ban_all') && (
                   <button
                     onClick={() => handleToggleBan(player)}
                     disabled={busyPlayerId === player.id}
@@ -365,6 +370,7 @@ function PlayerManagement() {
                       <Ban className={`w-4 h-4 ${player.is_banned ? 'text-red-400' : ''}`} />
                     )}
                   </button>
+                  )}
                 </div>
               </div>
             </div>

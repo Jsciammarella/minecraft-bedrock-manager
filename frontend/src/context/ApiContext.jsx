@@ -1,9 +1,11 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { serverApi } from '../services/api';
+import { useAuth } from './AuthContext';
 
 const ApiContext = createContext(null);
 
 export function ApiProvider({ children }) {
+  const { user } = useAuth();
   const [servers, setServers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -11,6 +13,11 @@ export function ApiProvider({ children }) {
   const refreshTimerRef = useRef(null);
 
   const fetchServers = useCallback(async () => {
+    if (!user) {
+      setServers([]);
+      setLoading(false);
+      return;
+    }
     try {
       const res = await serverApi.getAll();
       setServers(res.data);
@@ -20,9 +27,14 @@ export function ApiProvider({ children }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user]);
 
   useEffect(() => {
+    if (!user) {
+      setServers([]);
+      setLoading(false);
+      return undefined;
+    }
     fetchServers();
     const interval = setInterval(fetchServers, 5 * 60 * 1000);
 

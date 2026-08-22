@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { modApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
+import { useAuth } from '../context/AuthContext';
 import ModTileTags from '../components/ModTileTags';
 import {
   ArrowLeft, Package, Upload, Search, Trash2, Plus, X,
@@ -16,6 +17,13 @@ const MCPEDL_WWW_PREFIX = 'https://www.mcpedl.com';
 function ModLibrary() {
   const navigate = useNavigate();
   const { servers, refresh } = useApi();
+  const { can } = useAuth();
+  const canUpload = can('library.upload');
+  const canDelete = can('library.delete');
+  const canChangeSettings = can('library.change_settings');
+  const canImportCurseforge = can('library.import_curseforge');
+  const canImportMcpedl = can('library.import_mcpedl');
+  const canInstall = can('servers.add_mods');
   const fileInputRef = useRef(null);
   const settingsImageRef = useRef(null);
 
@@ -92,6 +100,7 @@ function ModLibrary() {
   };
 
   const handleUpload = async () => {
+    if (!canUpload) return;
     if (!uploadFiles.length) {
       setError('Please select a file');
       return;
@@ -129,13 +138,14 @@ function ModLibrary() {
   })();
 
   const openCurseforgeModal = () => {
+    if (!canImportCurseforge) return;
     setError('');
     setCurseforgeUrl('');
     setShowCurseforgeModal(true);
   };
 
   const handleCurseforgeImport = async () => {
-    if (!curseforgeUrlValid) return;
+    if (!canImportCurseforge || !curseforgeUrlValid) return;
     setImportingCurseforge(true);
     setError('');
     try {
@@ -153,13 +163,14 @@ function ModLibrary() {
   };
 
   const openMcpedlModal = () => {
+    if (!canImportMcpedl) return;
     setError('');
     setMcpedlUrl('');
     setShowMcpedlModal(true);
   };
 
   const handleMcpedlImport = async () => {
-    if (!mcpedlUrlValid) return;
+    if (!canImportMcpedl || !mcpedlUrlValid) return;
     setImportingMcpedl(true);
     setError('');
     try {
@@ -192,11 +203,12 @@ function ModLibrary() {
   };
 
   const handleDelete = (mod) => {
-    if (!mod?.id) return;
+    if (!canDelete || !mod?.id) return;
     setDeleteModal({ mod, servers: installedServersForMod(mod.id) });
   };
 
   const performDelete = async (modId, uninstallFromAll) => {
+    if (!canDelete) return;
     setDeleting(true);
     setError('');
     try {
@@ -220,13 +232,14 @@ function ModLibrary() {
   };
 
   const openInstallModal = (mod) => {
+    if (!canInstall) return;
     setInstallError('');
     setInstallingServerId(null);
     setInstallModal(mod);
   };
 
   const handleInstall = async (modId, serverId) => {
-    if (installing) return;
+    if (!canInstall || installing) return;
     setInstalling(true);
     setInstallingServerId(serverId);
     setInstallError('');
@@ -258,6 +271,7 @@ function ModLibrary() {
   };
 
   const openSettings = (mod) => {
+    if (!canChangeSettings) return;
     setSettingsModal(mod);
     setSettingsDesc(mod.description || '');
     setSettingsImage(null);
@@ -372,30 +386,36 @@ function ModLibrary() {
           </div>
         </div>
         <div className="page-header-actions flex items-center gap-2">
-          <button
-            onClick={() => {
-              setUploadProgress(null);
-              setShowUploadModal(true);
-            }}
-            className="btn btn-primary"
-          >
-            <Upload className="w-4 h-4" />
-            Upload Mod
-          </button>
-          <button
-            onClick={openCurseforgeModal}
-            className="btn btn-primary"
-          >
-            <Download className="w-4 h-4" />
-            Download CurseForge URL
-          </button>
-          <button
-            onClick={openMcpedlModal}
-            className="btn btn-primary"
-          >
-            <Download className="w-4 h-4" />
-            Download MCPEDL URL
-          </button>
+          {canUpload && (
+            <button
+              onClick={() => {
+                setUploadProgress(null);
+                setShowUploadModal(true);
+              }}
+              className="btn btn-primary"
+            >
+              <Upload className="w-4 h-4" />
+              Upload Mod
+            </button>
+          )}
+          {canImportCurseforge && (
+            <button
+              onClick={openCurseforgeModal}
+              className="btn btn-primary"
+            >
+              <Download className="w-4 h-4" />
+              Download CurseForge URL
+            </button>
+          )}
+          {canImportMcpedl && (
+            <button
+              onClick={openMcpedlModal}
+              className="btn btn-primary"
+            >
+              <Download className="w-4 h-4" />
+              Download MCPEDL URL
+            </button>
+          )}
         </div>
       </div>
 
@@ -455,21 +475,27 @@ function ModLibrary() {
           <h3 className="text-lg font-semibold text-white mb-2">No mods in library</h3>
           <p className="text-mc-textMuted mb-6">Upload mods or download them from the catalog</p>
           <div className="flex items-center justify-center gap-3 flex-wrap">
-            <button
-              onClick={() => {
-                setUploadProgress(null);
-                setShowUploadModal(true);
-              }}
-              className="btn btn-primary"
-            >
-              <Upload className="w-4 h-4" /> Upload Mod
-            </button>
-            <button onClick={openCurseforgeModal} className="btn btn-primary">
-              <Download className="w-4 h-4" /> Download CurseForge URL
-            </button>
-            <button onClick={openMcpedlModal} className="btn btn-primary">
-              <Download className="w-4 h-4" /> Download MCPEDL URL
-            </button>
+            {canUpload && (
+              <button
+                onClick={() => {
+                  setUploadProgress(null);
+                  setShowUploadModal(true);
+                }}
+                className="btn btn-primary"
+              >
+                <Upload className="w-4 h-4" /> Upload Mod
+              </button>
+            )}
+            {canImportCurseforge && (
+              <button onClick={openCurseforgeModal} className="btn btn-primary">
+                <Download className="w-4 h-4" /> Download CurseForge URL
+              </button>
+            )}
+            {canImportMcpedl && (
+              <button onClick={openMcpedlModal} className="btn btn-primary">
+                <Download className="w-4 h-4" /> Download MCPEDL URL
+              </button>
+            )}
             <button onClick={() => navigate('/mods/catalog')} className="btn btn-secondary">
               <Download className="w-4 h-4" /> Browse Catalog
             </button>
@@ -483,7 +509,7 @@ function ModLibrary() {
                 key={mod.id}
                 mod={mod}
                 onOpen={() => setExpandedMod(mod)}
-                onInstall={() => openInstallModal(mod)}
+                onInstall={canInstall ? () => openInstallModal(mod) : undefined}
                 getTypeBadge={getTypeBadge}
                 getSourceBadge={getSourceBadge}
               />
@@ -509,9 +535,9 @@ function ModLibrary() {
             mod={expandedMod}
             expanded
             onClose={() => setExpandedMod(null)}
-            onInstall={() => openInstallModal(expandedMod)}
-            onSettings={() => openSettings(expandedMod)}
-            onDelete={() => handleDelete(expandedMod)}
+            onInstall={canInstall ? () => openInstallModal(expandedMod) : undefined}
+            onSettings={canChangeSettings ? () => openSettings(expandedMod) : undefined}
+            onDelete={canDelete ? () => handleDelete(expandedMod) : undefined}
             getTypeBadge={getTypeBadge}
             getSourceBadge={getSourceBadge}
           />
@@ -1286,30 +1312,32 @@ function LibraryTile({
       )}
 
       <div className={`flex items-center gap-2 ${expanded ? '' : 'mt-auto'}`} onClick={(event) => event.stopPropagation()}>
-        <button
-          onClick={onInstall}
-          className={`btn btn-primary flex-1 ${expanded ? '' : 'text-xs'}`}
-        >
-          <Plus className={expanded ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
-          Install
-        </button>
-        {expanded && (
-          <>
-            <button
-              onClick={onSettings}
-              className="btn btn-secondary"
-              title="Mod settings"
-            >
-              <Settings className="w-4 h-4" />
-            </button>
-            <button
-              onClick={onDelete}
-              className="btn btn-secondary text-mc-danger hover:bg-red-500/20"
-              title="Delete from library"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
-          </>
+        {onInstall && (
+          <button
+            onClick={onInstall}
+            className={`btn btn-primary flex-1 ${expanded ? '' : 'text-xs'}`}
+          >
+            <Plus className={expanded ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
+            Install
+          </button>
+        )}
+        {expanded && onSettings && (
+          <button
+            onClick={onSettings}
+            className="btn btn-secondary"
+            title="Mod settings"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+        )}
+        {expanded && onDelete && (
+          <button
+            onClick={onDelete}
+            className="btn btn-secondary text-mc-danger hover:bg-red-500/20"
+            title="Delete from library"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
         )}
       </div>
     </div>

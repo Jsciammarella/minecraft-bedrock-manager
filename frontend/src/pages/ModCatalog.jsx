@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { modApi } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import ModTileTags from '../components/ModTileTags';
 import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
 import {
@@ -12,6 +13,7 @@ const CATALOG_PAGE_SIZE = 40;
 
 function ModCatalog() {
   const navigate = useNavigate();
+  const { can } = useAuth();
   const [mods, setMods] = useState([]);
   const [categories, setCategories] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -289,6 +291,7 @@ function ModCatalog() {
                 placeholder="Search for addons, texture packs, maps..."
               />
             </div>
+            {can('catalog.change_file_handling') && (
             <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 items-center mt-3">
               <span className="text-sm font-medium text-white whitespace-nowrap">Multi-file handling:</span>
               <button
@@ -303,6 +306,7 @@ function ModCatalog() {
                 Automatic mode may not download all required mod files
               </p>
             </div>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <select
@@ -379,7 +383,7 @@ function ModCatalog() {
                 key={mod.id || `${mod.source}-${mod.slug}-${idx}`}
                 mod={mod}
                 onOpen={() => setExpandedMod(mod)}
-                onDownload={() => setDownloadModal(mod)}
+                onDownload={can('catalog.download_mods') ? () => setDownloadModal(mod) : null}
                 getTypeBadge={getTypeBadge}
                 getSourceBadge={getSourceBadge}
               />
@@ -406,7 +410,7 @@ function ModCatalog() {
             mod={expandedMod}
             expanded
             onClose={() => setExpandedMod(null)}
-            onDownload={() => setDownloadModal(expandedMod)}
+            onDownload={can('catalog.download_mods') ? () => setDownloadModal(expandedMod) : null}
             getTypeBadge={getTypeBadge}
             getSourceBadge={getSourceBadge}
           />
@@ -661,6 +665,7 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
       </div>
 
       <div className={`flex items-center gap-2 ${expanded ? '' : 'mt-auto'}`} onClick={(event) => event.stopPropagation()}>
+        {onDownload && (
         <button
           onClick={onDownload}
           className={`btn btn-primary flex-1 ${expanded ? '' : 'text-xs'}`}
@@ -668,6 +673,7 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
           <Download className={expanded ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
           Download
         </button>
+        )}
         {mod.websiteUrl && (
           <a
             href={mod.websiteUrl}

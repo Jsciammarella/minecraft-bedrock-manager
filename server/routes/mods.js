@@ -12,6 +12,7 @@ const gitCatalogTemplate = require('../services/gitCatalogTemplate');
 const packFiles = require('../services/packFiles');
 const curseforgeImporter = require('../services/curseforgeImporter');
 const mcpedlImporter = require('../services/mcpedlImporter');
+const { requirePermission, assertPermission } = require('../middleware/auth');
 
 // Multer config for file uploads
 const uploadsDir = path.join(__dirname, '../../data/uploads');
@@ -91,7 +92,7 @@ function unlinkUploads(files) {
 
 // Upload a mod. Handle Multer here so validation errors are always useful JSON.
 // Accepts a single "file" field (older clients) or multiple "files" archives as one library mod.
-router.post('/upload', (req, res) => {
+router.post('/upload', requirePermission('library.upload'), (req, res) => {
   upload.fields([
     { name: 'files', maxCount: 20 },
     { name: 'file', maxCount: 20 },
@@ -115,7 +116,7 @@ router.post('/upload', (req, res) => {
   });
 });
 
-router.post('/import-curseforge', async (req, res) => {
+router.post('/import-curseforge', requirePermission('library.import_curseforge'), async (req, res) => {
   req.setTimeout(20 * 60 * 1000);
   res.setTimeout(20 * 60 * 1000);
   try {
@@ -126,7 +127,7 @@ router.post('/import-curseforge', async (req, res) => {
   }
 });
 
-router.post('/import-mcpedl', async (req, res) => {
+router.post('/import-mcpedl', requirePermission('library.import_mcpedl'), async (req, res) => {
   req.setTimeout(20 * 60 * 1000);
   res.setTimeout(20 * 60 * 1000);
   try {
@@ -137,7 +138,7 @@ router.post('/import-mcpedl', async (req, res) => {
   }
 });
 
-router.put('/:id', (req, res) => {
+router.put('/:id', requirePermission('library.change_settings'), (req, res) => {
   imageUpload.single('thumbnail')(req, res, async (uploadError) => {
     if (uploadError) {
       const tooLarge = uploadError.code === 'LIMIT_FILE_SIZE';
@@ -172,7 +173,7 @@ router.get('/:id/thumbnail', async (req, res) => {
 });
 
 // Delete a mod from library
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requirePermission('library.delete'), async (req, res) => {
   try {
     const uninstallFromServers = req.query.uninstallFromAll === '1' || req.query.uninstallFromAll === 'true';
     await modManager.deleteMod(req.params.id, { uninstallFromServers });
@@ -203,7 +204,7 @@ router.get('/installed/:serverId', async (req, res) => {
 });
 
 // Install mod to server
-router.post('/:modId/install/:serverId', async (req, res) => {
+router.post('/:modId/install/:serverId', requirePermission('servers.add_mods'), async (req, res) => {
   try {
     await modManager.installModToServer(req.params.serverId, req.params.modId);
     res.json({ success: true });
@@ -213,7 +214,7 @@ router.post('/:modId/install/:serverId', async (req, res) => {
 });
 
 // Uninstall mod from server
-router.delete('/:modId/uninstall/:serverId', async (req, res) => {
+router.delete('/:modId/uninstall/:serverId', requirePermission('servers.remove_mods'), async (req, res) => {
   try {
     await modManager.uninstallModFromServer(req.params.serverId, req.params.modId);
     res.json({ success: true });
@@ -232,7 +233,7 @@ router.get('/catalog/settings', async (req, res) => {
   }
 });
 
-router.put('/catalog/multi-file-mode', (req, res) => {
+router.put('/catalog/multi-file-mode', requirePermission('catalog.change_file_handling'), (req, res) => {
   try {
     res.json(catalog.setMultiFileMode(req.body?.mode));
   } catch (err) {
@@ -242,8 +243,20 @@ router.put('/catalog/multi-file-mode', (req, res) => {
 
 router.put('/catalog/settings', async (req, res) => {
   try {
+    const body = req.body || {};
+    const wantsGit = body.git != null;
+    const wantsFiles = body.files != null;
+    const wantsCurseforge = body.curseforgeApiKey != null || body.clearCurseforgeApiKey;
+    if (!wantsGit && !wantsFiles && !wantsCurseforge) {
+      const err = new Error('You do not have permission to do that');
+      err.status = 403;
+      throw err;
+    }
+    if (wantsCurseforge) assertPermission(req, 'catalog.set_curseforge_key');
+    if (wantsGit) assertPermission(req, 'catalog.enable_git');
+    if (wantsFiles) assertPermission(req, 'catalog.enable_file');
     const previous = gitCatalog.getConfig();
-    const saved = catalog.saveSettings(req.body || {});
+    const saved = catalog.saveSettings(body);
     const next = gitCatalog.getConfig();
     const gitChanged = previous.enabled !== next.enabled
       || previous.url !== next.url
@@ -262,7 +275,7 @@ router.put('/catalog/settings', async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -277,7 +290,7 @@ router.get('/catalog/git/status', (req, res) => {
   res.json(gitCatalog.getSyncStatus());
 });
 
-router.post('/catalog/git/test', async (req, res) => {
+router.post('/catalog/git/test', requirePermission('catalog.enable_git'), async (req, res) => {
   try {
     const result = await catalog.testGitConnection(req.body || {});
     res.json(result);
@@ -286,7 +299,7 @@ router.post('/catalog/git/test', async (req, res) => {
   }
 });
 
-router.post('/catalog/git/sync', async (req, res) => {
+router.post('/catalog/git/sync', requirePermission('catalog.enable_git'), async (req, res) => {
   try {
     if (!gitCatalog.canSync()) {
       return res.status(400).json({
@@ -321,7 +334,7 @@ router.get('/catalog/file/starter', (req, res) => {
   res.send(zip);
 });
 
-router.post('/catalog/file/test', async (req, res) => {
+router.post('/catalog/file/test', requirePermission('catalog.enable_file'), async (req, res) => {
   try {
     const result = await catalog.testFileConnection(req.body || {});
     res.json(result);
@@ -368,7 +381,7 @@ router.get('/catalog/categories', async (req, res) => {
   }
 });
 
-router.post('/catalog/download/:slug', async (req, res) => {
+router.post('/catalog/download/:slug', requirePermission('catalog.download_mods'), async (req, res) => {
   try {
     const result = await catalog.downloadMod(req.params.slug, req.body || {});
     res.json(result);
