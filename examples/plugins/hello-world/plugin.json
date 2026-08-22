@@ -1,0 +1,25 @@
+{
+  "id": "hello-world",
+  "name": "Hello World",
+  "version": "1.0.0",
+  "description": "Example plugin that adds a sidebar item and a page of its own.",
+  "author": "Minecraft Bedrock Manager",
+  "menu": {
+    "label": "Hello World",
+    "icon": "puzzle",
+    "order": 100
+  },
+  "pages": [
+    {
+      "id": "home",
+      "title": "Hello World",
+      "file": "index.html"
+    },
+    {
+      "id": "about",
+      "title": "About",
+      "file": "about.html"
+    }
+  ],
+  "backend": "backend.js"
+}

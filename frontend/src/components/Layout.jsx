@@ -6,7 +6,8 @@ import {
 import { useState, useEffect } from 'react';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
-import { publicApi } from '../services/api';
+import { pluginApi, publicApi } from '../services/api';
+import { pluginIcon } from '../pluginIcons';
 
 function Layout() {
   const location = useLocation();
@@ -15,6 +16,7 @@ function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [hostName, setHostName] = useState('');
   const [managerVersion, setManagerVersion] = useState('');
+  const [pluginMenus, setPluginMenus] = useState([]);
   const { servers, loading } = useApi();
   const { connected } = useSocket();
 
@@ -28,6 +30,16 @@ function Layout() {
         setHostName('');
         setManagerVersion('');
       });
+    pluginApi.list()
+      .then((res) => setPluginMenus(res.data?.menus || []))
+      .catch(() => setPluginMenus([]));
+    const refreshPluginMenus = () => {
+      pluginApi.list()
+        .then((res) => setPluginMenus(res.data?.menus || []))
+        .catch(() => setPluginMenus([]));
+    };
+    window.addEventListener('mbm-plugins-changed', refreshPluginMenus);
+    return () => window.removeEventListener('mbm-plugins-changed', refreshPluginMenus);
   }, []);
 
   useEffect(() => {
@@ -60,41 +72,46 @@ function Layout() {
   ];
 
   const activeServers = servers.filter(s => s.status === 'running').length;
-  const currentPage = navItems.find((item) => (
+  const isCoreNavActive = (item) => (
     item.exact
       ? location.pathname === item.path
       : item.path === '/mods'
         ? location.pathname === '/mods' || (location.pathname.startsWith('/mods/') && !location.pathname.startsWith('/mods/catalog'))
         : location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)
+  );
+  const currentPlugin = pluginMenus.find((item) => (
+    location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)
   ));
-  const pageTitle = currentPage?.label
+  const currentPage = navItems.find((item) => isCoreNavActive(item));
+  const pageTitle = currentPlugin?.label
+    || currentPage?.label
+    || (location.pathname === '/plugins' ? 'Plugins' : null)
     || (location.pathname.startsWith('/servers/') ? 'Server' : 'MC Manager');
+  const isPluginPage = location.pathname.startsWith('/plugins/') && location.pathname !== '/plugins';
 
   const goTo = (path) => {
     navigate(path);
     setMobileOpen(false);
   };
 
+  const navButtonClass = (isActive) => `w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium
+              transition-all duration-200 max-md:min-h-11 ${
+                isActive
+                  ? 'bg-mc-accent/10 text-mc-accent'
+                  : 'text-mc-textMuted hover:text-mc-text hover:bg-mc-surfaceLight'
+              }`;
+
   const renderNav = (showLabels) => (
-    <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
+    <nav className="flex-1 min-h-0 p-3 space-y-1 overflow-y-auto overscroll-contain">
       {navItems.map((item) => {
         const Icon = item.icon;
-        const isActive = item.exact
-          ? location.pathname === item.path
-          : item.path === '/mods'
-            ? location.pathname === '/mods' || (location.pathname.startsWith('/mods/') && !location.pathname.startsWith('/mods/catalog'))
-            : location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
+        const isActive = isCoreNavActive(item);
 
         return (
           <button
             key={item.path}
             onClick={() => goTo(item.path)}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium 
-              transition-all duration-200 max-md:min-h-11 ${
-                isActive 
-                  ? 'bg-mc-accent/10 text-mc-accent' 
-                  : 'text-mc-textMuted hover:text-mc-text hover:bg-mc-surfaceLight'
-              }`}
+            className={navButtonClass(isActive)}
             title={!showLabels ? item.label : undefined}
           >
             <Icon className="w-5 h-5 flex-shrink-0" />
@@ -102,12 +119,35 @@ function Layout() {
           </button>
         );
       })}
+      {pluginMenus.length > 0 && (
+        <div className="pt-2 mt-2 border-t border-mc-surfaceLight space-y-1">
+          {showLabels && (
+            <p className="px-3 pb-1 text-[10px] uppercase tracking-wide text-mc-textMuted">Plugins</p>
+          )}
+          {pluginMenus.map((item) => {
+            const Icon = pluginIcon(item.icon);
+            const isActive = location.pathname === item.path
+              || location.pathname.startsWith(`${item.path}/`);
+            return (
+              <button
+                key={`${item.pluginId}:${item.id}`}
+                onClick={() => goTo(item.path)}
+                className={navButtonClass(isActive)}
+                title={!showLabels ? item.label : undefined}
+              >
+                <Icon className="w-5 h-5 flex-shrink-0" />
+                {showLabels && <span className="truncate">{item.label}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </nav>
   );
 
   const sidebarInner = (showLabels, { closeable = false } = {}) => (
     <>
-      <div className="p-4 border-b border-mc-surfaceLight">
+      <div className="p-4 border-b border-mc-surfaceLight flex-shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-mc-accent rounded-lg flex items-center justify-center flex-shrink-0" title={hostName || 'MC Manager'}>
             <Server className="w-5 h-5 text-mc-darker" />
@@ -131,17 +171,44 @@ function Layout() {
             </button>
           )}
         </div>
-        {showLabels && managerVersion && (
-          <p className="mt-2 text-xs text-mc-textMuted" title={`Manager version ${managerVersion}`}>
-            v. {managerVersion}
-          </p>
+        {showLabels && (
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <p className="text-xs text-mc-textMuted truncate min-w-0" title={managerVersion ? `Manager version ${managerVersion}` : undefined}>
+              {managerVersion ? `v. ${managerVersion}` : '\u00a0'}
+            </p>
+            <button
+              type="button"
+              onClick={() => goTo('/plugins')}
+              className={`text-xs shrink-0 ${
+                location.pathname === '/plugins'
+                  ? 'text-mc-accent'
+                  : 'text-mc-textMuted hover:text-mc-text'
+              }`}
+            >
+              Plugins
+            </button>
+          </div>
+        )}
+        {!showLabels && (
+          <button
+            type="button"
+            onClick={() => goTo('/plugins')}
+            className={`mt-2 w-full text-xs ${
+              location.pathname === '/plugins'
+                ? 'text-mc-accent'
+                : 'text-mc-textMuted hover:text-mc-text'
+            }`}
+            title="Plugins"
+          >
+            Plugins
+          </button>
         )}
       </div>
 
       {renderNav(showLabels)}
 
       {showLabels && servers.length > 0 && (
-        <div className="p-3 border-t border-mc-surfaceLight">
+        <div className="p-3 border-t border-mc-surfaceLight flex-shrink-0">
           <p className="text-xs text-mc-textMuted mb-2 px-1">Quick Access</p>
           <div className="space-y-1 max-h-32 overflow-y-auto">
             {servers.map(server => (
@@ -162,7 +229,7 @@ function Layout() {
         </div>
       )}
 
-      <div className="p-3 border-t border-mc-surfaceLight space-y-2">
+      <div className="p-3 border-t border-mc-surfaceLight space-y-2 flex-shrink-0">
         <div className="flex items-center gap-2 px-1">
           <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`} />
           {showLabels && <span className="text-xs text-mc-textMuted">{connected ? 'Connected' : 'Disconnected'}</span>}
@@ -233,7 +300,9 @@ function Layout() {
           </div>
         </aside>
 
-        <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden bg-mc-dark pb-[env(safe-area-inset-bottom)]">
+        <main className={`flex-1 min-w-0 min-h-0 bg-mc-dark pb-[env(safe-area-inset-bottom)] ${
+          isPluginPage ? 'overflow-hidden' : 'overflow-y-auto overflow-x-hidden'
+        }`}>
           {loading && servers.length === 0 ? (
             <div className="flex items-center justify-center h-full">
               <div className="flex flex-col items-center gap-3">

@@ -141,6 +141,13 @@ export const bedrockConnectApi = {
 
 // ========== PUBLIC API ==========
 
+export const pluginApi = {
+  list: () => api.get('/plugins'),
+  meta: (id) => api.get(`/plugins/${encodeURIComponent(id)}/meta`),
+  setEnabled: (id, enabled) => api.put(`/plugins/${encodeURIComponent(id)}/enabled`, { enabled }),
+  upload: (formData) => api.post('/plugins/upload', formData, { timeout: 120000 }),
+};
+
 export const publicApi = {
   overview: () => api.get('/v1/overview'),
   serverStatus: (id) => api.get(`/v1/server/${id}`),

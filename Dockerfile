@@ -52,12 +52,13 @@ RUN npm ci --omit=dev && npm cache clean --force
 # Copy backend source
 COPY server/ ./server/
 COPY vendor/ ./vendor/
+COPY examples/plugins ./examples/plugins
 
 # Copy built frontend from Stage 1
 COPY --from=frontend-build /app/public ./public
 
 # Create data directories
-RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog /app/data/bedrock-connect /app/data/phantom
+RUN mkdir -p /app/data/servers /app/data/mods /app/data/mods/thumbs /app/data/logs /app/data/uploads /app/data/git-catalog /app/data/bedrock-connect /app/data/phantom /app/data/plugins /app/data/plugin-data
 
 # Stay root in the image. Game UDP ports are unprivileged (>1024), but this
 # process writes the named volume, copies Phantom, and spawns Bedrock / Java /
