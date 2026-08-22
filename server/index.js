@@ -22,12 +22,18 @@ const bedrockConnectRoutes = require('./routes/bedrockConnect');
 const pluginHost = require('./services/pluginHost');
 const pluginRoutes = require('./routes/plugins');
 const dnsProxy = require('./services/dnsProxy');
+const authRoutes = require('./routes/auth');
+const userManagementRoutes = require('./routes/userManagement');
+const authService = require('./services/authService');
+const { attachUser } = require('./middleware/auth');
+const catalog = require('./services/permissionCatalog');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: '*',
+    origin: true,
+    credentials: true,
     methods: ['GET', 'POST']
   },
   pingTimeout: 60000,
@@ -47,21 +53,31 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
 }));
 
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Static files
 app.use(express.static(path.join(__dirname, '../public')));
 
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api')) return next();
+  if (req.method === 'GET' && req.path === '/api/health') return next();
+  if (req.method === 'POST' && req.path === '/api/auth/login') return next();
+  if (req.method === 'POST' && req.path === '/api/auth/logout') return next();
+  return attachUser(req, res, next);
+});
+
 // ========== API ROUTES ==========
 
+app.use('/api/auth', authRoutes);
+app.use('/api/user-management', userManagementRoutes);
 app.use('/api/servers', serverRoutes);
 app.use('/api/mods', modRoutes);
 app.use('/api/players', playerRoutes);
 app.use('/api/ports', portRoutes);
 app.use('/api/bedrock-connect', bedrockConnectRoutes);
-app.use('/api/v1', apiRoutes); // Public API
+app.use('/api/v1', apiRoutes);
 pluginHost.loadPlugins();
 app.use('/api/plugins', pluginRoutes);
 logger.info(`Loaded ${pluginHost.getMenuItems().length} plugin menu item(s)`);
@@ -86,8 +102,21 @@ app.get('*', (req, res, next) => {
 
 // ========== WEBSOCKET HANDLERS ==========
 
+io.use((socket, next) => {
+  const token = authService.tokenFromRequest({
+    headers: {
+      cookie: socket.handshake.headers?.cookie || '',
+      authorization: socket.handshake.auth?.token ? `Bearer ${socket.handshake.auth.token}` : '',
+    },
+  });
+  const user = authService.getSessionUser(token);
+  if (!user) return next(new Error('Authentication required'));
+  socket.user = user;
+  next();
+});
+
 io.on('connection', (socket) => {
-  logger.info(`Client connected: ${socket.id}`);
+  logger.info(`Client connected: ${socket.id} (${socket.user?.username || 'unknown'})`);
 
   // Join server-specific room
   socket.on('join-server', (serverId) => {
@@ -102,6 +131,9 @@ io.on('connection', (socket) => {
   // Send command to server
   socket.on('send-command', async ({ serverId, command }) => {
     try {
+      if (!authService.hasPermission(socket.user, 'servers.console')) {
+        throw new Error('You do not have permission to send console commands');
+      }
       await serverManager.sendCommand(serverId, command);
       socket.emit('command-sent', { success: true, command });
     } catch (err) {
@@ -112,6 +144,11 @@ io.on('connection', (socket) => {
   // Start server
   socket.on('start-server', async (serverId) => {
     try {
+      const target = serverManager.getServer(serverId);
+      if (!target) throw new Error('Server not found');
+      if (!authService.hasPermission(socket.user, catalog.startPermissionForKind(target.kind))) {
+        throw new Error('You do not have permission to start this server');
+      }
       await serverManager.startServer(serverId);
       io.emit('server-status', { serverId, status: 'starting' });
     } catch (err) {
@@ -122,6 +159,11 @@ io.on('connection', (socket) => {
   // Stop server
   socket.on('stop-server', async (serverId) => {
     try {
+      const target = serverManager.getServer(serverId);
+      if (!target) throw new Error('Server not found');
+      if (!authService.hasPermission(socket.user, catalog.stopPermissionForKind(target.kind))) {
+        throw new Error('You do not have permission to stop this server');
+      }
       await serverManager.stopServer(serverId);
       io.emit('server-status', { serverId, status: 'stopped' });
     } catch (err) {

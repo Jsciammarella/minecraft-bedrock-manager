@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { serverApi, portApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
+import { useAuth } from '../context/AuthContext';
 import { ArrowLeft, Server, Loader2, Check, AlertCircle } from 'lucide-react';
 
 const MAX_REMOTE_SERVERS = 10;
@@ -10,6 +11,9 @@ const LAN_DISCOVERY_PORTS = new Set([19132, 19133]);
 function CreateServer() {
   const navigate = useNavigate();
   const { refresh, servers } = useApi();
+  const { can } = useAuth();
+  const canCreateLocal = can('servers.create');
+  const canCreateRemote = can('servers.create_remote');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -30,6 +34,11 @@ function CreateServer() {
   });
 
   const [ports, setPorts] = useState({ used: [], available: [] });
+
+  useEffect(() => {
+    if (!canCreateLocal && canCreateRemote) setRemote(true);
+    if (canCreateLocal && !canCreateRemote) setRemote(false);
+  }, [canCreateLocal, canCreateRemote]);
 
   useEffect(() => {
     loadPorts();
@@ -182,7 +191,7 @@ function CreateServer() {
                 role="switch"
                 aria-checked={remote}
                 aria-label="Create as a remote server"
-                disabled={remoteCount >= MAX_REMOTE_SERVERS && !remote}
+                disabled={(remoteCount >= MAX_REMOTE_SERVERS && !remote) || !canCreateLocal || !canCreateRemote}
                 onClick={() => {
                   if (remoteCount >= MAX_REMOTE_SERVERS && !remote) return;
                   setRemote((value) => {

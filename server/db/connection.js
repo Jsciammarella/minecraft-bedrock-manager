@@ -176,12 +176,82 @@ db.exec(`
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
+  -- Platform users (login accounts). Isolated from Minecraft players.
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    full_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    player_id INTEGER,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE SET NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    slug TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS user_groups (
+    user_id INTEGER NOT NULL,
+    group_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, group_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS permission_defs (
+    key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL,
+    allow_user INTEGER NOT NULL DEFAULT 1,
+    allow_group INTEGER NOT NULL DEFAULT 1
+  );
+
+  CREATE TABLE IF NOT EXISTS user_permissions (
+    user_id INTEGER NOT NULL,
+    permission_key TEXT NOT NULL,
+    value TEXT NOT NULL CHECK(value IN ('allow', 'deny')),
+    PRIMARY KEY (user_id, permission_key),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (permission_key) REFERENCES permission_defs(key) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS group_permissions (
+    group_id INTEGER NOT NULL,
+    permission_key TEXT NOT NULL,
+    value TEXT NOT NULL CHECK(value IN ('allow', 'deny')),
+    PRIMARY KEY (group_id, permission_key),
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (permission_key) REFERENCES permission_defs(key) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
   -- Create indexes for performance
   CREATE INDEX IF NOT EXISTS idx_servers_status ON servers(status);
   CREATE INDEX IF NOT EXISTS idx_server_mods_server_id ON server_mods(server_id);
   CREATE INDEX IF NOT EXISTS idx_server_players_server_id ON server_players(server_id);
   CREATE INDEX IF NOT EXISTS idx_server_player_access_server_id ON server_player_access(server_id);
   CREATE INDEX IF NOT EXISTS idx_players_username ON players(username);
+  CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+  CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_user_groups_group_id ON user_groups(group_id);
 `);
 
 // Lightweight migrations for existing installations.
@@ -246,3 +316,5 @@ if (!modColumns.has('extra_files')) {
 }
 
 module.exports = db;
+
+require('../services/authService').ensureSeed();

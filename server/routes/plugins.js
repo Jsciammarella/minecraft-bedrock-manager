@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const pluginHost = require('../services/pluginHost');
+const { requireAdmin } = require('../middleware/auth');
 
 const router = require('express').Router();
 const sdkPath = path.join(__dirname, '../static/plugin-sdk.js');
@@ -38,7 +39,7 @@ router.get('/sdk.js', (req, res) => {
   res.sendFile(sdkPath);
 });
 
-router.post('/upload', (req, res) => {
+router.post('/upload', requireAdmin, (req, res) => {
   upload.fields([
     { name: 'archive', maxCount: 1 },
     { name: 'files', maxCount: 400 },
@@ -59,7 +60,7 @@ router.post('/upload', (req, res) => {
   });
 });
 
-router.put('/:pluginId/enabled', (req, res) => {
+router.put('/:pluginId/enabled', requireAdmin, (req, res) => {
   const value = req.body?.enabled;
   let enabled;
   if (value === true || value === 'true' || value === 1 || value === '1') enabled = true;

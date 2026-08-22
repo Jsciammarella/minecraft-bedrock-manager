@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db/connection');
 const serverManager = require('../services/serverManager');
+const { requirePermission, assertPermission } = require('../middleware/auth');
 
 // Get all known players
 router.get('/', async (req, res) => {
@@ -43,6 +44,22 @@ router.get('/server/:serverId', async (req, res) => {
 // Update whitelist, permission, or ban state for one player on one server
 router.put('/server/:serverId/:playerId', async (req, res) => {
   try {
+    const body = req.body || {};
+    if (body.is_whitelisted === 1 || body.is_whitelisted === true) {
+      assertPermission(req, 'servers.add_allowed_players');
+    }
+    if (body.is_whitelisted === 0 || body.is_whitelisted === false) {
+      assertPermission(req, 'servers.remove_allowed_players');
+    }
+    if (body.is_banned === 1 || body.is_banned === true) {
+      assertPermission(req, 'servers.add_banned_players');
+    }
+    if (body.is_banned === 0 || body.is_banned === false) {
+      assertPermission(req, 'servers.remove_banned_players');
+    }
+    if (body.permission != null || body.has_custom_permission != null) {
+      assertPermission(req, 'servers.change_player_permissions');
+    }
     const player = serverManager.updatePlayerAccess(
       req.params.serverId,
       req.params.playerId,
@@ -50,7 +67,7 @@ router.put('/server/:serverId/:playerId', async (req, res) => {
     );
     res.json(player);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -65,7 +82,7 @@ router.post('/scan/:serverId', async (req, res) => {
 });
 
 // Add player manually
-router.post('/', async (req, res) => {
+router.post('/', requirePermission('players.add'), async (req, res) => {
   try {
     const { username, xuid } = req.body;
     if (!username) return res.status(400).json({ error: 'Username required' });
@@ -78,7 +95,7 @@ router.post('/', async (req, res) => {
 });
 
 // Whitelist a player
-router.post('/:id/whitelist', async (req, res) => {
+router.post('/:id/whitelist', requirePermission('servers.add_allowed_players'), async (req, res) => {
   try {
     await serverManager.addToWhitelist(req.body.serverId, req.params.id);
     res.json({ success: true });
@@ -88,7 +105,7 @@ router.post('/:id/whitelist', async (req, res) => {
 });
 
 // Remove from whitelist
-router.post('/:id/unwhitelist', async (req, res) => {
+router.post('/:id/unwhitelist', requirePermission('servers.remove_allowed_players'), async (req, res) => {
   try {
     if (!req.body.serverId) return res.status(400).json({ error: 'serverId required' });
     await serverManager.removeFromWhitelist(req.body.serverId, req.params.id);
@@ -98,7 +115,7 @@ router.post('/:id/unwhitelist', async (req, res) => {
   }
 });
 
-router.post('/:id/unwhitelist-all', async (req, res) => {
+router.post('/:id/unwhitelist-all', requirePermission('players.remove_whitelisted'), async (req, res) => {
   try {
     const player = serverManager.removeFromAllWhitelists(req.params.id);
     res.json(player);
@@ -107,7 +124,7 @@ router.post('/:id/unwhitelist-all', async (req, res) => {
   }
 });
 
-router.post('/:id/ban-all', async (req, res) => {
+router.post('/:id/ban-all', requirePermission('players.ban_all'), async (req, res) => {
   try {
     const player = serverManager.setPlayerBannedEverywhere(
       req.params.id,
@@ -120,7 +137,7 @@ router.post('/:id/ban-all', async (req, res) => {
   }
 });
 
-router.post('/:id/unban-all', async (req, res) => {
+router.post('/:id/unban-all', requirePermission('players.ban_all'), async (req, res) => {
   try {
     const player = serverManager.setPlayerBannedEverywhere(req.params.id, false);
     res.json(player);

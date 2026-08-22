@@ -7,6 +7,7 @@ import {
 import { serverApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
+import { startPermissionForKind, stopPermissionForKind, useAuth } from '../context/AuthContext';
 
 function isBedrockConnect(server) {
   return server?.kind === 'bedrock_connect';
@@ -63,6 +64,7 @@ function Dashboard() {
   const navigate = useNavigate();
   const { servers, loading, refresh } = useApi();
   const { connected } = useSocket();
+  const { can } = useAuth();
   const [actions, setActions] = useState({});
   const [bcPreview, setBcPreview] = useState(null);
   const [bcBusy, setBcBusy] = useState(false);
@@ -310,6 +312,7 @@ function Dashboard() {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
+          {can('servers.create_bedrock_connect') && (
           <button
             onClick={beginBedrockConnect}
             disabled={bcDisabled}
@@ -319,6 +322,8 @@ function Dashboard() {
             <Plus className="w-4 h-4" />
             {bcBusy ? 'Creating...' : 'Bedrock Connect'}
           </button>
+          )}
+          {(can('servers.create') || can('servers.create_remote')) && (
           <button
             onClick={() => navigate('/servers/new')}
             className="btn btn-primary"
@@ -326,6 +331,7 @@ function Dashboard() {
             <Plus className="w-4 h-4" />
             New Server
           </button>
+          )}
           </div>
           <p className="text-xs text-mc-textMuted flex items-center gap-2">
             <span className={`w-2.5 h-2.5 rounded-full ${bcRunning ? 'bg-red-400' : 'bg-green-400 animate-pulse-glow'}`} />
@@ -435,6 +441,7 @@ function Dashboard() {
           <h3 className="text-lg font-semibold text-white mb-2">No servers yet</h3>
           <p className="text-mc-textMuted mb-6">Create your first Minecraft Bedrock server to get started</p>
           <div className="flex items-center justify-center gap-3 max-md:flex-col">
+            {can('servers.create_bedrock_connect') && (
             <button
               onClick={beginBedrockConnect}
               disabled={bcDisabled}
@@ -443,6 +450,8 @@ function Dashboard() {
               <Plus className="w-4 h-4" />
               Bedrock Connect
             </button>
+            )}
+            {(can('servers.create') || can('servers.create_remote')) && (
             <button
               onClick={() => navigate('/servers/new')}
               className="btn btn-primary"
@@ -450,6 +459,7 @@ function Dashboard() {
               <Plus className="w-4 h-4" />
               Create Server
             </button>
+            )}
           </div>
         </div>
       ) : (
@@ -513,17 +523,23 @@ function Dashboard() {
                     ? 'Hide this server from console LAN games'
                     : 'Show this server under Friends → LAN Games on consoles';
             const connectLabel = server.connectAddress || `Port ${server.port}`;
+            const canOpen = can('servers.view_details');
+            const canStart = can(startPermissionForKind(server.kind));
+            const canStop = can(stopPermissionForKind(server.kind));
+            const openServer = () => {
+              if (canOpen) navigate(`/servers/${server.id}`);
+            };
             return (
             <div
               key={server.id}
-              className="card animate-slide-up cursor-pointer hover:border-mc-accent/40 transition-colors"
-              onClick={() => navigate(`/servers/${server.id}`)}
+              className={`card animate-slide-up transition-colors ${canOpen ? 'cursor-pointer hover:border-mc-accent/40' : ''}`}
+              onClick={openServer}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') navigate(`/servers/${server.id}`);
+                if (canOpen && (e.key === 'Enter' || e.key === ' ')) openServer();
               }}
-              role="link"
-              tabIndex={0}
-              aria-label={`View ${server.name} details`}
+              role={canOpen ? 'link' : undefined}
+              tabIndex={canOpen ? 0 : undefined}
+              aria-label={canOpen ? `View ${server.name} details` : undefined}
             >
               {/* Server Header */}
               <div className="server-card-header flex items-start justify-between mb-4">
@@ -640,7 +656,7 @@ function Dashboard() {
                     Starting...
                   </button>
                 )}
-                {server.status !== 'running' && server.status !== 'creating' && server.status !== 'starting' && (
+                {server.status !== 'running' && server.status !== 'creating' && server.status !== 'starting' && canStart && (
                   <button
                     onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'start'); }}
                     disabled={actions[`${server.id}-start`]}
@@ -652,6 +668,7 @@ function Dashboard() {
                 )}
                 {server.status === 'running' && (
                   <>
+                    {canStop && (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'stop'); }}
                       disabled={actions[`${server.id}-stop`]}
@@ -660,6 +677,8 @@ function Dashboard() {
                       <Square className="w-3.5 h-3.5" />
                       {actions[`${server.id}-stop`] ? 'Stopping...' : 'Stop'}
                     </button>
+                    )}
+                    {canStart && canStop && (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'restart'); }}
                       disabled={actions[`${server.id}-restart`]}
@@ -667,8 +686,10 @@ function Dashboard() {
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
                     </button>
+                    )}
                   </>
                 )}
+                {canOpen && (
                 <button
                   onClick={(e) => { e.stopPropagation(); navigate(`/servers/${server.id}`); }}
                   className="btn btn-secondary text-sm"
@@ -676,6 +697,8 @@ function Dashboard() {
                 >
                   <Terminal className="w-3.5 h-3.5" />
                 </button>
+                )}
+                {(can('servers.change_general_settings') || can('servers.change_game_settings') || can('servers.change_server_options') || can('servers.change_remote_local_ports') || can('servers.change_remote_target') || can('servers.update')) && (
                 <button
                   onClick={(e) => { e.stopPropagation(); navigate(`/servers/${server.id}/properties`); }}
                   className="btn btn-secondary text-sm"
@@ -683,6 +706,8 @@ function Dashboard() {
                 >
                   <Settings className="w-3.5 h-3.5" />
                 </button>
+                )}
+                {can('servers.set_lan') && (
                 <button
                   onClick={(e) => beginLanToggle(server, e)}
                   disabled={lanLocked || lanBusy[server.id]}
@@ -698,6 +723,8 @@ function Dashboard() {
                   <Radio className="w-3.5 h-3.5" />
                   {lanBusy[server.id] ? '...' : 'LAN'}
                 </button>
+                )}
+                {can('servers.delete') && (
                 <button
                   onClick={(e) => { e.stopPropagation(); handleDelete(server.id, server.name); }}
                   className="btn btn-secondary text-sm text-mc-danger hover:bg-red-500/20"
@@ -705,6 +732,7 @@ function Dashboard() {
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
+                )}
               </div>
             </div>
             );
