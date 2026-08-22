@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { modApi } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
 import {
   ArrowLeft, Save, Loader2, Check, AlertCircle, RefreshCw, Eye, EyeOff, GitBranch, Folder, Download
@@ -8,6 +9,7 @@ import {
 
 function ModCatalogSettings() {
   const navigate = useNavigate();
+  const { can } = useAuth();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -113,27 +115,32 @@ function ModCatalogSettings() {
     setGitTestResult(null);
     setFileTestResults({});
     try {
-      const payload = {
-        git: {
+      const payload = {};
+      if (can('catalog.enable_git')) {
+        payload.git = {
           enabled: gitEnabled,
           url: gitUrl,
           branch: gitBranch,
           username: gitUsername,
           subdir: gitSubdir,
-        },
-        files: {
+        };
+        if (clearGitToken) payload.clearGitToken = true;
+        else if (gitToken.trim()) payload.git.token = gitToken.trim();
+      }
+      if (can('catalog.enable_file')) {
+        payload.files = {
           enabled: fileEnabled,
           local: { enabled: localEnabled, path: localPath },
           smb: { enabled: smbEnabled, path: smbPath, username: smbUsername },
           nfs: { enabled: nfsEnabled, path: nfsPath },
-        },
-      };
-      if (clearCurseforgeApiKey) payload.clearCurseforgeApiKey = true;
-      else if (curseforgeApiKey.trim()) payload.curseforgeApiKey = curseforgeApiKey.trim();
-      if (clearGitToken) payload.clearGitToken = true;
-      else if (gitToken.trim()) payload.git.token = gitToken.trim();
-      if (clearSmbPassword) payload.clearSmbPassword = true;
-      else if (smbPassword.trim()) payload.files.smb.password = smbPassword.trim();
+        };
+        if (clearSmbPassword) payload.clearSmbPassword = true;
+        else if (smbPassword.trim()) payload.files.smb.password = smbPassword.trim();
+      }
+      if (can('catalog.set_curseforge_key')) {
+        if (clearCurseforgeApiKey) payload.clearCurseforgeApiKey = true;
+        else if (curseforgeApiKey.trim()) payload.curseforgeApiKey = curseforgeApiKey.trim();
+      }
 
       const res = await modApi.saveCatalogSettings(payload);
       const data = res.data;

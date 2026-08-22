@@ -12,6 +12,7 @@ const gitCatalogTemplate = require('../services/gitCatalogTemplate');
 const packFiles = require('../services/packFiles');
 const curseforgeImporter = require('../services/curseforgeImporter');
 const mcpedlImporter = require('../services/mcpedlImporter');
+const { requirePermission, assertPermission } = require('../middleware/auth');
 
 // Multer config for file uploads
 const uploadsDir = path.join(__dirname, '../../data/uploads');
@@ -203,7 +204,7 @@ router.get('/installed/:serverId', async (req, res) => {
 });
 
 // Install mod to server
-router.post('/:modId/install/:serverId', async (req, res) => {
+router.post('/:modId/install/:serverId', requirePermission('servers.add_mods'), async (req, res) => {
   try {
     await modManager.installModToServer(req.params.serverId, req.params.modId);
     res.json({ success: true });
@@ -213,7 +214,7 @@ router.post('/:modId/install/:serverId', async (req, res) => {
 });
 
 // Uninstall mod from server
-router.delete('/:modId/uninstall/:serverId', async (req, res) => {
+router.delete('/:modId/uninstall/:serverId', requirePermission('servers.remove_mods'), async (req, res) => {
   try {
     await modManager.uninstallModFromServer(req.params.serverId, req.params.modId);
     res.json({ success: true });
@@ -232,7 +233,7 @@ router.get('/catalog/settings', async (req, res) => {
   }
 });
 
-router.put('/catalog/multi-file-mode', (req, res) => {
+router.put('/catalog/multi-file-mode', requirePermission('catalog.change_file_handling'), (req, res) => {
   try {
     res.json(catalog.setMultiFileMode(req.body?.mode));
   } catch (err) {
@@ -242,8 +243,14 @@ router.put('/catalog/multi-file-mode', (req, res) => {
 
 router.put('/catalog/settings', async (req, res) => {
   try {
+    const body = req.body || {};
+    if (body.curseforgeApiKey != null || body.clearCurseforgeApiKey) {
+      assertPermission(req, 'catalog.set_curseforge_key');
+    }
+    if (body.git) assertPermission(req, 'catalog.enable_git');
+    if (body.files) assertPermission(req, 'catalog.enable_file');
     const previous = gitCatalog.getConfig();
-    const saved = catalog.saveSettings(req.body || {});
+    const saved = catalog.saveSettings(body);
     const next = gitCatalog.getConfig();
     const gitChanged = previous.enabled !== next.enabled
       || previous.url !== next.url
@@ -262,7 +269,7 @@ router.put('/catalog/settings', async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -277,7 +284,7 @@ router.get('/catalog/git/status', (req, res) => {
   res.json(gitCatalog.getSyncStatus());
 });
 
-router.post('/catalog/git/test', async (req, res) => {
+router.post('/catalog/git/test', requirePermission('catalog.enable_git'), async (req, res) => {
   try {
     const result = await catalog.testGitConnection(req.body || {});
     res.json(result);
@@ -286,7 +293,7 @@ router.post('/catalog/git/test', async (req, res) => {
   }
 });
 
-router.post('/catalog/git/sync', async (req, res) => {
+router.post('/catalog/git/sync', requirePermission('catalog.enable_git'), async (req, res) => {
   try {
     if (!gitCatalog.canSync()) {
       return res.status(400).json({
@@ -321,7 +328,7 @@ router.get('/catalog/file/starter', (req, res) => {
   res.send(zip);
 });
 
-router.post('/catalog/file/test', async (req, res) => {
+router.post('/catalog/file/test', requirePermission('catalog.enable_file'), async (req, res) => {
   try {
     const result = await catalog.testFileConnection(req.body || {});
     res.json(result);
@@ -368,7 +375,7 @@ router.get('/catalog/categories', async (req, res) => {
   }
 });
 
-router.post('/catalog/download/:slug', async (req, res) => {
+router.post('/catalog/download/:slug', requirePermission('catalog.download_mods'), async (req, res) => {
   try {
     const result = await catalog.downloadMod(req.params.slug, req.body || {});
     res.json(result);

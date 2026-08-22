@@ -1,11 +1,12 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { 
   Server, Plus, Package, Users, Network, Globe,
-  ChevronLeft, ChevronRight, Home, Download, Menu, X
+  ChevronLeft, ChevronRight, Home, Download, Menu, X, UserCog, LogOut
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
+import { useAuth } from '../context/AuthContext';
 import { pluginApi, publicApi } from '../services/api';
 import { pluginIcon } from '../pluginIcons';
 
@@ -19,6 +20,7 @@ function Layout() {
   const [pluginMenus, setPluginMenus] = useState([]);
   const { servers, loading } = useApi();
   const { connected } = useSocket();
+  const { user, logout, can, canAccessUserManagement } = useAuth();
 
   useEffect(() => {
     publicApi.health()
@@ -63,12 +65,17 @@ function Layout() {
   const navItems = [
     { icon: Home, label: 'Dashboard', path: '/', exact: true },
     { icon: Server, label: 'Servers', path: '/servers' },
-    { icon: Plus, label: 'New Server', path: '/servers/new' },
+    ...(can('servers.create') || can('servers.create_remote')
+      ? [{ icon: Plus, label: 'New Server', path: '/servers/new' }]
+      : []),
     { icon: Package, label: 'Mod Library', path: '/mods' },
     { icon: Download, label: 'Mod Catalog', path: '/mods/catalog' },
     { icon: Users, label: 'Players', path: '/players' },
     { icon: Globe, label: 'BedrockConnect', path: '/bedrock-connect' },
     { icon: Network, label: 'Ports', path: '/ports' },
+    ...(canAccessUserManagement
+      ? [{ icon: UserCog, label: 'Users', path: '/users' }]
+      : []),
   ];
 
   const activeServers = servers.filter(s => s.status === 'running').length;
@@ -86,6 +93,7 @@ function Layout() {
   const pageTitle = currentPlugin?.label
     || currentPage?.label
     || (location.pathname === '/plugins' ? 'Plugins' : null)
+    || (location.pathname.startsWith('/users') ? 'Users' : null)
     || (location.pathname.startsWith('/servers/') ? 'Server' : 'MC Manager');
   const isPluginPage = location.pathname.startsWith('/plugins/') && location.pathname !== '/plugins';
 
@@ -235,11 +243,28 @@ function Layout() {
           {showLabels && <span className="text-xs text-mc-textMuted">{connected ? 'Connected' : 'Disconnected'}</span>}
         </div>
 
+        {showLabels && user && (
+          <div className="px-1 text-xs text-mc-textMuted truncate" title={user.fullName}>
+            {user.fullName}
+          </div>
+        )}
+
         {showLabels && (
           <div className="px-1 text-xs text-mc-textMuted">
             {activeServers}/{servers.length} servers active
           </div>
         )}
+
+        <button
+          type="button"
+          onClick={logout}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs
+            text-mc-textMuted hover:text-mc-text hover:bg-mc-surfaceLight transition-all"
+          title="Sign out"
+        >
+          <LogOut className="w-4 h-4" />
+          {showLabels && <span>Sign out</span>}
+        </button>
 
         <button
           onClick={() => setCollapsed(!collapsed)}

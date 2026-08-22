@@ -68,6 +68,79 @@ function zipStore(files) {
   return Buffer.concat([localBuf, centralBuf, end]);
 }
 
+function testUserManagement() {
+  const auth = require('../server/services/authService');
+  const catalog = require('../server/services/permissionCatalog');
+  const login = auth.login('admin', 'mcadmin');
+  assert.equal(login.user.username, 'admin');
+  assert.equal(login.user.isAdmin, true);
+  assert.equal(login.user.permissions.length, catalog.ALL_KEYS.length);
+
+  const groups = auth.listGroups();
+  const adminGroup = groups.find((group) => group.name === 'Administrators');
+  const standardGroup = groups.find((group) => group.name === 'Standard');
+  const readOnly = groups.find((group) => group.name === 'Read-only');
+  assert(adminGroup, 'Administrators group should exist');
+  assert(standardGroup, 'Standard group should exist');
+  assert(readOnly, 'Read-only group should exist');
+
+  const reader = auth.createUser({
+    username: 'reader',
+    fullName: 'Read Only',
+    password: 'readonly',
+    groupIds: [readOnly.id],
+  }, login.user);
+  assert.equal(reader.isAdmin, false);
+  assert.equal(reader.permissions.includes('servers.create'), false);
+  assert.equal(reader.permissions.includes('servers.view_details'), false);
+
+  const operator = auth.createUser({
+    username: 'operator',
+    fullName: 'Standard User',
+    password: 'standard',
+    groupIds: [standardGroup.id],
+  }, login.user);
+  assert.equal(operator.permissions.includes('servers.create'), true);
+  assert.equal(operator.permissions.includes('catalog.download_mods'), true);
+  assert.equal(operator.permissions.includes('users.change_password'), false);
+  assert.equal(operator.permissions.includes('bedrock_connect.enable_dns_proxy'), false);
+
+  const withUserDeny = auth.updateUser(operator.id, {
+    userPermissions: { 'servers.create': 'deny' },
+  }, login.user);
+  assert.equal(withUserDeny.permissions.includes('servers.create'), false);
+
+  const withUserAllow = auth.updateUser(operator.id, {
+    userPermissions: { 'bedrock_connect.enable_dns_proxy': 'allow' },
+  }, login.user);
+  assert.equal(withUserAllow.permissions.includes('bedrock_connect.enable_dns_proxy'), true);
+
+  const denyGroup = auth.createGroup({ name: 'Deny Create' });
+  auth.updateGroup(denyGroup.id, {
+    userIds: [operator.id],
+    permissions: { 'servers.create': 'deny' },
+  });
+  const afterGroupDeny = auth.getUser(operator.id, { includePermissions: true });
+  assert.equal(afterGroupDeny.permissions.includes('servers.create'), false);
+
+  auth.updateUser(operator.id, {
+    userPermissions: { 'servers.create': 'allow' },
+  }, login.user);
+  const groupDenyWins = auth.getUser(operator.id, { includePermissions: true });
+  assert.equal(groupDenyWins.permissions.includes('servers.create'), false);
+
+  auth.updateGroup(denyGroup.id, { isActive: false });
+  const afterDeactivate = auth.getUser(operator.id, { includePermissions: true });
+  assert.equal(afterDeactivate.permissions.includes('servers.create'), true);
+
+  try {
+    auth.updateUser(login.user.id, { isActive: false }, login.user);
+    assert.fail('last admin should not be deactivated');
+  } catch (err) {
+    assert.match(err.message, /administrator/i);
+  }
+}
+
 async function testPluginHost() {
   const reserved = pluginHost.parseManifest({ id: 'servers', name: 'Nope', menu: { label: 'Servers' } }, 'servers');
   assert.equal(reserved.ok, false, 'core ids cannot be used as plugins');
@@ -200,6 +273,7 @@ async function run() {
   ).get('table', 'server_player_access');
   assert(accessTable, 'server_player_access migration was not created');
   await testPluginHost();
+  testUserManagement();
 
   const blocker = dgram.createSocket('udp4');
   await new Promise((resolve, reject) => {
@@ -1407,6 +1481,7 @@ async function run() {
     mcpedlUrlImport: 'ok',
     windowsPlatformAdapter: 'ok',
     pluginHost: 'ok',
+    userManagement: 'ok',
     curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));

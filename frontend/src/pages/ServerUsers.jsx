@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { serverApi, playerApi } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import {
   ArrowLeft, Users, UserPlus, AlertCircle, Check, Loader2, Ban, Shield
 } from 'lucide-react';
@@ -59,6 +60,7 @@ function PlayerCombobox({ value, onChange, options, disabled, placeholder, onEnt
 function ServerUsers() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { can } = useAuth();
   const [server, setServer] = useState(null);
   const [players, setPlayers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -70,7 +72,7 @@ function ServerUsers() {
 
   const isBC = server?.kind === 'bedrock_connect';
   const isRemote = server?.kind === 'remote';
-  const accessLocked = isBC || isRemote;
+  const accessLocked = isBC || isRemote || !can('servers.change_player_permissions');
   const customPlayers = players.filter((player) => Number(player.has_custom_permission) === 1);
 
   useEffect(() => {

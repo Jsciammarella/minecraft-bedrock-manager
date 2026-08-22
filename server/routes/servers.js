@@ -4,6 +4,14 @@ const serverManager = require('../services/serverManager');
 const modManager = require('../services/modManager');
 const autoUpdateScheduler = require('../services/autoUpdateScheduler');
 const connectHost = require('../services/connectHost');
+const {
+  requirePermission,
+  requireServerStart,
+  requireServerStop,
+  requireServerRestart,
+  requireServerUpdate,
+  assertPermission,
+} = require('../middleware/auth');
 
 // ========== SERVER CRUD ==========
 
@@ -73,7 +81,7 @@ router.post('/bedrock-connect/check-updates', async (req, res) => {
   }
 });
 
-router.post('/bedrock-connect', async (req, res) => {
+router.post('/bedrock-connect', requirePermission('servers.create_bedrock_connect'), async (req, res) => {
   try {
     const { acceptConflict, restartMode } = req.body || {};
     const result = await serverManager.createBedrockConnect({
@@ -90,7 +98,7 @@ router.post('/bedrock-connect', async (req, res) => {
 });
 
 // Get single server
-router.get('/:id', async (req, res) => {
+router.get('/:id', requirePermission('servers.view_details'), async (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -115,15 +123,17 @@ router.get('/:id', async (req, res) => {
 // Create new server
 router.post('/', async (req, res) => {
   try {
+    const kind = req.body?.kind === 'remote' ? 'remote' : 'bedrock';
+    assertPermission(req, kind === 'remote' ? 'servers.create_remote' : 'servers.create');
     const result = await serverManager.createServer(req.body);
     res.status(201).json(result);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
 // Update server settings
-router.put('/:id', async (req, res) => {
+router.put('/:id', requireServerUpdate, async (req, res) => {
   try {
     await serverManager.updateSettings(req.params.id, req.body);
     res.json({ success: true });
@@ -133,7 +143,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // Delete server
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requirePermission('servers.delete'), async (req, res) => {
   try {
     await serverManager.deleteServer(req.params.id);
     res.json({ success: true });
@@ -145,7 +155,7 @@ router.delete('/:id', async (req, res) => {
 // ========== SERVER LIFECYCLE ==========
 
 // Start server
-router.post('/:id/start', async (req, res) => {
+router.post('/:id/start', requireServerStart, async (req, res) => {
   try {
     const result = await serverManager.startServer(req.params.id);
     res.json(result);
@@ -155,7 +165,7 @@ router.post('/:id/start', async (req, res) => {
 });
 
 // Stop server
-router.post('/:id/stop', async (req, res) => {
+router.post('/:id/stop', requireServerStop, async (req, res) => {
   try {
     const result = await serverManager.stopServer(req.params.id);
     res.json(result);
@@ -165,7 +175,7 @@ router.post('/:id/stop', async (req, res) => {
 });
 
 // Restart server
-router.post('/:id/restart', async (req, res) => {
+router.post('/:id/restart', requireServerRestart, async (req, res) => {
   try {
     await serverManager.restartServer(req.params.id);
     res.json({ success: true });
@@ -175,7 +185,7 @@ router.post('/:id/restart', async (req, res) => {
 });
 
 // Schedule a five-minute restart with player warnings at 5, 2, and 1 minutes.
-router.post('/:id/restart-with-warning', async (req, res) => {
+router.post('/:id/restart-with-warning', requireServerRestart, async (req, res) => {
   try {
     const result = serverManager.scheduleWarnedRestart(req.params.id);
     res.json(result);
@@ -184,7 +194,7 @@ router.post('/:id/restart-with-warning', async (req, res) => {
   }
 });
 
-router.delete('/:id/restart-with-warning', async (req, res) => {
+router.delete('/:id/restart-with-warning', requireServerRestart, async (req, res) => {
   try {
     const result = serverManager.cancelWarnedRestart(req.params.id, { clearPendingBedrockConnect: true });
     res.json(result);
@@ -194,7 +204,7 @@ router.delete('/:id/restart-with-warning', async (req, res) => {
 });
 
 // Send command to server
-router.post('/:id/command', async (req, res) => {
+router.post('/:id/command', requirePermission('servers.console'), async (req, res) => {
   try {
     const { command } = req.body;
     if (!command) return res.status(400).json({ error: 'Command required' });
@@ -208,7 +218,7 @@ router.post('/:id/command', async (req, res) => {
 // ========== SERVER UPDATES ==========
 
 // Update server version
-router.post('/:id/update', async (req, res) => {
+router.post('/:id/update', requirePermission('servers.update'), async (req, res) => {
   try {
     const { version } = req.body;
     const result = await serverManager.updateServer(req.params.id, version);
@@ -231,7 +241,7 @@ router.get('/:id/auto-update', async (req, res) => {
 });
 
 // Enable auto-update for a server
-router.post('/:id/auto-update', async (req, res) => {
+router.post('/:id/auto-update', requirePermission('servers.update'), async (req, res) => {
   try {
     const { intervalHours } = req.body;
     await autoUpdateScheduler.enableAutoUpdate(req.params.id, intervalHours || 24);
@@ -242,7 +252,7 @@ router.post('/:id/auto-update', async (req, res) => {
 });
 
 // Disable auto-update for a server
-router.delete('/:id/auto-update', async (req, res) => {
+router.delete('/:id/auto-update', requirePermission('servers.update'), async (req, res) => {
   try {
     await autoUpdateScheduler.disableAutoUpdate(req.params.id);
     res.json({ success: true });
@@ -260,7 +270,7 @@ router.get('/:id/lan-broadcast', async (req, res) => {
   }
 });
 
-router.put('/:id/lan-broadcast', async (req, res) => {
+router.put('/:id/lan-broadcast', requirePermission('servers.set_lan'), async (req, res) => {
   try {
     const { enabled, acceptConflict, restartMode } = req.body || {};
     const result = await serverManager.setLanBroadcast(req.params.id, Boolean(enabled), {
