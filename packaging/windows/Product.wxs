@@ -37,6 +37,8 @@
       <ComponentRef Id="DataServersFolderComp" />
       <ComponentRef Id="DataModsFolderComp" />
       <ComponentRef Id="DataLogsFolderComp" />
+      <ComponentRef Id="DataPluginsFolderComp" />
+      <ComponentRef Id="DataPluginDataFolderComp" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
 
@@ -46,6 +48,8 @@
           <Directory Id="DataServersFolder" Name="servers" />
           <Directory Id="DataModsFolder" Name="mods" />
           <Directory Id="DataLogsFolder" Name="logs" />
+          <Directory Id="DataPluginsFolder" Name="plugins" />
+          <Directory Id="DataPluginDataFolder" Name="plugin-data" />
         </Directory>
       </Directory>
     </StandardDirectory>
@@ -107,6 +111,14 @@
     <Component Id="DataLogsFolderComp" Directory="DataLogsFolder" Permanent="yes" Guid="E0F40715-1C26-4D49-AE38-9B5F1D04C6A3">
       <CreateFolder />
       <RegistryValue Root="HKLM" Key="Software\MinecraftBedrockManager" Name="DataLogsFolder" Type="string" Value="[DataLogsFolder]" KeyPath="yes" />
+    </Component>
+    <Component Id="DataPluginsFolderComp" Directory="DataPluginsFolder" Permanent="yes" Guid="A1B62937-3E48-4F61-C05A-BD713F26E8C5">
+      <CreateFolder />
+      <RegistryValue Root="HKLM" Key="Software\MinecraftBedrockManager" Name="DataPluginsFolder" Type="string" Value="[DataPluginsFolder]" KeyPath="yes" />
+    </Component>
+    <Component Id="DataPluginDataFolderComp" Directory="DataPluginDataFolder" Permanent="yes" Guid="B2C73A48-4F59-4072-D16B-CE824A37F9D6">
+      <CreateFolder />
+      <RegistryValue Root="HKLM" Key="Software\MinecraftBedrockManager" Name="DataPluginDataFolder" Type="string" Value="[DataPluginDataFolder]" KeyPath="yes" />
     </Component>
 
     <Component Id="StartMenuShortcut" Directory="AppMenuFolder" Guid="F1A51826-2D37-4E50-BF49-AC602E15D7B4">
