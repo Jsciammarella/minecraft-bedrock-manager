@@ -747,10 +747,87 @@ function resolveUiFile(plugin, requestPath) {
   return { filePath: target, mime: UI_MIME[ext], ext };
 }
 
-function injectHtmlSdk(html) {
-  const source = String(html);
-  if (source.includes('/api/plugins/sdk.js')) return source;
-  const tag = '<script src="/api/plugins/sdk.js"></script>\n';
+const PLUGIN_SDK_PATH = path.join(__dirname, '../static/plugin-sdk.js');
+const PLUGIN_UI_FONTS = [
+  '<link rel="preconnect" href="https://fonts.googleapis.com">',
+  '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
+  '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">',
+].join('\n');
+const PLUGIN_UI_CHROME_CSS = [
+  'html,body{margin:0;min-height:100%;background:#1a1a2e;color:#e2e8f0;color-scheme:dark;',
+  "font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}",
+  'button,input,select,textarea{font:inherit}',
+].join('');
+
+function htmlAttr(tag, name) {
+  const quoted = String(tag).match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, 'i'));
+  if (quoted) return quoted[1].trim();
+  const bare = String(tag).match(new RegExp(`\\b${name}\\s*=\\s*([^\\s>]+)`, 'i'));
+  return bare ? bare[1].trim() : '';
+}
+
+function isExternalAssetUrl(url) {
+  return /^(https?:)?\/\//i.test(url) || url.startsWith('data:') || url.startsWith('blob:');
+}
+
+function isPluginSdkSrc(src) {
+  const pathOnly = String(src || '').split('?')[0];
+  return pathOnly === '/api/plugins/sdk.js' || pathOnly.endsWith('/plugins/sdk.js');
+}
+
+function escapeInline(source, closer) {
+  const re = closer === 'script' ? /<\/script/gi : /<\/style/gi;
+  return String(source).replace(re, closer === 'script' ? '<\\/script' : '<\\/style');
+}
+
+function pluginSdkSource() {
+  return `/* mc-manager-plugin-sdk */\n${fs.readFileSync(PLUGIN_SDK_PATH, 'utf8')}`;
+}
+
+function pluginSdkPresent(html) {
+  return html.includes('mc-manager-plugin-sdk') || html.includes("source: 'mbm-host'");
+}
+
+function inlinePluginPageAssets(plugin, html) {
+  let source = String(html);
+  source = source.replace(/<link\b[^>]*>/gi, (tag) => {
+    if (htmlAttr(tag, 'rel').toLowerCase() !== 'stylesheet') return tag;
+    const href = htmlAttr(tag, 'href');
+    if (!href || isExternalAssetUrl(href) || href.startsWith('/') || !plugin) return tag;
+    const file = resolveUiFile(plugin, href);
+    if (!file || file.ext !== '.css') return tag;
+    const css = escapeInline(fs.readFileSync(file.filePath, 'utf8'), 'style');
+    return `<style data-mbm-plugin-asset>\n${css}\n</style>`;
+  });
+  source = source.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (full, attrs) => {
+    const src = htmlAttr(`<script ${attrs}>`, 'src');
+    if (!src) return full;
+    const type = htmlAttr(`<script ${attrs}>`, 'type');
+    const typeAttr = type ? ` type="${type.replace(/"/g, '')}"` : '';
+    if (isPluginSdkSrc(src)) {
+      return `<script${typeAttr}>\n${escapeInline(pluginSdkSource(), 'script')}\n</script>`;
+    }
+    if (isExternalAssetUrl(src) || src.startsWith('/') || !plugin) return full;
+    const file = resolveUiFile(plugin, src);
+    if (!file || (file.ext !== '.js' && file.ext !== '.mjs')) return full;
+    const js = escapeInline(fs.readFileSync(file.filePath, 'utf8'), 'script');
+    return `<script${typeAttr} data-mbm-plugin-asset>\n${js}\n</script>`;
+  });
+  return source;
+}
+
+function injectHtmlSdk(html, plugin = null) {
+  let source = inlinePluginPageAssets(plugin, html);
+  const headBits = [];
+  if (!/fonts\.googleapis\.com/.test(source)) headBits.push(PLUGIN_UI_FONTS);
+  if (!source.includes('data-mbm-plugin-chrome')) {
+    headBits.push(`<style data-mbm-plugin-chrome>${PLUGIN_UI_CHROME_CSS}</style>`);
+  }
+  if (!pluginSdkPresent(source)) {
+    headBits.push(`<script>\n${escapeInline(pluginSdkSource(), 'script')}\n</script>`);
+  }
+  if (!headBits.length) return source;
+  const tag = `${headBits.join('\n')}\n`;
   if (/<head[^>]*>/i.test(source)) {
     return source.replace(/<head[^>]*>/i, (open) => `${open}\n${tag}`);
   }

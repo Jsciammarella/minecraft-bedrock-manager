@@ -375,7 +375,11 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
     assert.ok(uiRes.ok, 'Geyser plugin UI should be served as HTML');
     assert.match(String(uiRes.headers.get('content-type') || ''), /text\/html/i);
     assert.match(uiHtml, /Add gateway/);
-    assert.match(uiHtml, /\/api\/plugins\/sdk\.js/);
+    assert.match(uiHtml, /mc-manager-plugin-sdk/);
+    assert.match(uiHtml, /\.hidden\s*\{/);
+    assert.match(uiHtml, /function applyTheme/);
+    assert.doesNotMatch(uiHtml, /href=["']geyser\.css["']/);
+    assert.equal(String(uiRes.headers.get('cross-origin-resource-policy') || ''), 'cross-origin');
     const missingFileRes = await fetch(`${origin}/api/plugins/gateway-geyser/ui/undefined`);
     assert.equal(missingFileRes.status, 404);
   } finally {

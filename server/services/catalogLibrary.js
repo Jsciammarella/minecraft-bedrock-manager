@@ -11,6 +11,7 @@ const javaModMetadata = require('./javaModMetadata');
 const modManager = require('./modManager');
 const packFiles = require('./packFiles');
 const catalogDownloadPolicy = require('./catalogDownloadPolicy');
+const { moveFile } = require('./fsMove');
 
 const MODS_DIR = process.env.MC_MANAGER_MODS_DIR
   ? path.resolve(process.env.MC_MANAGER_MODS_DIR)
@@ -83,7 +84,7 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
       const destName = modManager.getAvailableFilename(tmpName);
       const dest = path.join(MODS_DIR, destName);
       fs.mkdirSync(MODS_DIR, { recursive: true });
-      fs.renameSync(tmpPath, dest);
+      moveFile(tmpPath, dest);
       stored.push({
         ...file,
         path: dest,

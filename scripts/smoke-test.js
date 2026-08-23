@@ -113,7 +113,32 @@ async function testPluginHost() {
   assert.equal(pluginHost.resolveUiFile(helloPlugin, '../backend.js'), null);
   assert.equal(pluginHost.resolveUiFile(helloPlugin, '..\\backend.js'), null);
   const injected = pluginHost.injectHtmlSdk('<html><head></head><body></body></html>');
-  assert(injected.includes('/api/plugins/sdk.js'));
+  assert(injected.includes('mc-manager-plugin-sdk'), 'plugin HTML should inline the SDK');
+  assert(injected.includes('data-mbm-plugin-chrome'));
+
+  const fsMove = require('../server/services/fsMove');
+  const moveSrc = path.join(testRoot, 'move-src.bin');
+  const moveDest = path.join(testRoot, 'move-dest.bin');
+  fs.writeFileSync(moveSrc, 'catalog');
+  fsMove.moveFile(moveSrc, moveDest);
+  assert.equal(fs.readFileSync(moveDest, 'utf8'), 'catalog');
+  assert.equal(fs.existsSync(moveSrc), false);
+  const moveSrc2 = path.join(testRoot, 'move-src2.bin');
+  const moveDest2 = path.join(testRoot, 'move-dest2.bin');
+  fs.writeFileSync(moveSrc2, 'exdev');
+  const originalRename = fs.renameSync;
+  fs.renameSync = () => {
+    const err = new Error('EXDEV: cross-device link not permitted');
+    err.code = 'EXDEV';
+    throw err;
+  };
+  try {
+    fsMove.moveFile(moveSrc2, moveDest2);
+    assert.equal(fs.readFileSync(moveDest2, 'utf8'), 'exdev');
+    assert.equal(fs.existsSync(moveSrc2), false);
+  } finally {
+    fs.renameSync = originalRename;
+  }
 
   const pluginApp = require('express')();
   pluginApp.use('/api/servers', (req, res) => res.json({ core: true }));
@@ -130,10 +155,10 @@ async function testPluginHost() {
     const uiRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/index.html`);
     const uiHtml = await uiRes.text();
     assert(uiRes.ok, 'example plugin UI should be served');
-    assert(uiHtml.includes('/api/plugins/sdk.js'), 'plugin HTML should receive the SDK');
+    assert(uiHtml.includes('mc-manager-plugin-sdk'), 'plugin HTML should receive the SDK');
     const uiDirRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/`);
     assert.ok(uiDirRes.ok, 'plugin UI directory should serve index.html');
-    assert.match(await uiDirRes.text(), /\/api\/plugins\/sdk\.js/);
+    assert.match(await uiDirRes.text(), /mc-manager-plugin-sdk/);
     const metaRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/meta`);
     const metaBody = await metaRes.json();
     assert.equal(metaBody.pages[0].file, 'index.html');

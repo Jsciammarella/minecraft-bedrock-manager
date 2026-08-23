@@ -565,7 +565,45 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
     assert.equal(row.loader, 'fabric');
     assert.ok(row.sha256);
     assert.match(row.file_path, /[/\\]mods[/\\]/);
+    assert.ok(fs.existsSync(row.file_path));
     assert.equal(JSON.parse(row.metadata_json).providerId, 'curseforge-java');
+
+    const originalRename = fs.renameSync;
+    fs.renameSync = () => {
+      const err = new Error('EXDEV: cross-device link not permitted');
+      err.code = 'EXDEV';
+      throw err;
+    };
+    try {
+      const importedExdev = await catalogLibrary.importDownloadPlan({
+        project: {
+          name: 'Electroenergetics',
+          slug: 'electroenergetics',
+          edition: 'java',
+          source: 'curseforge',
+          providerId: 'curseforge-java',
+          curseforgeId: 101,
+          author: 'Create',
+          websiteUrl: 'https://www.curseforge.com/minecraft/mc-mods/electroenergetics',
+          artifactType: 'mod',
+        },
+        files: [{
+          url: 'https://edge.forgecdn.net/files/electroenergetics.jar',
+          fileName: 'electroenergetics-1.21.1-1.1.1.jar',
+          fileId: 22,
+          loader: 'neoforge',
+          minecraftVersions: ['1.21.1'],
+          environment: 'both',
+          displayName: '1.1.1',
+        }],
+      }, { allowHosts: ['edge.forgecdn.net'], providerId: 'curseforge-java' });
+      assert.equal(importedExdev.success, true);
+      const exdevRow = db.prepare('SELECT * FROM mods WHERE id = ?').get(importedExdev.modId);
+      assert.ok(fs.existsSync(exdevRow.file_path), 'catalog import should copy across filesystems on EXDEV');
+      assert.match(exdevRow.file_path, /electroenergetics-1\.21\.1-1\.1\.1\.jar$/);
+    } finally {
+      fs.renameSync = originalRename;
+    }
   } finally {
     controlledDownload.downloadToFile = originalDownload;
   }

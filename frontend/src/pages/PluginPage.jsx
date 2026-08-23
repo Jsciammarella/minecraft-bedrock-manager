@@ -100,6 +100,7 @@ function PluginPage() {
       title={page.title || plugin.name}
       src={src}
       className="w-full h-full border-0 bg-mc-dark"
+      style={{ colorScheme: 'dark' }}
       sandbox="allow-scripts allow-forms allow-modals allow-downloads"
       referrerPolicy="no-referrer"
     />

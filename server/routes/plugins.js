@@ -32,9 +32,15 @@ router.get('/', (req, res) => {
   sendPluginState(res);
 });
 
-router.get('/sdk.js', (req, res) => {
-  res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+function setPluginAssetHeaders(res) {
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'no-cache');
+}
+
+router.get('/sdk.js', (req, res) => {
+  setPluginAssetHeaders(res);
+  res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
   res.sendFile(sdkPath);
 });
 
@@ -106,13 +112,12 @@ router.use('/:pluginId/ui', (req, res, next) => {
   if (!file) {
     return res.status(404).json({ error: 'Plugin page not found' });
   }
+  setPluginAssetHeaders(res);
   res.setHeader('Content-Type', file.mime);
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
   if (file.ext === '.html' || file.ext === '.htm') {
     const html = fs.readFileSync(file.filePath, 'utf8');
-    return res.send(pluginHost.injectHtmlSdk(html));
+    return res.send(pluginHost.injectHtmlSdk(html, plugin));
   }
   return res.sendFile(file.filePath);
 });
