@@ -399,6 +399,23 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   assert.equal(fabricParsed.loader, 'fabric');
   assert.equal(fabricParsed.environment, 'client');
   assert.deepEqual(fabricParsed.minecraftVersions, ['1.21.1']);
+  const minecraftVersions = require('../server/services/minecraftVersions');
+  assert.deepEqual(
+    minecraftVersions.parseRequestedGameVersions('1.21.1:java,1.26.1:bedrock'),
+    [{ version: '1.21.1', edition: 'java' }, { version: '1.26.1', edition: 'bedrock' }]
+  );
+  assert.deepEqual(minecraftVersions.providerGameVersions(['java'], [
+    { version: '1.21.1', edition: 'java' },
+    { version: '1.26.1', edition: 'bedrock' },
+  ]), ['1.21.1']);
+  assert.equal(minecraftVersions.matchesCatalogGameVersions(
+    { minecraftVersions: ['1.21.1'] },
+    ['1.26.1']
+  ), false);
+  assert.equal(minecraftVersions.matchesCatalogGameVersions(
+    { minecraftVersions: ['1.21.1'] },
+    ['1.21.1']
+  ), true);
   const neoParsed = javaProvider.parseGameVersions(['1.21.1', 'NeoForge', 'Server']);
   assert.equal(neoParsed.loader, 'neoforge');
   const unknownParsed = javaProvider.parseGameVersions(['1.21.1']);

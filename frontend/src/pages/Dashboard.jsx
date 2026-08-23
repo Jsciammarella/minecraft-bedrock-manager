@@ -617,10 +617,10 @@ function Dashboard() {
                   </div>
                 </div>
               )}
-              {createFailed && server.pending_restart !== 1 && (
-                <div className="mb-4 p-2.5 rounded-lg border border-red-500/30 bg-red-500/10 text-red-300 text-xs flex items-start gap-2">
+              {isJava(server) && (server.missingModDependencies?.required || []).length > 0 && (
+                <div className="mb-4 p-2.5 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-yellow-300 text-xs flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  {server.pending_restart_reason}
+                  There are missing dependencies.
                 </div>
               )}
               {server.pending_restart === 1 && (
@@ -682,6 +682,14 @@ function Dashboard() {
                   </button>
                 )}
                 {server.status !== 'running' && server.status !== 'creating' && server.status !== 'starting' && (
+                  isJava(server) && (server.missingModDependencies?.required || []).length > 0 ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); navigate(`/servers/${server.id}#dependencies`); }}
+                      className="btn btn-warning flex-1 text-sm"
+                    >
+                      Resolve dependencies
+                    </button>
+                  ) : (
                   <button
                     onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'start'); }}
                     disabled={actions[`${server.id}-start`]}
@@ -690,6 +698,7 @@ function Dashboard() {
                     <Play className="w-3.5 h-3.5" />
                     {actions[`${server.id}-start`] ? 'Starting...' : 'Start'}
                   </button>
+                  )
                 )}
                 {server.status === 'running' && (
                   <>

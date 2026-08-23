@@ -2,32 +2,57 @@ const path = require('path');
 const crypto = require('crypto');
 const zipGuard = require('./zipGuard');
 
-function parseDepends(raw) {
+function parseDepends(raw, optional = false) {
   if (!raw || typeof raw !== 'object') return [];
   return Object.entries(raw).map(([id, version]) => ({
     id,
     version: typeof version === 'string' ? version : String(version?.value || version || '*'),
+    optional: Boolean(optional),
   }));
+}
+
+function minecraftFromConstraint(value) {
+  return String(value || '').match(/\d+\.\d+(?:\.\d+)?/g) || [];
 }
 
 function detectFabric(text) {
   try {
     const json = JSON.parse(text);
     const env = json.environment === 'client' || json.environment === 'server' ? json.environment : (json.environment === '*' ? 'both' : 'unknown');
+    const dependencies = [
+      ...parseDepends(json.depends, false),
+      ...parseDepends(json.recommends, true),
+      ...parseDepends(json.suggests, true),
+    ];
     return {
       loader: 'fabric',
       artifactType: 'mod',
       name: json.name || json.id,
       version: json.version || '0.0.0',
       environment: env,
-      dependencies: parseDepends(json.depends),
-      minecraftVersions: json.depends?.minecraft ? [String(json.depends.minecraft).replace(/[^0-9.]/g, '')].filter(Boolean) : [],
+      dependencies,
+      minecraftVersions: minecraftFromConstraint(json.depends?.minecraft),
       license: Array.isArray(json.license) ? json.license.join(', ') : String(json.license || ''),
-      metadata: json,
+      metadata: { ...json, modId: json.id || json.name },
     };
   } catch {
     return null;
   }
+}
+
+function parseNeoForgeDependencies(text, selfId) {
+  const blocks = String(text || '').split(/\[\[dependencies[^\]]*\]\]/i).slice(1);
+  return blocks.map((block) => {
+    const id = (block.match(/modId\s*=\s*"([^"]+)"/i) || [])[1];
+    if (!id || id === selfId) return null;
+    const version = (block.match(/versionRange\s*=\s*"([^"]+)"/i) || [])[1] || '*';
+    const type = String((block.match(/\btype\s*=\s*"([^"]+)"/i) || [])[1] || '').toLowerCase();
+    const mandatoryRaw = (block.match(/mandatory\s*=\s*(true|false)/i) || [])[1];
+    const optional = type === 'optional'
+      || type === 'recommended'
+      || (mandatoryRaw ? mandatoryRaw.toLowerCase() === 'false' : false);
+    return { id, version, optional };
+  }).filter(Boolean);
 }
 
 function detectNeoForge(text) {
@@ -37,13 +62,14 @@ function detectNeoForge(text) {
   const side = /clientSideOnly\s*=\s*true/i.test(text) ? 'client' : /serverSideOnly\s*=\s*true/i.test(text) ? 'server' : 'unknown';
   const mc = [...text.matchAll(/minecraftVersion\s*=\s*"([^"]+)"/gi)].map((item) => item[1]);
   if (!id) return null;
+  const dependencies = parseNeoForgeDependencies(text, id[1]);
   return {
     loader: 'neoforge',
     artifactType: 'mod',
     name: name ? name[1] : id[1],
     version: version ? version[1] : '0.0.0',
     environment: side,
-    dependencies: [...text.matchAll(/modId\s*=\s*"([^"]+)"/gi)].slice(1).map((item) => ({ id: item[1], version: '*' })),
+    dependencies,
     minecraftVersions: mc,
     license: '',
     metadata: { modId: id[1] },

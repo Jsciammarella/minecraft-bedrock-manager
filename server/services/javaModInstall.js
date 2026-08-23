@@ -30,6 +30,7 @@ function artifactFromRow(row) {
     sha256: row.sha256 || '',
     fileSize: row.file_size,
     warning: row.warning || '',
+    metadata: parseJson(row.metadata_json, {}),
     filePath: row.file_path,
   };
 }
@@ -62,7 +63,7 @@ function modsDirFor(server) {
 function list(serverId) {
   const rows = db.prepare(`
     SELECT sm.*, m.name, m.edition, m.artifact_type, m.loader, m.minecraft_versions,
-      m.environment, m.dependencies, m.source, m.source_url, m.license, m.sha256, m.file_size, m.warning, m.file_path, m.type
+      m.environment, m.dependencies, m.source, m.source_url, m.license, m.sha256, m.file_size, m.warning, m.file_path, m.type, m.metadata_json
     FROM server_mods sm
     JOIN mods m ON m.id = sm.mod_id
     WHERE sm.server_id = ?

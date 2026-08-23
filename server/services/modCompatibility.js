@@ -1,5 +1,6 @@
 const javaLoaderRegistry = require('./javaLoaderRegistry');
 const catalogModMeta = require('./catalogModMeta');
+const minecraftVersions = require('./minecraftVersions');
 
 function serverLoaderId(server) {
   return String(server?.loader_provider_id || server?.loaderProviderId || 'vanilla');
@@ -19,9 +20,14 @@ function compatibleWithServer(mod, server) {
     const loaderId = serverLoaderId(server);
     if (!loaderSupportsMods(loaderId)) return false;
     const modLoader = catalogModMeta.normalizeLoader(mod.loader, 'java');
-    if (!modLoader || modLoader === 'any' || modLoader === 'unknown') return true;
-    if (loaderId === 'neoforge' && (modLoader === 'neoforge' || modLoader === 'forge')) return true;
-    return modLoader === loaderId;
+    const versionOk = minecraftVersions.supportsMinecraftVersion(
+      minecraftVersions.modMinecraftVersions(mod),
+      minecraftVersions.serverMinecraftVersion(server)
+    );
+    if (!modLoader || modLoader === 'any' || modLoader === 'unknown') return versionOk;
+    if (loaderId === 'neoforge' && (modLoader === 'neoforge' || modLoader === 'forge')) return versionOk;
+    if (modLoader !== loaderId) return false;
+    return versionOk;
   }
   return !javaMod;
 }

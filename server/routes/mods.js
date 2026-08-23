@@ -355,6 +355,7 @@ router.get('/catalog/search', async (req, res) => {
       source: req.query.source || 'all',
       provider: req.query.provider || '',
       edition: req.query.edition || 'all',
+      gameVersions: req.query.gameVersions,
     });
     res.json(result);
   } catch (err) {

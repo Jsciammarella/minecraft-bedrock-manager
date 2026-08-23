@@ -222,6 +222,7 @@ class ServerManager {
         ...server,
         kind: 'java',
       }),
+      missingModDependencies: require('./javaModDependencies').publicState(server),
     } : {};
     if (this.isBedrockConnect(server) || this.isJava(server)) {
       return javaEdition.attachFields({
@@ -3444,6 +3445,15 @@ done
     pty.on('data', (data) => {
       const text = playerPresence.stripAnsi(data);
       this.observePlayerTraffic(serverId, text);
+      const current = this.getServer(serverId);
+      if (current && this.isJava(current)) {
+        const javaModDependencies = require('./javaModDependencies');
+        javaModDependencies.maybeClearOnReady(current, text);
+        if (javaModDependencies.looksLikeDependencyFailure(text)) {
+          javaModDependencies.recordFromCrash(current, this.consoleBuffers.get(this.sessionKey(serverId)) || text);
+          this.invalidateServerCache(serverId);
+        }
+      }
       if (global.io) {
         global.io.to(`server-${serverId}`).emit('server-output', {
           serverId,
@@ -3455,7 +3465,15 @@ done
     pty.on('exit', () => {
       const sessionKey = this.sessionKey(serverId);
       if (this.ptySessions.get(sessionKey) !== pty) return;
+      const current = this.getServer(serverId);
+      const buffer = this.consoleBuffers.get(sessionKey) || '';
       this.ptySessions.delete(sessionKey);
+      if (current && this.isJava(current)) {
+        const javaModDependencies = require('./javaModDependencies');
+        if (javaModDependencies.looksLikeDependencyFailure(buffer)) {
+          javaModDependencies.recordFromCrash(current, buffer);
+        }
+      }
       this.markServerStopped(serverId);
       logger.info(`Server process for ${serverId} exited; status changed to stopped`);
     });

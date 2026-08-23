@@ -281,6 +281,7 @@ ensureServerColumn('minecraft_version', 'TEXT');
 ensureServerColumn('java_major', 'INTEGER');
 ensureServerColumn('loader_state', 'TEXT');
 ensureServerColumn('loader_metadata', 'TEXT');
+ensureServerColumn('missing_mod_dependencies', 'TEXT');
 
 db.exec(`
   UPDATE servers

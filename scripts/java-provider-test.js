@@ -325,6 +325,30 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
     { loader: 'neoforge', minecraftVersions: ['1.21.1'] }
   );
   assert.equal(badLoader.ok, false);
+  const badMc = fabricProvider.validateMod(
+    { minecraft_version: '1.26.1', loader_provider_id: 'fabric' },
+    { loader: 'fabric', minecraftVersions: ['1.21.1'] }
+  );
+  assert.equal(badMc.ok, false);
+  assert.match(badMc.error, /1\.26\.1/);
+  const minecraftVersions = require('../server/services/minecraftVersions');
+  assert.equal(minecraftVersions.supportsMinecraftVersion(['1.21.1'], '1.26.1'), false);
+  assert.equal(minecraftVersions.supportsMinecraftVersion(['1.21'], '1.21.1'), true);
+  assert.equal(minecraftVersions.supportsMinecraftVersion([], '1.26.1'), true);
+  const javaModDependencies = require('../server/services/javaModDependencies');
+  const crashDeps = javaModDependencies.parseLoaderCrash(
+    'Mod yagm requires architectury 13.0.8 or above\nCurrently, architectury is not installed'
+  );
+  assert.ok(crashDeps.some((item) => String(item.id).toLowerCase() === 'architectury'));
+  const fabricToml = javaModMetadata.detectFabric(JSON.stringify({
+    id: 'yagm',
+    name: 'YAGM',
+    depends: { minecraft: '~1.21.1', architectury: '>=13.0.8' },
+    recommends: { cloth: '*' },
+  }));
+  assert.deepEqual(fabricToml.minecraftVersions, ['1.21.1']);
+  assert.ok(fabricToml.dependencies.some((item) => item.id === 'architectury' && !item.optional));
+  assert.ok(fabricToml.dependencies.some((item) => item.id === 'cloth' && item.optional));
 
   const geyserProvider = geyser.createProvider();
   const gPlan = await geyserProvider.planInstallation({});
@@ -348,6 +372,15 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
   pluginHost.resetForTests();
   gatewayRegistry.clear();
   pluginHost.loadPlugins([pluginHost.BUNDLED_PLUGINS_DIR]);
+  const modCompatibility = require('../server/services/modCompatibility');
+  assert.equal(modCompatibility.compatibleWithServer(
+    { edition: 'java', loader: 'fabric', minecraft_versions: JSON.stringify(['1.21.1']) },
+    { kind: 'java', loader_provider_id: 'fabric', minecraft_version: '1.26.1' }
+  ), false);
+  assert.equal(modCompatibility.compatibleWithServer(
+    { edition: 'java', loader: 'fabric', minecraft_versions: JSON.stringify(['1.21.1']) },
+    { kind: 'java', loader_provider_id: 'fabric', minecraft_version: '1.21.1' }
+  ), true);
   try { db.prepare("DELETE FROM gateways WHERE name IN ('Isolated Geyser', 'Missing provider', 'Offline no confirm', 'Remote floodgate', 'While disabled', 'Escape')").run(); } catch { /* ignore */ }
   assert.ok(gatewayRegistry.get('geyser'), 'bundled Geyser plugin should register');
   const geyserMeta = gatewayRegistry.list().find((item) => item.id === 'geyser');

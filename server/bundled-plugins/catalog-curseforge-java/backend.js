@@ -296,6 +296,33 @@ function createProvider(services) {
       };
       if (query) params.searchFilter = query;
       await applyCategory(params, options.category);
+      const versions = Array.isArray(options.minecraftVersions) ? options.minecraftVersions.filter(Boolean) : [];
+      if (versions.length === 1) {
+        params.gameVersion = versions[0];
+      } else if (versions.length > 1) {
+        const pages = [];
+        for (const version of versions) {
+          const data = await apiGet('/v1/mods/search', { ...params, gameVersion: version });
+          pages.push({
+            results: (data.data || []).map(formatProject),
+            total: data.pagination?.totalCount || 0,
+          });
+        }
+        const seen = new Set();
+        const results = [];
+        for (const page of pages) {
+          for (const item of page.results) {
+            if (seen.has(item.id)) continue;
+            seen.add(item.id);
+            results.push(item);
+          }
+        }
+        return {
+          results: results.slice(0, pageSize),
+          total: Math.max(...pages.map((item) => item.total), results.length),
+          page: options.page || 1,
+        };
+      }
       const data = await apiGet('/v1/mods/search', params);
       return {
         results: (data.data || []).map(formatProject),

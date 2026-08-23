@@ -129,7 +129,8 @@ function createProvider(services) {
       }
       const versions = artifact.minecraftVersions || [];
       const mc = server.minecraft_version || server.version;
-      if (versions.length && mc && !versions.includes(mc) && !versions.includes('any')) {
+      const minecraftVersions = require('../../services/minecraftVersions');
+      if (versions.length && mc && !minecraftVersions.supportsMinecraftVersion(versions, mc)) {
         return { ok: false, error: `This mod does not list Minecraft ${mc}` };
       }
       const warnings = [];

@@ -995,7 +995,7 @@ function ModLibrary() {
                 <p className="text-sm text-mc-textMuted text-center py-4">
                   {servers.some((server) => server.kind !== 'bedrock_connect' && server.kind !== 'remote')
                     ? (isJavaLibraryMod(installModal)
-                      ? 'No servers with a compatible launcher.'
+                      ? 'No servers with a compatible Minecraft version and launcher.'
                       : 'This pack is already installed on every compatible server.')
                     : 'No gameplay servers available'}
                 </p>

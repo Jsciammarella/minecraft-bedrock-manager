@@ -10,6 +10,7 @@ const packFiles = require('./packFiles');
 const platform = require('./platform');
 const modArchives = require('./modArchives');
 const catalogModMeta = require('./catalogModMeta');
+const minecraftVersions = require('./minecraftVersions');
 
 const execFileAsync = promisify(execFile);
 
@@ -147,7 +148,8 @@ class GitCatalogClient {
       all = this.loadEntries()
         .filter(mod => this.matchesQuery(mod, query))
         .filter(mod => this.matchesCategory(mod, category))
-        .filter(mod => this.matchesEdition(mod, options.edition));
+        .filter(mod => this.matchesEdition(mod, options.edition))
+        .filter(mod => this.matchesMinecraftVersions(mod, options.minecraftVersions, options.gameVersions));
     } catch (err) {
       logger.warn(`Git catalog search skipped while the repository is incomplete: ${err.message}`);
       return { results: [], total: 0, page };
@@ -623,6 +625,9 @@ class GitCatalogClient {
       websiteUrl: item.websiteUrl || item.url || '',
       edition: meta.edition,
       loader: meta.loader,
+      minecraftVersions: Array.isArray(item.minecraftVersions)
+        ? item.minecraftVersions
+        : (Array.isArray(item.gameVersions) ? item.gameVersions : []),
     });
   }
 
@@ -698,6 +703,7 @@ class GitCatalogClient {
       filePaths: entry.filePaths || (entry.filePath ? [entry.filePath] : []),
       edition: entry.edition || (String(entry.filePath || '').toLowerCase().endsWith('.jar') ? 'java' : 'bedrock'),
       loader: entry.loader || ((entry.edition === 'java' || String(entry.filePath || '').toLowerCase().endsWith('.jar')) ? 'unknown' : 'any'),
+      minecraftVersions: Array.isArray(entry.minecraftVersions) ? entry.minecraftVersions : [],
     };
   }
 
@@ -724,6 +730,10 @@ class GitCatalogClient {
   matchesEdition(mod, edition) {
     if (!edition || edition === 'all') return true;
     return catalogModMeta.normalizeEdition(mod.edition) === catalogModMeta.normalizeEdition(edition, '');
+  }
+
+  matchesMinecraftVersions(mod, versions, requested) {
+    return minecraftVersions.matchesCatalogGameVersions(mod, versions, requested);
   }
 
   sortMods(mods, sortBy, query) {

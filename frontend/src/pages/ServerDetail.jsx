@@ -103,6 +103,10 @@ function ServerDetail() {
   const [lanMessage, setLanMessage] = useState('');
   const [lanConflict, setLanConflict] = useState(null);
   const [lanRestartMode, setLanRestartMode] = useState('immediate');
+  const [selectedDepIds, setSelectedDepIds] = useState([]);
+  const [resolvingDeps, setResolvingDeps] = useState(false);
+  const [depMessage, setDepMessage] = useState('');
+  const depsRef = useRef(null);
   const terminalRef = useRef(null);
   const terminalOutput = (serverOutputs[String(id)] || []).slice(-200);
 
@@ -129,6 +133,23 @@ function ServerDetail() {
     window.addEventListener('server-status-change', handleStatusChange);
     return () => window.removeEventListener('server-status-change', handleStatusChange);
   }, [id]);
+
+  const missingDepKey = (server?.missingModDependencies?.required || [])
+    .concat(server?.missingModDependencies?.optional || [])
+    .map((item) => item.id)
+    .join(',');
+
+  useEffect(() => {
+    const required = server?.missingModDependencies?.required || [];
+    setSelectedDepIds(required.map((item) => item.id));
+    setDepMessage(server?.missingModDependencies?.message || '');
+  }, [id, missingDepKey]);
+
+  useEffect(() => {
+    if (location.hash === '#dependencies' && depsRef.current) {
+      depsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [location.hash, missingDepKey]);
 
   // Auto-scroll terminal
   useEffect(() => {
@@ -306,6 +327,25 @@ function ServerDetail() {
       setError(err.response?.data?.error || err.message || `Failed to ${action} server`);
     } finally {
       setActions(prev => ({ ...prev, [action]: false }));
+    }
+  };
+
+  const handleResolveDependencies = async () => {
+    if (resolvingDeps) return;
+    setResolvingDeps(true);
+    setDepMessage('');
+    setError('');
+    try {
+      const res = await serverApi.resolveJavaDependencies(id, selectedDepIds);
+      setDepMessage(res.data?.message || (res.data?.unresolved?.length
+        ? `Could not install: ${res.data.unresolved.join(', ')}`
+        : 'Dependencies installed. Start the server again.'));
+      await loadServer();
+      await refresh();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Could not resolve dependencies');
+    } finally {
+      setResolvingDeps(false);
     }
   };
 
@@ -531,6 +571,11 @@ function ServerDetail() {
     );
   }
 
+  const missingDeps = server?.missingModDependencies;
+  const missingDepItems = [
+    ...(missingDeps?.required || []).map((item) => ({ ...item, optional: false })),
+    ...(missingDeps?.optional || []).map((item) => ({ ...item, optional: true })),
+  ];
   const isBC = server.kind === 'bedrock_connect';
   const isRemote = server.kind === 'remote';
   const isJava = server.kind === 'java';
@@ -605,6 +650,11 @@ function ServerDetail() {
       {error && (
         <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-2 text-sm text-red-400">
           <AlertCircle className="w-4 h-4" /> {error}
+        </div>
+      )}
+      {isJava && missingDepItems.length > 0 && (
+        <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg flex items-center gap-2 text-sm text-yellow-300">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0" /> There are missing dependencies.
         </div>
       )}
       {lanError && (
@@ -867,6 +917,19 @@ function ServerDetail() {
             <Loader2 className="w-4 h-4 animate-spin" /> Starting...
           </button>
         ) : server.status !== 'running' ? (
+          isJava && missingDepItems.length > 0 ? (
+            <button
+              onClick={() => {
+                depsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                handleResolveDependencies();
+              }}
+              disabled={resolvingDeps}
+              className="btn btn-warning"
+            >
+              {resolvingDeps ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              {resolvingDeps ? 'Resolving...' : 'Resolve dependencies'}
+            </button>
+          ) : (
           <button
             onClick={() => handleAction('start')}
             disabled={actions.start}
@@ -875,6 +938,7 @@ function ServerDetail() {
             <Play className="w-4 h-4" />
             {actions.start ? 'Starting...' : 'Start Server'}
           </button>
+          )
         ) : (
           <>
             <button
@@ -990,6 +1054,60 @@ function ServerDetail() {
               </div>
             )}
           </div>
+
+          {isJava && missingDepItems.length > 0 && (
+            <div id="dependencies" ref={depsRef} className="card">
+              <h2 className="font-semibold text-white mb-1">Missing dependencies</h2>
+              <p className="text-sm text-mc-textMuted mb-3">
+                Required mods must be installed before this Java server can start. Optional mods can stay unchecked.
+              </p>
+              {depMessage && (
+                <p className="text-sm text-yellow-300 mb-3">{depMessage}</p>
+              )}
+              {!missingDeps?.catalogAvailable && (
+                <p className="text-sm text-yellow-300 mb-3">
+                  The catalog is unavailable. Download these files into the Mod Library, then install them on this server.
+                </p>
+              )}
+              <div className={`space-y-2 ${missingDepItems.length > 10 ? 'max-h-[22rem] overflow-y-auto pr-1' : ''}`}>
+                {missingDepItems.map((dep) => {
+                  const checked = selectedDepIds.includes(dep.id);
+                  return (
+                    <label key={`${dep.optional ? 'opt' : 'req'}-${dep.id}`} className="flex items-start gap-3 p-2 rounded-lg bg-mc-darker">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={checked}
+                        onChange={() => {
+                          setSelectedDepIds((current) => (
+                            current.includes(dep.id)
+                              ? current.filter((item) => item !== dep.id)
+                              : [...current, dep.id]
+                          ));
+                        }}
+                      />
+                      <span>
+                        <span className="text-sm text-white">{dep.displayName || dep.id}</span>
+                        <span className="block text-xs text-mc-textMuted">
+                          {dep.optional ? 'Optional' : 'Required'}
+                          {dep.version && dep.version !== '*' ? ` • ${dep.version}` : ''}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={handleResolveDependencies}
+                disabled={resolvingDeps || selectedDepIds.length === 0}
+                className="btn btn-warning mt-4"
+              >
+                {resolvingDeps ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                {resolvingDeps ? 'Resolving...' : 'Resolve dependencies'}
+              </button>
+            </div>
+          )}
 
           <div className={`card ${gameplayLocked ? 'opacity-60' : ''}`}>
             <h2 className="font-semibold text-white flex items-center gap-2 mb-2">
@@ -1384,7 +1502,7 @@ function ServerDetail() {
                   {librarySearch
                     ? 'No matching mods for this server.'
                     : isJava
-                      ? 'No compatible Java mods for this launcher.'
+                      ? 'No compatible Java mods for this Minecraft version and launcher.'
                       : 'No compatible Bedrock packs in the library.'}
                 </p>
               ) : (

@@ -2,8 +2,10 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { modApi, serverApi } from '../services/api';
 import ModTileTags from '../components/ModTileTags';
+import CatalogVersionFilter from '../components/CatalogVersionFilter';
 import { loaderDisplayName } from '../utils/modCompatibility';
 import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
+import { useApi } from '../context/ApiContext';
 import {
   ArrowLeft, Search, Download, Package, AlertCircle, Check, Loader2,
   ExternalLink, Star, Settings, GitBranch, RefreshCw, X, Folder
@@ -80,6 +82,35 @@ function defaultSelectedCatalogFileIds() {
   return [];
 }
 
+function installedCatalogVersions(servers) {
+  const seen = new Set();
+  const out = [];
+  for (const server of servers || []) {
+    if (server.kind === 'remote' || server.kind === 'bedrock_connect') continue;
+    const edition = server.kind === 'java' ? 'java' : 'bedrock';
+    const version = server.minecraftVersion || server.minecraft_version || server.version;
+    if (!version || version === 'N/A') continue;
+    const key = `${version}|${edition}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ version, edition, key });
+  }
+  out.sort((a, b) => {
+    const ver = String(b.version).localeCompare(String(a.version), undefined, { numeric: true });
+    if (ver) return ver;
+    return a.edition.localeCompare(b.edition);
+  });
+  return out;
+}
+
+function gameVersionsParam(allSelected, selectedKeys) {
+  if (allSelected || !selectedKeys.length) return '';
+  return selectedKeys.map((key) => {
+    const [version, edition] = String(key).split('|');
+    return edition ? `${version}:${edition}` : version;
+  }).join(',');
+}
+
 function isJavaCatalogMod(mod) {
   return Boolean(mod && (mod.edition === 'java' || mod.providerId === 'curseforge-java'));
 }
@@ -93,6 +124,7 @@ function fileEnvironmentLabel(file) {
 
 function ModCatalog() {
   const navigate = useNavigate();
+  const { servers } = useApi();
   const [mods, setMods] = useState([]);
   const [categories, setCategories] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -106,6 +138,8 @@ function ModCatalog() {
   const [category, setCategory] = useState('');
   const [source, setSource] = useState('all');
   const [edition, setEdition] = useState('all');
+  const [versionAll, setVersionAll] = useState(true);
+  const [selectedVersionKeys, setSelectedVersionKeys] = useState([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [sortBy, setSortBy] = useState('relevancy');
@@ -119,9 +153,11 @@ function ModCatalog() {
   const [expandedMod, setExpandedMod] = useState(null);
   const { status, startSync } = useGitCatalogSync();
   const wasSyncing = useRef(false);
-  const filtersRef = useRef({ source: 'all', edition: 'all', category: '' });
+  const filtersRef = useRef({ source: 'all', edition: 'all', category: '', gameVersions: '' });
   const queryRef = useRef({ q: '', sortBy: 'relevancy' });
-  filtersRef.current = { source, edition, category };
+  const installedVersions = installedCatalogVersions(servers);
+  const gameVersions = gameVersionsParam(versionAll, selectedVersionKeys);
+  filtersRef.current = { source, edition, category, gameVersions };
   queryRef.current = { q: search, sortBy };
 
   const availableEditions = editionOptionsFromProviders(providers);
@@ -254,6 +290,7 @@ function ModCatalog() {
         source: requestedSource,
         provider,
         edition: requestedEdition,
+        gameVersions: filtersRef.current.gameVersions,
       });
       setMods(res.data.results || []);
       setTotal(Number(res.data.total) || 0);
@@ -525,71 +562,89 @@ function ModCatalog() {
             </div>
           </div>
           <div className="flex flex-wrap items-start gap-3">
-            <select
-              value={source}
-              onChange={(e) => {
-                const next = e.target.value;
-                setSource(next);
-                setPage(1);
-                setCategory('');
-                loadCategories(next, edition);
-                searchMods(1, next, edition, '');
-              }}
-              className="input w-44"
-            >
-              <option value="all">All Sources</option>
-              {providers.map((provider) => (
-                <option key={provider.id} value={provider.id === 'curseforge-bedrock' ? 'curseforge' : provider.id}>
-                  {provider.name}
-                </option>
-              ))}
-            </select>
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              className="input w-40"
-            >
-              <option value="">All Categories</option>
-              {categories.map(cat => (
-                <option key={cat.id} value={cat.id}>{cat.name}</option>
-              ))}
-            </select>
-            <div className="flex flex-col gap-3 min-w-[16.5rem] flex-1 sm:flex-none">
-              <div className="flex items-start gap-3">
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-wrap items-start gap-3">
                 <select
-                  value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value)}
-                  className="input w-36"
+                  value={source}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setSource(next);
+                    setPage(1);
+                    setCategory('');
+                    loadCategories(next, edition);
+                    searchMods(1, next, edition, '');
+                  }}
+                  className="input w-44"
                 >
-                  <option value="relevancy">Relevancy</option>
-                  <option value="popularity">Popularity</option>
-                  <option value="lastUpdated">Recently Updated</option>
-                  <option value="totalDownloads">Most Downloaded</option>
+                  <option value="all">All Sources</option>
+                  {providers.map((provider) => (
+                    <option key={provider.id} value={provider.id === 'curseforge-bedrock' ? 'curseforge' : provider.id}>
+                      {provider.name}
+                    </option>
+                  ))}
                 </select>
-                <button type="submit" className="btn btn-primary flex-1" disabled={searching}>
-                  {searching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                  Search
-                </button>
+                <select
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  className="input w-40"
+                >
+                  <option value="">All Categories</option>
+                  {categories.map(cat => (
+                    <option key={cat.id} value={cat.id}>{cat.name}</option>
+                  ))}
+                </select>
               </div>
+              <div className="flex flex-wrap items-start gap-3">
+                <select
+                  id="catalog-edition"
+                  aria-label="Edition"
+                  value={availableEditions.includes(edition) || edition === 'all' ? edition : 'all'}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setEdition(next);
+                    setPage(1);
+                    setCategory('');
+                    loadCategories(source, next);
+                    searchMods(1, source, next, '');
+                  }}
+                  className="input w-44"
+                >
+                  <option value="all">All editions</option>
+                  {availableEditions.map((id) => (
+                    <option key={id} value={id}>{EDITION_LABELS[id] || id}</option>
+                  ))}
+                </select>
+                <CatalogVersionFilter
+                  className="w-56"
+                  versions={installedVersions}
+                  selectedKeys={selectedVersionKeys}
+                  allSelected={versionAll}
+                  onChange={({ allSelected, selectedKeys }) => {
+                    setVersionAll(allSelected);
+                    setSelectedVersionKeys(selectedKeys);
+                  }}
+                  onClose={() => {
+                    setPage(1);
+                    searchMods(1, source, edition, category);
+                  }}
+                />
+              </div>
+            </div>
+            <div className="flex items-start gap-3 min-w-[16.5rem] flex-1 sm:flex-none">
               <select
-                id="catalog-edition"
-                aria-label="Edition"
-                value={availableEditions.includes(edition) || edition === 'all' ? edition : 'all'}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setEdition(next);
-                  setPage(1);
-                  setCategory('');
-                  loadCategories(source, next);
-                  searchMods(1, source, next, '');
-                }}
-                className="input w-full"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="input w-36"
               >
-                <option value="all">All editions</option>
-                {availableEditions.map((id) => (
-                  <option key={id} value={id}>{EDITION_LABELS[id] || id}</option>
-                ))}
+                <option value="relevancy">Relevancy</option>
+                <option value="popularity">Popularity</option>
+                <option value="lastUpdated">Recently Updated</option>
+                <option value="totalDownloads">Most Downloaded</option>
               </select>
+              <button type="submit" className="btn btn-primary flex-1" disabled={searching}>
+                {searching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                Search
+              </button>
             </div>
           </div>
         </div>

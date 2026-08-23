@@ -288,6 +288,28 @@ router.put('/:id/lan-broadcast', async (req, res) => {
   }
 });
 
+router.post('/:id/java/dependencies/resolve', async (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    if (server.kind !== 'java') return res.status(400).json({ error: 'Not a Java server' });
+    if (server.status === 'running' || server.status === 'starting') {
+      return res.status(400).json({ error: 'Stop the server before resolving dependencies' });
+    }
+    const javaModDependencies = require('../services/javaModDependencies');
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const result = await javaModDependencies.resolve(server, ids);
+    serverManager.invalidateServerCache(server.id);
+    const updated = serverManager.getServer(server.id);
+    res.json({
+      ...result,
+      missingModDependencies: javaModDependencies.publicState(updated),
+    });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
 router.get('/:id/java/mods', (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);

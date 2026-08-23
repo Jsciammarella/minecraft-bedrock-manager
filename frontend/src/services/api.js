@@ -30,6 +30,7 @@ export const serverApi = {
   installJavaMod: (id, modId) => api.post(`/servers/${id}/java/mods`, { modId }),
   removeJavaMod: (id, installationId) => api.delete(`/servers/${id}/java/mods/${installationId}`),
   pendingJavaMods: (id) => api.get(`/servers/${id}/java/mods/pending`),
+  resolveJavaDependencies: (id, ids) => api.post(`/servers/${id}/java/dependencies/resolve`, { ids }, { timeout: 10 * 60 * 1000 }),
   previewBedrockConnect: () => api.get('/servers/bedrock-connect/preview'),
   createBedrockConnect: (data) => api.post('/servers/bedrock-connect', data, { timeout: 120000 }),
   bedrockConnectVersions: () => api.get('/servers/bedrock-connect/versions'),

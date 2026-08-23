@@ -8,6 +8,7 @@ const pluginAudit = require('./pluginAudit');
 const { ALLOWED_CATALOG_EDITIONS } = require('./catalogEditions');
 const catalogDownloadPolicy = require('./catalogDownloadPolicy');
 const catalogModMeta = require('./catalogModMeta');
+const minecraftVersions = require('./minecraftVersions');
 
 const CATALOG_PAGE_SIZE = 40;
 const LOCAL_FETCH_SIZE = 10000;
@@ -132,7 +133,13 @@ async function searchProvider(entry, query, options, errors, strict) {
     if (typeof entry.provider.isAvailable === 'function' && !entry.provider.isAvailable() && LOCAL_PROVIDER_IDS.has(entry.id)) {
       return { results: [], total: 0 };
     }
-    const result = await entry.provider.search(query, options);
+    const requested = minecraftVersions.parseRequestedGameVersions(options.gameVersions);
+    const editions = entry.editions || entry.provider.getMetadata?.()?.editions || [];
+    const versions = minecraftVersions.providerGameVersions(editions, requested);
+    if (requested.length && !versions.length) {
+      return { results: [], total: 0 };
+    }
+    const result = await entry.provider.search(query, { ...options, minecraftVersions: versions });
     return {
       results: result.results || [],
       total: result.total || 0,
@@ -157,7 +164,15 @@ async function searchMods(query = '', options = {}) {
   const edition = normalizeEdition(options.edition);
   const page = parseInt(options.page, 10) || 1;
   const pageSize = clampPageSize(options.pageSize);
-  options = { ...options, page, pageSize, edition, provider, source };
+  options = {
+    ...options,
+    page,
+    pageSize,
+    edition,
+    provider,
+    source,
+    gameVersions: minecraftVersions.parseRequestedGameVersions(options.gameVersions),
+  };
   const available = sourceStatus();
   const errors = [];
   const matched = matchingEntries({ source, provider, edition });
