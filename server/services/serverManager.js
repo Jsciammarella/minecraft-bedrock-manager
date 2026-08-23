@@ -31,6 +31,10 @@ class ServerManager {
     this.ptyCaptures = new Map(); // serverId -> pending command captures
     this.onlineRefreshInFlight = new Map();
     this.onlineListAt = new Map();
+    this.javaSessionReady = new Map();
+    this.javaDepHits = new Map();
+    this.javaDepOverlap = new Map();
+    this.javaSessionStartedAt = new Map();
 
     // Ensure directories exist
     fs.mkdirSync(BASE_DIR, { recursive: true });
@@ -54,6 +58,37 @@ class ServerManager {
     return String(serverId);
   }
 
+  clearJavaDepSession(serverId) {
+    const key = this.sessionKey(serverId);
+    this.javaSessionReady.delete(key);
+    this.javaDepHits.delete(key);
+    this.javaDepOverlap.delete(key);
+    this.javaSessionStartedAt.delete(key);
+  }
+
+  resetJavaDepSession(serverId) {
+    const key = this.sessionKey(serverId);
+    this.javaSessionReady.set(key, false);
+    this.javaDepHits.delete(key);
+    this.javaDepOverlap.delete(key);
+    this.javaSessionStartedAt.set(key, Date.now());
+    this.consoleBuffers.delete(key);
+  }
+
+  publicAttachFields(stats) {
+    if (!stats) return {};
+    return {
+      loaderProviderId: stats.loaderProviderId,
+      loaderVersion: stats.loaderVersion,
+      minecraftVersion: stats.minecraftVersion,
+      javaMajor: stats.javaMajor,
+      loaderState: stats.loaderState,
+      geyserGateways: stats.geyserGateways,
+      optionalIntegrations: stats.optionalIntegrations,
+      missingModDependencies: stats.missingModDependencies ?? null,
+    };
+  }
+
   invalidateServerCache(serverId) {
     this.servers.delete(this.sessionKey(serverId));
   }
@@ -70,6 +105,7 @@ class ServerManager {
     this.markAllPlayersOffline(serverId);
     this.consoleBuffers.delete(this.sessionKey(serverId));
     this.onlineListAt.delete(this.sessionKey(serverId));
+    this.clearJavaDepSession(serverId);
     this.invalidateServerCache(serverId);
     if (broadcast) this.broadcastServerStatus(serverId);
     if (this.isBedrockConnect(server)) {
@@ -1566,6 +1602,7 @@ done
       });
 
       this.ptySessions.set(sessionKey, pty);
+      this.resetJavaDepSession(server.id);
       this.setupPtyOutputBroadcast(server.id, pty);
       db.prepare('UPDATE servers SET status = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run('starting', server.id);
@@ -3448,10 +3485,35 @@ done
       const current = this.getServer(serverId);
       if (current && this.isJava(current)) {
         const javaModDependencies = require('./javaModDependencies');
-        javaModDependencies.maybeClearOnReady(current, text);
-        if (javaModDependencies.looksLikeDependencyFailure(text)) {
-          javaModDependencies.recordFromCrash(current, this.consoleBuffers.get(this.sessionKey(serverId)) || text);
-          this.invalidateServerCache(serverId);
+        const sessionKey = this.sessionKey(serverId);
+        if (javaModDependencies.looksLikeStarted(text) && !javaModDependencies.looksLikeDependencyFailure(text)) {
+          this.javaSessionReady.set(sessionKey, true);
+          javaModDependencies.maybeClearOnReady(current, text);
+        }
+        const overlap = `${this.javaDepOverlap.get(sessionKey) || ''}${text}`;
+        this.javaDepOverlap.set(sessionKey, overlap.slice(-2048));
+        const hits = javaModDependencies.mergeDeps(
+          javaModDependencies.parseLoaderCrash(text),
+          javaModDependencies.parseLoaderCrash(overlap.slice(-4096)),
+          false,
+        );
+        if (hits.length) {
+          this.javaDepHits.set(
+            sessionKey,
+            javaModDependencies.mergeDeps(this.javaDepHits.get(sessionKey) || [], hits, false),
+          );
+        }
+        if (hits.length || javaModDependencies.looksLikeDependencyFailure(text)) {
+          const before = current.missing_mod_dependencies;
+          javaModDependencies.recordFromCrash(current, this.consoleBuffers.get(sessionKey) || text, {
+            extraRequired: this.javaDepHits.get(sessionKey) || [],
+            sinceMs: this.javaSessionStartedAt.get(sessionKey) || 0,
+          });
+          const after = this.getServer(serverId);
+          if (after?.missing_mod_dependencies !== before) {
+            this.invalidateServerCache(serverId);
+            this.broadcastServerStatus(serverId);
+          }
         }
       }
       if (global.io) {
@@ -3467,12 +3529,17 @@ done
       if (this.ptySessions.get(sessionKey) !== pty) return;
       const current = this.getServer(serverId);
       const buffer = this.consoleBuffers.get(sessionKey) || '';
+      const depHits = this.javaDepHits.get(sessionKey) || [];
+      const sawReady = this.javaSessionReady.get(sessionKey) === true;
+      const sinceMs = this.javaSessionStartedAt.get(sessionKey) || 0;
       this.ptySessions.delete(sessionKey);
       if (current && this.isJava(current)) {
         const javaModDependencies = require('./javaModDependencies');
-        if (javaModDependencies.looksLikeDependencyFailure(buffer)) {
-          javaModDependencies.recordFromCrash(current, buffer);
-        }
+        javaModDependencies.recordFromCrash(current, buffer, {
+          extraRequired: depHits,
+          includeManifestRequired: !sawReady,
+          sinceMs,
+        });
       }
       this.markServerStopped(serverId);
       logger.info(`Server process for ${serverId} exited; status changed to stopped`);

@@ -98,15 +98,34 @@ function mergeDeps(list, extra, optional) {
   return [...byId.values()];
 }
 
+function parseVersionRange(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return '*';
+  const bracket = text.match(/^\[([^,\]]+)/);
+  if (bracket) return bracket[1].trim() || '*';
+  return text.replace(/\s+or above/i, '').trim() || '*';
+}
+
 function parseLoaderCrash(text) {
   const required = [];
   const blob = String(text || '');
-  const neo = /Mod\s+(\S+)\s+requires\s+(\S+)\s+([^\n]+)/gi;
   let match;
+  const sorter = /Mod ID:\s*'([^']+)'\s*,\s*Requested by:\s*'([^']+)'\s*,\s*Expected range:\s*'([^']*)'\s*,\s*Actual version:\s*'\[MISSING\]'/gi;
+  while ((match = sorter.exec(blob))) {
+    required.push({
+      id: match[1],
+      version: parseVersionRange(match[3]),
+      optional: false,
+      displayName: match[1],
+    });
+  }
+  const neo = /Mod\s+(\S+)\s+requires\s+(\S+)\s+([^\n]+)/gi;
   while ((match = neo.exec(blob))) {
+    const requestedBy = String(match[1] || '').replace(/:$/, '');
+    if (/^(id|loading|list|file)$/i.test(requestedBy)) continue;
     required.push({
       id: match[2],
-      version: String(match[3] || '').replace(/\s+or above/i, '').trim() || '*',
+      version: parseVersionRange(match[3]),
       optional: false,
       displayName: match[2],
     });
@@ -131,8 +150,7 @@ function parseLoaderCrash(text) {
   return mergeDeps([], required, false);
 }
 
-function readLogFiles(dataPath) {
-  const names = ['logs/latest.log', 'logs/debug.log'];
+function readNamedLogs(dataPath, names) {
   let out = '';
   for (const rel of names) {
     const filePath = path.join(dataPath, rel);
@@ -143,6 +161,38 @@ function readLogFiles(dataPath) {
     }
   }
   return out;
+}
+
+function readLogFiles(dataPath) {
+  return readNamedLogs(dataPath, ['logs/latest.log', 'logs/debug.log']);
+}
+
+function readCrashReports(dataPath, sinceMs = 0) {
+  const dir = path.join(dataPath, 'crash-reports');
+  try {
+    if (!fs.existsSync(dir)) return '';
+    const files = fs.readdirSync(dir)
+      .filter((name) => name.toLowerCase().endsWith('.txt'))
+      .map((name) => {
+        const filePath = path.join(dir, name);
+        return { filePath, name, mtime: fs.statSync(filePath).mtimeMs };
+      })
+      .filter((file) => !sinceMs || file.mtime >= sinceMs - 15000)
+      .sort((a, b) => {
+        const aFml = /fml/i.test(a.name) ? 0 : 1;
+        const bFml = /fml/i.test(b.name) ? 0 : 1;
+        if (aFml !== bFml) return aFml - bFml;
+        return b.mtime - a.mtime;
+      })
+      .slice(0, 3);
+    let out = '';
+    for (const file of files) {
+      out += `\n${fs.readFileSync(file.filePath, 'utf8').slice(-128000)}`;
+    }
+    return out;
+  } catch {
+    return '';
+  }
 }
 
 function installedIdentities(server) {
@@ -199,21 +249,35 @@ function manifestDependencies(server) {
 }
 
 function looksLikeDependencyFailure(text) {
-  return /ModLoadingException|is not installed|which is missing|Mod resolution failed|requires architectury|Loading errors encountered/i.test(String(text || ''));
+  return /ModLoadingException|ModLoadingCrashException|is not installed|which is missing|Mod resolution failed|Missing or unsupported mandatory dependencies|Actual version:\s*'\[MISSING\]'|Mod loading has failed|pre-loading phase|Failure message:|Loading errors encountered|Mod\s+\S+\s+requires\s+\S+/i.test(String(text || ''));
 }
 
 function looksLikeStarted(text) {
   return /Done \(|For help, type "help"|Loading Minecraft .*Done/i.test(String(text || ''));
 }
 
-function detectFromText(server, text) {
+function detectFromText(server, text, options = {}) {
   if (!server || server.kind !== 'java') return null;
   const loader = String(server.loader_provider_id || 'vanilla');
   if (loader === 'vanilla') return null;
-  const fromLog = looksLikeDependencyFailure(text) ? parseLoaderCrash(text) : [];
+  const fromLog = parseLoaderCrash(text);
+  const extraRequired = options.extraRequired || [];
   const installed = installedIdentities(server);
-  const missingRequired = fromLog.filter((dep) => !installed.has(depKey(dep)));
+  let missingRequired = mergeDeps([], fromLog, false);
+  missingRequired = mergeDeps(missingRequired, extraRequired, false)
+    .filter((dep) => !installed.has(depKey(dep)) && !isBuiltin(dep.id));
   const fromManifest = manifestDependencies(server);
+  if (options.includeManifestRequired) {
+    const manifestRequired = fromManifest
+      .filter((dep) => !dep.optional && !isBuiltin(dep.id) && !installed.has(depKey(dep)))
+      .map((dep) => ({
+        id: dep.id,
+        version: dep.version || '*',
+        optional: false,
+        displayName: dep.id,
+      }));
+    missingRequired = mergeDeps(missingRequired, manifestRequired, false);
+  }
   const missingOptional = fromManifest
     .filter((dep) => dep.optional && !isBuiltin(dep.id) && !installed.has(depKey(dep)))
     .map((dep) => ({
@@ -235,17 +299,27 @@ function detectFromText(server, text) {
   };
 }
 
-function recordFromCrash(server, consoleText = '') {
-  const text = `${consoleText || ''}\n${readLogFiles(server.data_path)}`;
-  const detected = detectFromText(server, text);
-  if (!detected || !detected.required.length) return readStored(server);
-  save(server.id, detected);
-  pluginAudit.record('java.mod.dependencies.detected', {
-    targetType: 'server',
-    targetId: String(server.id),
-    detail: { required: detected.required.map((item) => item.id) },
-  });
-  return detected;
+function recordFromCrash(server, consoleText = '', options = {}) {
+  try {
+    const text = `${consoleText || ''}\n${readLogFiles(server.data_path)}\n${readCrashReports(server.data_path, options.sinceMs || 0)}`;
+    const detected = detectFromText(server, text, options);
+    if (!detected || !detected.required.length) return readStored(server);
+    const previous = readStored(server);
+    const previousIds = previous.required.map(depKey).sort().join(',');
+    const nextIds = detected.required.map(depKey).sort().join(',');
+    if (previousIds === nextIds && previous.required.length) return previous;
+    save(server.id, detected);
+    logger.info(`Java server ${server.id} is missing mods: ${detected.required.map((item) => item.id).join(', ')}`);
+    pluginAudit.record('java.mod.dependencies.detected', {
+      targetType: 'server',
+      targetId: String(server.id),
+      detail: { required: detected.required.map((item) => item.id) },
+    });
+    return detected;
+  } catch (err) {
+    logger.warn(`Java dependency detection failed for server ${server?.id}: ${err.message}`);
+    return readStored(server);
+  }
 }
 
 function maybeClearOnReady(server, text) {
@@ -412,8 +486,10 @@ module.exports = {
   looksLikeDependencyFailure,
   looksLikeStarted,
   maybeClearOnReady,
+  mergeDeps,
   parseLoaderCrash,
   publicState,
+  readCrashReports,
   readStored,
   recordFromCrash,
   resolve,

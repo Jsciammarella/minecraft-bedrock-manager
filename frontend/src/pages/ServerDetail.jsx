@@ -3,7 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { serverApi, modApi, playerApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
-import { isModCompatibleWithServer, loaderDisplayName, serverLoaderId } from '../utils/modCompatibility';
+import { isModCompatibleWithServer, loaderDisplayName, missingModDependenciesOf, serverLoaderId } from '../utils/modCompatibility';
 import {
   ArrowLeft, Play, Square, RotateCcw, Terminal, Send, Users,
   Settings, ArrowUpRight, Clock, Package, ChevronDown, ChevronUp,
@@ -134,15 +134,15 @@ function ServerDetail() {
     return () => window.removeEventListener('server-status-change', handleStatusChange);
   }, [id]);
 
-  const missingDepKey = (server?.missingModDependencies?.required || [])
-    .concat(server?.missingModDependencies?.optional || [])
+  const missingDepKey = (missingModDependenciesOf(server)?.required || [])
+    .concat(missingModDependenciesOf(server)?.optional || [])
     .map((item) => item.id)
     .join(',');
 
   useEffect(() => {
-    const required = server?.missingModDependencies?.required || [];
+    const required = missingModDependenciesOf(server)?.required || [];
     setSelectedDepIds(required.map((item) => item.id));
-    setDepMessage(server?.missingModDependencies?.message || '');
+    setDepMessage(missingModDependenciesOf(server)?.message || '');
   }, [id, missingDepKey]);
 
   useEffect(() => {
@@ -571,7 +571,7 @@ function ServerDetail() {
     );
   }
 
-  const missingDeps = server?.missingModDependencies;
+  const missingDeps = missingModDependenciesOf(server);
   const missingDepItems = [
     ...(missingDeps?.required || []).map((item) => ({ ...item, optional: false })),
     ...(missingDeps?.optional || []).map((item) => ({ ...item, optional: true })),

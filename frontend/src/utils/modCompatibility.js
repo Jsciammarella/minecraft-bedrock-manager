@@ -14,6 +14,10 @@ export function loaderDisplayName(id) {
   return String(id);
 }
 
+export function missingModDependenciesOf(server) {
+  return server?.missingModDependencies || server?.stats?.missingModDependencies || null;
+}
+
 export function serverLoaderId(server) {
   return server?.loaderProviderId || server?.loader_provider_id || 'vanilla';
 }

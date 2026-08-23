@@ -7,7 +7,7 @@ import {
 import { serverApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
-import { loaderDisplayName, serverLoaderId } from '../utils/modCompatibility';
+import { loaderDisplayName, missingModDependenciesOf, serverLoaderId } from '../utils/modCompatibility';
 
 function isBedrockConnect(server) {
   return server?.kind === 'bedrock_connect';
@@ -617,7 +617,7 @@ function Dashboard() {
                   </div>
                 </div>
               )}
-              {isJava(server) && (server.missingModDependencies?.required || []).length > 0 && (
+              {isJava(server) && (missingModDependenciesOf(server)?.required || []).length > 0 && (
                 <div className="mb-4 p-2.5 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-yellow-300 text-xs flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   There are missing dependencies.
@@ -682,7 +682,7 @@ function Dashboard() {
                   </button>
                 )}
                 {server.status !== 'running' && server.status !== 'creating' && server.status !== 'starting' && (
-                  isJava(server) && (server.missingModDependencies?.required || []).length > 0 ? (
+                  isJava(server) && (missingModDependenciesOf(server)?.required || []).length > 0 ? (
                     <button
                       onClick={(e) => { e.stopPropagation(); navigate(`/servers/${server.id}#dependencies`); }}
                       className="btn btn-warning flex-1 text-sm"

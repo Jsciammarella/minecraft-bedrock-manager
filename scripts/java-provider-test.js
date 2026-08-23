@@ -340,6 +340,40 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
     'Mod yagm requires architectury 13.0.8 or above\nCurrently, architectury is not installed'
   );
   assert.ok(crashDeps.some((item) => String(item.id).toLowerCase() === 'architectury'));
+  const neoForgeLog = [
+    "Missing or unsupported mandatory dependencies:",
+    "\tMod ID: 'architectury', Requested by: 'yagm', Expected range: '[13.0.8,)', Actual version: '[MISSING]'",
+    "Error during pre-loading phase: Mod yagm requires architectury 13.0.8 or above",
+    "Currently, architectury is not installed",
+    "Failure message: Mod yagm requires architectury 13.0.8 or above",
+    "\t- Mod yagm requires architectury 13.0.8 or above",
+  ].join('\n');
+  const neoForgeDeps = javaModDependencies.parseLoaderCrash(neoForgeLog);
+  assert.ok(neoForgeDeps.some((item) => String(item.id).toLowerCase() === 'architectury' && String(item.version).includes('13.0.8')));
+  assert.equal(javaModDependencies.looksLikeDependencyFailure("Missing or unsupported mandatory dependencies:"), true);
+  assert.equal(javaModDependencies.looksLikeDependencyFailure("\tMod ID: 'architectury', Requested by: 'yagm', Expected range: '[13.0.8,)', Actual version: '[MISSING]'"), true);
+  const crashDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-java-deps-'));
+  fs.mkdirSync(path.join(crashDir, 'crash-reports'));
+  fs.writeFileSync(path.join(crashDir, 'crash-reports', 'crash-2026-08-23_04.51.26-fml.txt'), neoForgeLog);
+  const crashReportText = javaModDependencies.readCrashReports(crashDir);
+  assert.ok(javaModDependencies.parseLoaderCrash(crashReportText).some((item) => String(item.id).toLowerCase() === 'architectury'));
+  fs.rmSync(crashDir, { recursive: true, force: true });
+  const neoToml = javaModMetadata.detectNeoForge(`
+modLoader="javafml"
+[[mods]]
+modId="yagm"
+version="0.1"
+displayName="Yet Another Gravestone Mod"
+[[dependencies.yagm]]
+modId="neoforge"
+mandatory=true
+versionRange="[21.1,)"
+[[dependencies.yagm]]
+modId="architectury"
+mandatory=true
+versionRange="[13.0.8,)"
+`);
+  assert.ok(neoToml.dependencies.some((item) => item.id === 'architectury' && !item.optional));
   const fabricToml = javaModMetadata.detectFabric(JSON.stringify({
     id: 'yagm',
     name: 'YAGM',

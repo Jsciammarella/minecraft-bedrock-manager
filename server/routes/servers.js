@@ -17,6 +17,7 @@ router.get('/', async (req, res) => {
       const stats = await serverManager.getServerStats(s.id);
       return connectHost.attach({
         ...s,
+        ...serverManager.publicAttachFields(stats),
         stats,
         lan: stats.lan,
         remoteReachable: stats.remoteReachable,
@@ -110,6 +111,7 @@ router.get('/:id', async (req, res) => {
     
     res.json(connectHost.attach({
       ...server,
+      ...serverManager.publicAttachFields(stats),
       stats,
       lan: stats.lan,
       remoteReachable: stats.remoteReachable,
