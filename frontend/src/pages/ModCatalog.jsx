@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { modApi } from '../services/api';
+import { modApi, serverApi } from '../services/api';
 import ModTileTags from '../components/ModTileTags';
+import { loaderDisplayName } from '../utils/modCompatibility';
 import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
 import {
   ArrowLeft, Search, Download, Package, AlertCircle, Check, Loader2,
@@ -75,8 +76,12 @@ function selectableCatalogFiles(files = []) {
   return files.filter((file) => file.downloadable !== false);
 }
 
-function defaultSelectedCatalogFileIds(files = []) {
-  return selectableCatalogFiles(files).map((file) => file.id);
+function defaultSelectedCatalogFileIds() {
+  return [];
+}
+
+function isJavaCatalogMod(mod) {
+  return Boolean(mod && (mod.edition === 'java' || mod.providerId === 'curseforge-java'));
 }
 
 function fileEnvironmentLabel(file) {
@@ -107,6 +112,8 @@ function ModCatalog() {
   const [downloadModal, setDownloadModal] = useState(null);
   const [filePicker, setFilePicker] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
+  const [selectedLoader, setSelectedLoader] = useState('');
+  const [javaProviders, setJavaProviders] = useState([]);
   const [multiFileMode, setMultiFileMode] = useState('manual');
   const [downloading, setDownloading] = useState(false);
   const [expandedMod, setExpandedMod] = useState(null);
@@ -122,11 +129,17 @@ function ModCatalog() {
   useEffect(() => {
     loadMultiFileMode();
     refreshProviders({ search: true });
+    serverApi.javaProviders()
+      .then((res) => setJavaProviders(res.data?.providers || []))
+      .catch(() => setJavaProviders([]));
   }, []);
 
   useEffect(() => {
     const onPluginsChanged = () => {
       refreshProviders({ search: true });
+      serverApi.javaProviders()
+        .then((res) => setJavaProviders(res.data?.providers || []))
+        .catch(() => setJavaProviders([]));
     };
     window.addEventListener('mbm-plugins-changed', onPluginsChanged);
     return () => window.removeEventListener('mbm-plugins-changed', onPluginsChanged);
@@ -297,25 +310,37 @@ function ModCatalog() {
 
   const openDownload = (mod) => {
     if (!mod || isClientOnlyProject(mod)) return;
+    if (isJavaCatalogMod(mod)) {
+      handleDownload(undefined, mod);
+      return;
+    }
     setDownloadModal(mod);
   };
 
-  const handleDownload = async (files) => {
-    const mod = filePicker?.mod || downloadModal;
+  const handleDownload = async (files, explicitMod) => {
+    const mod = explicitMod || filePicker?.mod || downloadModal;
     if (!mod || isClientOnlyProject(mod)) return;
     if (filePicker && (!files || files.length < 1)) {
       setError('Select at least one file to download');
       return;
     }
+    const javaPicker = Boolean(filePicker && isJavaCatalogMod(filePicker.mod));
+    if (javaPicker && (!selectedLoader || !javaProviders.some((item) => item.id === selectedLoader))) {
+      setError(javaProviders.length ? 'Select a Java launcher before downloading' : 'No Java launcher plugins are enabled');
+      return;
+    }
     setDownloading(true);
     setError('');
     try {
-      const res = await modApi.catalogDownload(mod, undefined, files);
+      const res = await modApi.catalogDownload(mod, undefined, files, {
+        loader: javaPicker ? selectedLoader : undefined,
+      });
       if (res.data?.downloadState === 'blocked' && res.data?.blockedReason === 'client-only') {
         applyAvailability(mod, res.data);
         setDownloadModal(null);
         setFilePicker(null);
         setSelectedFiles([]);
+        setSelectedLoader('');
         setWarning('All available Java files are marked client-only and cannot run on a dedicated server.');
         return;
       }
@@ -332,18 +357,22 @@ function ModCatalog() {
           setDownloadModal(null);
           setFilePicker(null);
           setSelectedFiles([]);
+          setSelectedLoader('');
           setWarning('All available Java files are marked client-only and cannot run on a dedicated server.');
           return;
         }
         applyAvailability(mod, res.data);
         setFilePicker({ mod, files: choices, warning: res.data.warning });
         setSelectedFiles(defaultSelectedCatalogFileIds(choices));
+        setSelectedLoader('');
         setDownloadModal(null);
         return;
       }
       setSuccess(`"${mod.name}" downloaded to mod library!`);
       setDownloadModal(null);
       setFilePicker(null);
+      setSelectedFiles([]);
+      setSelectedLoader('');
       setExpandedMod(null);
       setTimeout(() => setSuccess(''), 4000);
     } catch (err) {
@@ -525,44 +554,42 @@ function ModCatalog() {
                 <option key={cat.id} value={cat.id}>{cat.name}</option>
               ))}
             </select>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              className="input w-36"
-            >
-              <option value="relevancy">Relevancy</option>
-              <option value="popularity">Popularity</option>
-              <option value="lastUpdated">Recently Updated</option>
-              <option value="totalDownloads">Most Downloaded</option>
-            </select>
-            <div className="flex flex-col items-end gap-3">
-              <button type="submit" className="btn btn-primary" disabled={searching}>
-                {searching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                Search
-              </button>
-              <div className="flex items-center gap-2">
-                <label className="text-sm font-medium text-white whitespace-nowrap" htmlFor="catalog-edition">
-                  Edition
-                </label>
+            <div className="flex flex-col gap-3 min-w-[16.5rem] flex-1 sm:flex-none">
+              <div className="flex items-start gap-3">
                 <select
-                  id="catalog-edition"
-                  value={availableEditions.includes(edition) || edition === 'all' ? edition : 'all'}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setEdition(next);
-                    setPage(1);
-                    setCategory('');
-                    loadCategories(source, next);
-                    searchMods(1, source, next, '');
-                  }}
-                  className="input w-40"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  className="input w-36"
                 >
-                  <option value="all">All</option>
-                  {availableEditions.map((id) => (
-                    <option key={id} value={id}>{EDITION_LABELS[id] || id}</option>
-                  ))}
+                  <option value="relevancy">Relevancy</option>
+                  <option value="popularity">Popularity</option>
+                  <option value="lastUpdated">Recently Updated</option>
+                  <option value="totalDownloads">Most Downloaded</option>
                 </select>
+                <button type="submit" className="btn btn-primary flex-1" disabled={searching}>
+                  {searching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                  Search
+                </button>
               </div>
+              <select
+                id="catalog-edition"
+                aria-label="Edition"
+                value={availableEditions.includes(edition) || edition === 'all' ? edition : 'all'}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setEdition(next);
+                  setPage(1);
+                  setCategory('');
+                  loadCategories(source, next);
+                  searchMods(1, source, next, '');
+                }}
+                className="input w-full"
+              >
+                <option value="all">All editions</option>
+                {availableEditions.map((id) => (
+                  <option key={id} value={id}>{EDITION_LABELS[id] || id}</option>
+                ))}
+              </select>
             </div>
           </div>
         </div>
@@ -691,6 +718,7 @@ function ModCatalog() {
             if (!downloading) {
               setFilePicker(null);
               setSelectedFiles([]);
+              setSelectedLoader('');
             }
           }}
         >
@@ -750,10 +778,34 @@ function ModCatalog() {
                 );
               })}
             </div>
+            {isJavaCatalogMod(filePicker.mod) && (
+              <div
+                className={`grid gap-2 mb-4 ${
+                  javaProviders.length <= 1 ? 'grid-cols-1' : javaProviders.length === 2 ? 'grid-cols-2' : 'grid-cols-3'
+                }`}
+              >
+                {javaProviders.length === 0 ? (
+                  <p className="text-xs text-amber-300">No Java launcher plugins are enabled.</p>
+                ) : javaProviders.map((provider) => (
+                  <button
+                    key={provider.id}
+                    type="button"
+                    onClick={() => setSelectedLoader(provider.id)}
+                    className={`btn w-full ${selectedLoader === provider.id ? 'btn-primary' : 'btn-secondary'}`}
+                  >
+                    {provider.name}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex items-center gap-3">
               <button
                 onClick={() => handleDownload(selectableCatalogFiles(filePicker.files).filter((file) => selectedFiles.includes(file.id)).map((file) => file.id))}
-                disabled={downloading || selectableCatalogFiles(filePicker.files).filter((file) => selectedFiles.includes(file.id)).length < 1}
+                disabled={
+                  downloading
+                  || selectableCatalogFiles(filePicker.files).filter((file) => selectedFiles.includes(file.id)).length < 1
+                  || (isJavaCatalogMod(filePicker.mod) && (!selectedLoader || javaProviders.length === 0))
+                }
                 className="btn btn-primary flex-1"
               >
                 {downloading ? (
@@ -772,6 +824,7 @@ function ModCatalog() {
                 onClick={() => {
                   setFilePicker(null);
                   setSelectedFiles([]);
+                  setSelectedLoader('');
                 }}
                 className="btn btn-secondary"
                 disabled={downloading}
@@ -903,8 +956,8 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
         {getTypeBadge(mod.type)}
         {getSourceBadge(mod.source, mod.fileKind)}
         {mod.edition === 'java' && <span className="badge badge-warning">Java</span>}
-        {mod.loader && mod.loader !== 'unknown' && mod.edition === 'java' && (
-          <span className="badge badge-info">{mod.loader}</span>
+        {mod.edition === 'java' && loaderDisplayName(mod.loader) && (
+          <span className="badge badge-info">{loaderDisplayName(mod.loader)}</span>
         )}
       </ModTileTags>
 

@@ -17,6 +17,7 @@ function mark(item, extra) {
     providerId: extra.providerId,
     source: extra.source || item.source,
     edition: extra.edition || item.edition || 'bedrock',
+    loader: extra.loader || item.loader,
   };
 }
 
@@ -88,7 +89,7 @@ function gitProvider() {
         id: 'git',
         name: 'Git Repository',
         source: 'git',
-        editions: ['bedrock'],
+        editions: ['bedrock', 'java'],
         homepage: '',
       };
     },
@@ -109,20 +110,21 @@ function gitProvider() {
         results: (result.results || []).map((item) => mark(item, {
           providerId: 'git',
           source: 'git',
-          edition: 'bedrock',
+          edition: item.edition || 'bedrock',
+          loader: item.loader,
           artifactType: item.type || 'addon',
         })),
       };
     },
     async getDetails(projectId, options = {}) {
       const details = gitCatalog.getMod(options.slug || projectId);
-      return details ? mark(details, { providerId: 'git', source: 'git', edition: 'bedrock' }) : null;
+      return details ? mark(details, { providerId: 'git', source: 'git', edition: details.edition || 'bedrock', loader: details.loader }) : null;
     },
     async listDownloadFiles(projectId, options = {}) {
       return gitCatalog.listDownloadFiles(options.slug || projectId);
     },
     async download(projectId, fileSelection, options = {}) {
-      return gitCatalog.downloadMod(options.slug || projectId, options.serverId, fileSelection);
+      return gitCatalog.downloadMod(options.slug || projectId, options.serverId, fileSelection, { loader: options.loader });
     },
   };
 }
@@ -134,7 +136,7 @@ function fileProvider() {
         id: 'file',
         name: 'File Catalog',
         source: 'file',
-        editions: ['bedrock'],
+        editions: ['bedrock', 'java'],
         homepage: '',
       };
     },
@@ -156,19 +158,20 @@ function fileProvider() {
           providerId: 'file',
           source: 'file',
           edition: item.edition || 'bedrock',
+          loader: item.loader,
           artifactType: item.type || 'addon',
         })),
       };
     },
     async getDetails(projectId, options = {}) {
       const details = fileCatalog.getMod(options.slug || projectId, options.fileKind);
-      return details ? mark(details, { providerId: 'file', source: 'file', edition: 'bedrock' }) : null;
+      return details ? mark(details, { providerId: 'file', source: 'file', edition: details.edition || 'bedrock', loader: details.loader }) : null;
     },
     async listDownloadFiles(projectId, options = {}) {
       return fileCatalog.listDownloadFiles(options.slug || projectId, options.fileKind);
     },
     async download(projectId, fileSelection, options = {}) {
-      return fileCatalog.downloadMod(options.slug || projectId, options.serverId, options.fileKind, fileSelection);
+      return fileCatalog.downloadMod(options.slug || projectId, options.serverId, options.fileKind, fileSelection, { loader: options.loader });
     },
   };
 }

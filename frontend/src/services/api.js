@@ -80,10 +80,11 @@ export const modApi = {
     params: uninstallFromAll ? { uninstallFromAll: '1' } : undefined,
     timeout: 10 * 60 * 1000,
   }),
-  update: (id, { description, thumbnailFile, clearThumbnail }) => {
+  update: (id, { description, thumbnailFile, clearThumbnail, loader }) => {
     const formData = new FormData();
     if (description != null) formData.append('description', description);
     if (clearThumbnail) formData.append('clearThumbnail', '1');
+    if (loader != null) formData.append('loader', loader);
     if (thumbnailFile) formData.append('thumbnail', thumbnailFile);
     return api.put(`/mods/${id}`, formData);
   },
@@ -99,7 +100,7 @@ export const modApi = {
   catalogSearch: (params) => api.get('/mods/catalog/search', { params, timeout: 90000 }),
   catalogProviders: () => api.get('/mods/catalog/providers'),
   catalogCategories: (params) => api.get('/mods/catalog/categories', { params }),
-  catalogDownload: (mod, serverId, files) => api.post(`/mods/catalog/download/${encodeURIComponent(mod.slug)}`, {
+  catalogDownload: (mod, serverId, files, extra = {}) => api.post(`/mods/catalog/download/${encodeURIComponent(mod.slug)}`, {
     source: mod.source || 'curseforge',
     provider: mod.providerId,
     edition: mod.edition,
@@ -109,6 +110,7 @@ export const modApi = {
     fileKind: mod.fileKind,
     serverId,
     files,
+    loader: extra.loader,
   }, { timeout: 10 * 60 * 1000 }),
   setCatalogMultiFileMode: (mode) => api.put('/mods/catalog/multi-file-mode', { mode }),
   catalogDetails: (slug, projectClass, source) => api.get(`/mods/catalog/${encodeURIComponent(slug)}`, {

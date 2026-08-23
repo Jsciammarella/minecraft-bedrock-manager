@@ -140,6 +140,7 @@ function catalogIndex() {
       version: '1.0.0',
       description: 'Root sample you can copy. Replace the empty archive with your pack.',
       author: 'Your Name',
+      edition: 'bedrock',
       categories: ['addons'],
       file: 'example-mod/example-addon.mcaddon',
       thumbnail: 'example-mod/thumbnail.png',
@@ -151,6 +152,7 @@ function catalogIndex() {
       version: '1.0.0',
       description: item.description,
       author: 'Your Name',
+      edition: 'bedrock',
       categories: item.categories,
       file: `${item.folder}/${item.slug}/${item.archive}`,
       thumbnail: `${item.folder}/${item.slug}/thumbnail.png`,
@@ -159,17 +161,20 @@ function catalogIndex() {
   return prettyJson({ version: 1, mods });
 }
 
-function exampleModJson({ name, slug, type, archive, categories, description }) {
-  return prettyJson({
+function exampleModJson({ name, slug, type, archive, categories, description, edition = 'bedrock', loader }) {
+  const body = {
     name,
     slug,
     type,
     version: '1.0.0',
     description,
     author: 'Your Name',
+    edition,
     categories,
     file: archive,
-  });
+  };
+  if (edition === 'java') body.loader = loader || 'fabric';
+  return prettyJson(body);
 }
 
 function buildStarterFiles() {

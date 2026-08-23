@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { modApi } from '../services/api';
+import { modApi, serverApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import ModTileTags from '../components/ModTileTags';
+import { isJavaLibraryMod, isModCompatibleWithServer, loaderDisplayName } from '../utils/modCompatibility';
 import {
   ArrowLeft, Package, Upload, Search, Trash2, Plus, X,
   AlertCircle, Check, Loader2, Server, Download, Settings, ImagePlus
@@ -54,13 +55,23 @@ function ModLibrary() {
 
   const [settingsModal, setSettingsModal] = useState(null);
   const [settingsDesc, setSettingsDesc] = useState('');
+  const [settingsLoader, setSettingsLoader] = useState('');
   const [settingsImage, setSettingsImage] = useState(null);
   const [settingsPreview, setSettingsPreview] = useState('');
   const [clearThumbnail, setClearThumbnail] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [javaProviders, setJavaProviders] = useState([]);
 
   useEffect(() => {
     loadMods();
+    const loadProviders = () => {
+      serverApi.javaProviders()
+        .then((res) => setJavaProviders(res.data?.providers || []))
+        .catch(() => setJavaProviders([]));
+    };
+    loadProviders();
+    window.addEventListener('mbm-plugins-changed', loadProviders);
+    return () => window.removeEventListener('mbm-plugins-changed', loadProviders);
   }, []);
 
   const loadMods = async () => {
@@ -221,6 +232,7 @@ function ModLibrary() {
   };
 
   const openInstallModal = (mod) => {
+    if (isJavaLibraryMod(mod) && javaProviders.length === 0) return;
     setInstallError('');
     setInstallingServerId(null);
     setInstallModal(mod);
@@ -261,6 +273,7 @@ function ModLibrary() {
   const openSettings = (mod) => {
     setSettingsModal(mod);
     setSettingsDesc(mod.description || '');
+    setSettingsLoader(mod.loader || '');
     setSettingsImage(null);
     setClearThumbnail(false);
     setSettingsPreview(libraryThumbnailSrc(mod) || '');
@@ -284,6 +297,7 @@ function ModLibrary() {
         description: settingsDesc,
         thumbnailFile: settingsImage,
         clearThumbnail: clearThumbnail && !settingsImage,
+        loader: isJavaLibraryMod(settingsModal) && javaProviders.length ? settingsLoader : undefined,
       });
       setSuccess('Mod details saved');
       setSettingsModal(null);
@@ -351,7 +365,8 @@ function ModLibrary() {
     ? servers.filter((server) => {
       if (server.kind === 'bedrock_connect' || server.kind === 'remote') return false;
       const installed = (server.installedModIds || []).map(Number);
-      return !installed.includes(Number(installModal.id));
+      if (installed.includes(Number(installModal.id))) return false;
+      return isModCompatibleWithServer(installModal, server, { loaders: javaProviders });
     })
     : [];
 
@@ -509,6 +524,7 @@ function ModLibrary() {
                 mod={mod}
                 onOpen={() => setExpandedMod(mod)}
                 onInstall={() => openInstallModal(mod)}
+                installDisabled={isJavaLibraryMod(mod) && javaProviders.length === 0}
                 getTypeBadge={getTypeBadge}
                 getSourceBadge={getSourceBadge}
               />
@@ -535,6 +551,7 @@ function ModLibrary() {
             expanded
             onClose={() => setExpandedMod(null)}
             onInstall={() => openInstallModal(expandedMod)}
+            installDisabled={isJavaLibraryMod(expandedMod) && javaProviders.length === 0}
             onSettings={() => openSettings(expandedMod)}
             onDelete={() => handleDelete(expandedMod)}
             getTypeBadge={getTypeBadge}
@@ -977,25 +994,21 @@ function ModLibrary() {
               {installTargets.length === 0 ? (
                 <p className="text-sm text-mc-textMuted text-center py-4">
                   {servers.some((server) => server.kind !== 'bedrock_connect' && server.kind !== 'remote')
-                    ? 'This pack is already installed on every gameplay server.'
+                    ? (isJavaLibraryMod(installModal)
+                      ? 'No servers with a compatible launcher.'
+                      : 'This pack is already installed on every compatible server.')
                     : 'No gameplay servers available'}
                 </p>
               ) : (
                 installTargets.map(server => {
                   const isTarget = installing && installingServerId === server.id;
-                  const javaLocked = server.kind === 'java' && (installModal.edition || 'bedrock') !== 'java';
-                  const bedrockLocked = server.kind !== 'java' && installModal.edition === 'java';
-                  const locked = javaLocked || bedrockLocked;
                   return (
                     <button
                       key={server.id}
-                      onClick={() => {
-                        if (locked) return;
-                        handleInstall(installModal.id, server.id);
-                      }}
-                      disabled={installing || locked}
+                      onClick={() => handleInstall(installModal.id, server.id)}
+                      disabled={installing}
                       className={`w-full flex items-center gap-3 p-3 bg-mc-darker rounded-lg text-left transition-colors ${
-                        locked || (installing && !isTarget)
+                        installing && !isTarget
                           ? 'opacity-40 cursor-not-allowed'
                           : installing
                             ? 'border border-yellow-500/40 cursor-not-allowed'
@@ -1006,9 +1019,7 @@ function ModLibrary() {
                       <div className="flex-1">
                         <p className="text-sm font-medium text-white">{server.name}</p>
                         <p className="text-xs text-mc-textMuted">
-                          {javaLocked
-                            ? 'Java Edition — Bedrock addons are disabled'
-                            : isTarget ? 'Installing…' : `Port ${server.port} • ${server.status}`}
+                          {isTarget ? 'Installing…' : `Port ${server.port} • ${server.status}`}
                         </p>
                       </div>
                       {isTarget ? (
@@ -1100,6 +1111,26 @@ function ModLibrary() {
                   placeholder="Describe this mod..."
                 />
               </div>
+
+              {isJavaLibraryMod(settingsModal) && javaProviders.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium text-mc-text mb-2">Launcher</label>
+                  <select
+                    value={javaProviders.some((item) => item.id === settingsLoader) ? settingsLoader : (settingsModal.loader || '')}
+                    onChange={(e) => setSettingsLoader(e.target.value)}
+                    className="input"
+                  >
+                    {!javaProviders.some((item) => item.id === (settingsLoader || settingsModal.loader)) && (settingsModal.loader || settingsLoader) && (
+                      <option value={settingsLoader || settingsModal.loader}>
+                        {loaderDisplayName(settingsLoader || settingsModal.loader) || settingsLoader || settingsModal.loader}
+                      </option>
+                    )}
+                    {javaProviders.map((provider) => (
+                      <option key={provider.id} value={provider.id}>{provider.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className="flex items-center gap-3 pt-2">
                 <button
@@ -1227,6 +1258,7 @@ function LibraryTile({
   onOpen,
   onClose,
   onInstall,
+  installDisabled = false,
   onSettings,
   onDelete,
   getTypeBadge,
@@ -1286,6 +1318,9 @@ function LibraryTile({
       <ModTileTags>
         {getTypeBadge(mod.type)}
         {getSourceBadge(mod.source)}
+        {isJavaLibraryMod(mod) && loaderDisplayName(mod.loader) && (
+          <span className="badge badge-info">{loaderDisplayName(mod.loader)}</span>
+        )}
       </ModTileTags>
 
       <h3
@@ -1320,11 +1355,20 @@ function LibraryTile({
 
       <div className={`flex items-center gap-2 ${expanded ? '' : 'mt-auto'}`} onClick={(event) => event.stopPropagation()}>
         <button
-          onClick={onInstall}
-          className={`btn btn-primary flex-1 ${expanded ? '' : 'text-xs'}`}
+          onClick={installDisabled ? undefined : onInstall}
+          disabled={installDisabled}
+          className={`btn flex-1 ${expanded ? '' : 'text-xs'} ${
+            installDisabled ? 'btn-client-only' : 'btn-primary'
+          }`}
         >
-          <Plus className={expanded ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
-          Install
+          {installDisabled ? (
+            'No launcher available'
+          ) : (
+            <>
+              <Plus className={expanded ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
+              Install
+            </>
+          )}
         </button>
         {expanded && (
           <>

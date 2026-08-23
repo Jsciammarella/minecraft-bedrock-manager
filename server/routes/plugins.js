@@ -98,7 +98,10 @@ router.get('/:pluginId/meta', (req, res) => {
 router.use('/:pluginId/ui', (req, res, next) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next();
   const plugin = pluginHost.getPlugin(req.params.pluginId);
-  const rel = String(req.path || '/').replace(/^\/+/, '');
+  const prefix = `/${req.params.pluginId}/ui`;
+  let rel = String(req.path || '/');
+  if (rel.startsWith(prefix)) rel = rel.slice(prefix.length);
+  rel = rel.replace(/^\/+/, '') || 'index.html';
   const file = pluginHost.resolveUiFile(plugin, rel);
   if (!file) {
     return res.status(404).json({ error: 'Plugin page not found' });

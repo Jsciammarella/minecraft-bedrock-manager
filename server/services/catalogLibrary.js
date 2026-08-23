@@ -25,7 +25,7 @@ function cleanup(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
-async function importDownloadPlan(plan, { allowHosts, providerId } = {}) {
+async function importDownloadPlan(plan, { allowHosts, providerId, loader: requestedLoader } = {}) {
   const project = plan?.project || {};
   const files = Array.isArray(plan?.files) ? plan.files : [];
   if (!files.length) throw new Error('Catalog download did not include a file');
@@ -116,7 +116,9 @@ async function importDownloadPlan(plan, { allowHosts, providerId } = {}) {
     }));
     const extraJson = extraFiles.length ? require('./modArchives').serializeExtraFiles(extraFiles) : null;
     const fileSize = stored.reduce((sum, file) => sum + (file.size || 0), 0);
-    const loader = primary.loader && primary.loader !== 'unknown' ? primary.loader : (jarMeta.loader || 'unknown');
+    const loader = (requestedLoader && requestedLoader !== 'unknown' && requestedLoader !== 'any')
+      ? requestedLoader
+      : (primary.loader && primary.loader !== 'unknown' ? primary.loader : (jarMeta.loader || 'unknown'));
     const environment = primary.environment && primary.environment !== 'unknown'
       ? primary.environment
       : (jarMeta.environment || 'unknown');

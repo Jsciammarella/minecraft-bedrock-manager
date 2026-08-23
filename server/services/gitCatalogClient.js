@@ -9,6 +9,7 @@ const db = require('../db/connection');
 const packFiles = require('./packFiles');
 const platform = require('./platform');
 const modArchives = require('./modArchives');
+const catalogModMeta = require('./catalogModMeta');
 
 const execFileAsync = promisify(execFile);
 
@@ -145,7 +146,8 @@ class GitCatalogClient {
     try {
       all = this.loadEntries()
         .filter(mod => this.matchesQuery(mod, query))
-        .filter(mod => this.matchesCategory(mod, category));
+        .filter(mod => this.matchesCategory(mod, category))
+        .filter(mod => this.matchesEdition(mod, options.edition));
     } catch (err) {
       logger.warn(`Git catalog search skipped while the repository is incomplete: ${err.message}`);
       return { results: [], total: 0, page };
@@ -212,7 +214,7 @@ class GitCatalogClient {
     return matched;
   }
 
-  async downloadMod(slug, serverId = null, selectedFiles = []) {
+  async downloadMod(slug, serverId = null, selectedFiles = [], options = {}) {
     if (!this.isConfigured()) {
       throw new Error('Git catalog is not configured');
     }
@@ -257,6 +259,11 @@ class GitCatalogClient {
     const extraFiles = modArchives.serializeExtraFiles(modArchives.extraFilesFromPaths(copied, destPath));
     const thumbnail = mod.thumbnail
       || (mod.slug ? `/api/mods/catalog/git/thumbnail/${encodeURIComponent(mod.slug)}` : '');
+    const declared = catalogModMeta.fromDeclared(mod);
+    const edition = declared.edition;
+    const loader = options.loader
+      ? catalogModMeta.normalizeLoader(options.loader, edition)
+      : declared.loader;
 
     if (existing) {
       for (const archive of modArchives.archiveList(existing)) {
@@ -267,11 +274,11 @@ class GitCatalogClient {
       db.prepare(`
         UPDATE mods
         SET name = ?, type = ?, version = ?, description = ?, author = ?, thumbnail = ?,
-            file_path = ?, file_size = ?, extra_files = ?, downloaded_at = CURRENT_TIMESTAMP
+            file_path = ?, file_size = ?, extra_files = ?, edition = ?, loader = ?, downloaded_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `).run(
         mod.name, mod.type, mod.version || '1.0.0', mod.description || '',
-        mod.author || 'Unknown', thumbnail, destPath, fileSize, extraFiles, existing.id
+        mod.author || 'Unknown', thumbnail, destPath, fileSize, extraFiles, edition, loader, existing.id
       );
       if (serverId) await modManager.installModToServer(serverId, existing.id);
       logger.info(`Updated Git catalog mod in library: ${mod.slug}`);
@@ -279,8 +286,8 @@ class GitCatalogClient {
     }
 
     const result = db.prepare(`
-      INSERT INTO mods (name, slug, type, version, description, author, thumbnail, file_path, file_size, extra_files, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'git')
+      INSERT INTO mods (name, slug, type, version, description, author, thumbnail, file_path, file_size, extra_files, source, edition, loader)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'git', ?, ?)
     `).run(
       mod.name,
       storedSlug,
@@ -291,7 +298,9 @@ class GitCatalogClient {
       thumbnail,
       destPath,
       fileSize,
-      extraFiles
+      extraFiles,
+      edition,
+      loader
     );
 
     if (serverId) await modManager.installModToServer(serverId, result.lastInsertRowid);
@@ -596,6 +605,7 @@ class GitCatalogClient {
       ? this.safeJoin(baseDir, thumbnailRel) || this.safeJoin(rootDir, thumbnailRel)
       : this.findThumbnailInDir(baseDir);
 
+    const meta = catalogModMeta.fromDeclared(item);
     return this.toCatalogMod({
       slug,
       name: name || this.titleCase(slug),
@@ -611,6 +621,8 @@ class GitCatalogClient {
       filePaths: packPaths,
       thumbnailPath,
       websiteUrl: item.websiteUrl || item.url || '',
+      edition: meta.edition,
+      loader: meta.loader,
     });
   }
 
@@ -684,6 +696,8 @@ class GitCatalogClient {
       websiteUrl: entry.websiteUrl || '',
       filePath: entry.filePath || null,
       filePaths: entry.filePaths || (entry.filePath ? [entry.filePath] : []),
+      edition: entry.edition || (String(entry.filePath || '').toLowerCase().endsWith('.jar') ? 'java' : 'bedrock'),
+      loader: entry.loader || ((entry.edition === 'java' || String(entry.filePath || '').toLowerCase().endsWith('.jar')) ? 'unknown' : 'any'),
     };
   }
 
@@ -705,6 +719,11 @@ class GitCatalogClient {
       const value = String(tag).toLowerCase();
       return value === requested || this.slugify(value) === requested;
     });
+  }
+
+  matchesEdition(mod, edition) {
+    if (!edition || edition === 'all') return true;
+    return catalogModMeta.normalizeEdition(mod.edition) === catalogModMeta.normalizeEdition(edition, '');
   }
 
   sortMods(mods, sortBy, query) {

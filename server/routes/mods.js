@@ -150,6 +150,7 @@ router.put('/:id', (req, res) => {
       const result = await modManager.updateMod(req.params.id, {
         description: req.body?.description,
         clearThumbnail: req.body?.clearThumbnail === '1' || req.body?.clearThumbnail === 'true',
+        loader: req.body?.loader,
       }, req.file || null);
       res.json(result);
     } catch (err) {

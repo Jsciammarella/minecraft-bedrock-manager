@@ -36,7 +36,8 @@ function PluginPage() {
 
   const page = plugin?.pages?.find((item) => item.id === pageId)
     || (!pageId ? plugin?.pages?.[0] : null);
-  const src = page ? `/api/plugins/${pluginId}/ui/${page.file}${location.search || ''}` : '';
+  const pageFile = String(page?.file || 'index.html').replace(/^\/+/, '');
+  const src = page ? `/api/plugins/${pluginId}/ui/${pageFile}${location.search || ''}` : '';
 
   useEffect(() => {
     function onMessage(event) {

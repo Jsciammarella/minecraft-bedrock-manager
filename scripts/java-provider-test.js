@@ -356,6 +356,31 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
   assert.equal(geyserMeta.managementPluginId, 'gateway-geyser');
   assert.ok(pluginHost.getMenuItems().some((item) => item.pluginId === 'gateway-geyser' && item.label === 'Geyser'));
   assert.equal(pluginHost.getMenuItems().some((item) => item.path === '/gateways'), false);
+  const geyserPlugin = pluginHost.getPlugin('gateway-geyser');
+  const geyserPublic = pluginHost.publicPlugin(geyserPlugin);
+  assert.equal(geyserPublic.pages[0].file, 'index.html');
+  assert.ok(pluginHost.resolveUiFile(geyserPlugin, geyserPublic.pages[0].file));
+
+  const pluginRoutes = require('../server/routes/plugins');
+  const geyserUiApp = require('express')();
+  geyserUiApp.use('/api/plugins', pluginRoutes);
+  const geyserUiServer = geyserUiApp.listen(0);
+  try {
+    const origin = `http://127.0.0.1:${geyserUiServer.address().port}`;
+    const metaRes = await fetch(`${origin}/api/plugins/gateway-geyser/meta`);
+    const meta = await metaRes.json();
+    assert.equal(meta.pages[0].file, 'index.html');
+    const uiRes = await fetch(`${origin}/api/plugins/gateway-geyser/ui/${meta.pages[0].file}`);
+    const uiHtml = await uiRes.text();
+    assert.ok(uiRes.ok, 'Geyser plugin UI should be served as HTML');
+    assert.match(String(uiRes.headers.get('content-type') || ''), /text\/html/i);
+    assert.match(uiHtml, /Add gateway/);
+    assert.match(uiHtml, /\/api\/plugins\/sdk\.js/);
+    const missingFileRes = await fetch(`${origin}/api/plugins/gateway-geyser/ui/undefined`);
+    assert.equal(missingFileRes.status, 404);
+  } finally {
+    await new Promise((resolve) => geyserUiServer.close(resolve));
+  }
 
   await assert.rejects(
     () => gatewayManager.create({

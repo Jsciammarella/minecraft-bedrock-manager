@@ -7,6 +7,7 @@ const catalogLibrary = require('./catalogLibrary');
 const pluginAudit = require('./pluginAudit');
 const { ALLOWED_CATALOG_EDITIONS } = require('./catalogEditions');
 const catalogDownloadPolicy = require('./catalogDownloadPolicy');
+const catalogModMeta = require('./catalogModMeta');
 
 const CATALOG_PAGE_SIZE = 40;
 const LOCAL_FETCH_SIZE = 10000;
@@ -361,7 +362,7 @@ async function downloadMod(slug, body = {}) {
   }
 
   const mode = settingsStore.getMultiFileMode();
-  const javaCatalog = entry.id === JAVA_CURSEFORGE_ID;
+  const javaCatalog = entry.id === JAVA_CURSEFORGE_ID || javaPolicy;
   const mixedLoaders = new Set(files.map((file) => file.loader || 'unknown')).size > 1;
   const unknownCompat = files.some((file) => !file.loader || file.loader === 'unknown');
   const needsJavaPicker = javaCatalog && (
@@ -369,7 +370,8 @@ async function downloadMod(slug, body = {}) {
     || unknownCompat
     || availability?.downloadState === 'requires-selection'
   );
-  if (!selectedFiles.length && files.length > 1 && (mode === 'manual' || needsJavaPicker)) {
+  const javaNeedsPicker = javaPolicy && !selectedFiles.length && files.length >= 1;
+  if (javaNeedsPicker || (!selectedFiles.length && files.length > 1 && (mode === 'manual' || needsJavaPicker))) {
     return {
       needsSelection: true,
       files,
@@ -380,6 +382,14 @@ async function downloadMod(slug, body = {}) {
     };
   }
 
+  const requestedLoader = catalogModMeta.normalizeLoader(body.loader, javaPolicy ? 'java' : 'bedrock');
+  if (javaPolicy && selectedFiles.length && (!requestedLoader || requestedLoader === 'any' || requestedLoader === 'unknown')) {
+    throw Object.assign(new Error('Select a Java launcher before downloading'), {
+      status: 400,
+      code: 'LOADER_REQUIRED',
+    });
+  }
+
   const downloaded = await entry.provider.download(projectId, selectedFiles, {
     slug,
     projectClass: body.projectClass,
@@ -387,6 +397,7 @@ async function downloadMod(slug, body = {}) {
     fileId: body.fileId,
     fileKind: body.fileKind,
     serverId: body.serverId,
+    loader: javaPolicy ? requestedLoader : undefined,
   });
   if (downloaded?.needsSelection) {
     const listed = javaPolicy
@@ -415,6 +426,7 @@ async function downloadMod(slug, body = {}) {
     return catalogLibrary.importDownloadPlan(downloaded, {
       allowHosts: entry.downloadHosts || entry.provider.getMetadata()?.downloadHosts || [],
       providerId: entry.id,
+      loader: javaPolicy ? requestedLoader : undefined,
     });
   }
   return downloaded;

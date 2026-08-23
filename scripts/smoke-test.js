@@ -109,6 +109,7 @@ async function testPluginHost() {
   });
   const helloPlugin = pluginHost.getPlugin('hello-world');
   assert(pluginHost.resolveUiFile(helloPlugin, 'index.html'));
+  assert.equal(pluginHost.publicPlugin(helloPlugin).pages[0].file, 'index.html');
   assert.equal(pluginHost.resolveUiFile(helloPlugin, '../backend.js'), null);
   assert.equal(pluginHost.resolveUiFile(helloPlugin, '..\\backend.js'), null);
   const injected = pluginHost.injectHtmlSdk('<html><head></head><body></body></html>');
@@ -130,6 +131,14 @@ async function testPluginHost() {
     const uiHtml = await uiRes.text();
     assert(uiRes.ok, 'example plugin UI should be served');
     assert(uiHtml.includes('/api/plugins/sdk.js'), 'plugin HTML should receive the SDK');
+    const uiDirRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/`);
+    assert.ok(uiDirRes.ok, 'plugin UI directory should serve index.html');
+    assert.match(await uiDirRes.text(), /\/api\/plugins\/sdk\.js/);
+    const metaRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/meta`);
+    const metaBody = await metaRes.json();
+    assert.equal(metaBody.pages[0].file, 'index.html');
+    const missingFileRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/undefined`);
+    assert.equal(missingFileRes.status, 404);
     const theftRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/../backend.js`);
     assert.equal(theftRes.status, 404, 'plugin UI must not serve files outside ui/');
     const backendRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/hello`);
@@ -493,6 +502,17 @@ async function run() {
   fs.writeFileSync(path.join(oceanDir, 'Oceanic Delight V5.0.4 1.26.0+.mcaddon'), 'pack');
   fs.writeFileSync(path.join(oceanDir, 'thumbnail.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 
+  const javaModDir = path.join(gitRoot, 'addons', 'fabric-sample');
+  fs.mkdirSync(javaModDir, { recursive: true });
+  fs.writeFileSync(path.join(javaModDir, 'mod.json'), JSON.stringify({
+    name: 'Fabric Sample',
+    type: 'mod',
+    edition: 'java',
+    loader: 'fabric',
+    file: 'fabric-sample.jar',
+  }));
+  fs.writeFileSync(path.join(javaModDir, 'fabric-sample.jar'), 'jar');
+
   const gitMods = gitCatalog.parseCatalogFromDir(gitRoot);
   assert(gitMods.some(mod => mod.slug === 'indexed-pack'), 'catalog.json entry was not parsed');
   assert(gitMods.some(mod => mod.slug === 'smoke-pack'), 'mod.json entry was not parsed');
@@ -502,7 +522,12 @@ async function run() {
   assert.equal(oceanEntries[0].name, 'Oceanic Delight');
   const smokePack = gitMods.find(mod => mod.slug === 'smoke-pack');
   assert(smokePack, 'smoke-pack was not parsed');
+  assert.equal(smokePack.edition, 'bedrock');
   assert.equal((smokePack.filePaths || []).length, 2, 'mod.json file array should keep both pack file types');
+  const fabricSample = gitMods.find(mod => mod.slug === 'fabric-sample');
+  assert(fabricSample, 'java mod.json entry was not parsed');
+  assert.equal(fabricSample.edition, 'java');
+  assert.equal(fabricSample.loader, 'fabric');
   const declaredCombo = gitMods.find(mod => mod.slug === 'declared-combo');
   assert(declaredCombo, 'catalog.json file array was not parsed');
   assert.equal((declaredCombo.filePaths || []).length, 2, 'catalog.json file array should include both archives');

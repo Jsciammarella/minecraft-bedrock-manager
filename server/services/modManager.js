@@ -241,8 +241,7 @@ class ModManager {
   }
 
   async getAvailableMods(serverId) {
-    // Get mods NOT installed on this server
-    return db.prepare(`
+    const mods = db.prepare(`
       SELECT m.*
       FROM mods m
       WHERE m.id NOT IN (
@@ -250,6 +249,9 @@ class ModManager {
       )
       ORDER BY m.downloaded_at DESC
     `).all(serverId);
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
+    const modCompatibility = require('./modCompatibility');
+    return mods.filter((mod) => modCompatibility.compatibleWithServer(mod, server));
   }
 
   async getAllMods() {
@@ -291,9 +293,14 @@ class ModManager {
     }
 
     const description = metadata.description != null ? String(metadata.description) : (mod.description || '');
+    const catalogModMeta = require('./catalogModMeta');
+    let loader = mod.loader || 'any';
+    if (metadata.loader != null && catalogModMeta.isJavaMod(mod)) {
+      loader = catalogModMeta.normalizeLoader(metadata.loader, 'java');
+    }
     db.prepare(`
-      UPDATE mods SET description = ?, thumbnail = ? WHERE id = ?
-    `).run(description, thumbnail, modId);
+      UPDATE mods SET description = ?, thumbnail = ?, loader = ? WHERE id = ?
+    `).run(description, thumbnail, loader, modId);
 
     logger.info(`Updated library mod ${mod.name}`);
     return db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);

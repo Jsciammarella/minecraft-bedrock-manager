@@ -13,8 +13,9 @@ function CreateServer() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const [remote, setRemote] = useState(false);
-  const [java, setJava] = useState(false);
+  const [serverKind, setServerKind] = useState('bedrock');
+  const remote = serverKind === 'remote';
+  const java = serverKind === 'java';
   const [acceptEula, setAcceptEula] = useState(false);
   const [javaVersions, setJavaVersions] = useState(['latest']);
   const [javaProviders, setJavaProviders] = useState([{ id: 'vanilla', name: 'Vanilla' }]);
@@ -130,6 +131,43 @@ function CreateServer() {
   const pairedIpv6 = (ipv4Port) => {
     const preferred = Number(ipv4Port) - 1000;
     return ipv6Choices.find((item) => item.port === preferred)?.port || ipv6Choices[0]?.port;
+  };
+
+  const applyJavaDefaults = (prev) => {
+    const preferred = ipv4Available.find((item) => item.port === 25565)
+      || ipv4Available.find((item) => item.port !== 19132 && item.port !== 19133);
+    return {
+      ...prev,
+      port: preferred ? String(preferred.port) : prev.port,
+      maxPlayers: prev.maxPlayers === '10' ? '20' : prev.maxPlayers,
+      difficulty: prev.difficulty === 'peaceful' ? 'easy' : prev.difficulty,
+    };
+  };
+
+  const applyRemoteDefaults = (prev) => {
+    const v4 = Number(prev.port);
+    const v6 = Number(prev.ipv6Port);
+    const needsV4 = LAN_DISCOVERY_PORTS.has(v4);
+    const needsV6 = LAN_DISCOVERY_PORTS.has(v6);
+    if (!needsV4 && !needsV6) return prev;
+    const fallback = ipv4Available.find((item) => !LAN_DISCOVERY_PORTS.has(item.port));
+    const nextV4 = needsV4 && fallback ? fallback.port : v4;
+    const preferredV6 = nextV4 - 1000;
+    const match = ipv6Available.find((item) => item.port === preferredV6 && !LAN_DISCOVERY_PORTS.has(item.port))
+      || ipv6Available.find((item) => !LAN_DISCOVERY_PORTS.has(item.port));
+    return {
+      ...prev,
+      port: nextV4 ? String(nextV4) : prev.port,
+      ipv6Port: match ? String(match.port) : prev.ipv6Port,
+    };
+  };
+
+  const selectServerKind = (next) => {
+    if (next === 'remote' && remoteCount >= MAX_REMOTE_SERVERS && serverKind !== 'remote') return;
+    if (next === 'java' && serverKind !== 'java') setFormData(applyJavaDefaults);
+    if (next === 'remote' && serverKind !== 'remote') setFormData(applyRemoteDefaults);
+    setServerKind(next);
+    setError('');
   };
 
   const handleChange = (e) => {
@@ -256,98 +294,39 @@ function CreateServer() {
       {/* Form */}
       <form onSubmit={handleSubmit} className="card space-y-6">
         {/* Server Name */}
-        <div className="flex items-end gap-4">
-          <div className="flex-1 min-w-0">
-            <label className="block text-sm font-medium text-mc-text mb-2">
-              Server Name <span className="text-mc-danger">*</span>
-            </label>
-            <input
-              type="text"
-              name="name"
-              value={formData.name}
-              onChange={handleChange}
-              className="input"
-              placeholder="My Awesome Server"
-              required
-            />
-          </div>
-          <div className="flex-shrink-0 pb-1">
-            <div className="flex flex-col items-end gap-3">
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-medium text-mc-text">Java server</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={java}
-                  aria-label="Create as a Java Edition server"
-                  disabled={remote}
-                  onClick={() => {
-                    setJava((value) => {
-                      const next = !value;
-                      if (next) {
-                        setRemote(false);
-                        setFormData((prev) => {
-                          const preferred = ipv4Available.find((item) => item.port === 25565)
-                            || ipv4Available.find((item) => item.port !== 19132 && item.port !== 19133);
-                          return {
-                            ...prev,
-                            port: preferred ? String(preferred.port) : prev.port,
-                            maxPlayers: prev.maxPlayers === '10' ? '20' : prev.maxPlayers,
-                            difficulty: prev.difficulty === 'peaceful' ? 'easy' : prev.difficulty,
-                          };
-                        });
-                      }
-                      return next;
-                    });
-                    setError('');
-                  }}
-                  className={`toggle ${java ? 'toggle-active' : 'toggle-inactive'} ${remote ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <span className={`toggle-thumb ${java ? 'translate-x-6' : 'translate-x-1'}`} />
-                </button>
-              </div>
-              <div className="flex items-center gap-3">
-              <span className="text-sm font-medium text-mc-text">Remote server</span>
+        <div>
+          <label className="block text-sm font-medium text-mc-text mb-2">
+            Server Name <span className="text-mc-danger">*</span>
+          </label>
+          <input
+            type="text"
+            name="name"
+            value={formData.name}
+            onChange={handleChange}
+            className="input"
+            placeholder="My Awesome Server"
+            required
+          />
+          <div className="grid grid-cols-3 gap-2 mt-3" role="radiogroup" aria-label="Server type">
+            {[
+              { id: 'remote', label: 'Remote', disabled: remoteCount >= MAX_REMOTE_SERVERS && !remote },
+              { id: 'java', label: 'Java' },
+              { id: 'bedrock', label: 'Bedrock' },
+            ].map((option) => (
               <button
+                key={option.id}
                 type="button"
-                role="switch"
-                aria-checked={remote}
-                aria-label="Create as a remote server"
-                disabled={remoteCount >= MAX_REMOTE_SERVERS && !remote}
-                onClick={() => {
-                  if (remoteCount >= MAX_REMOTE_SERVERS && !remote) return;
-                  setRemote((value) => {
-                    const next = !value;
-                    if (next) {
-                      setJava(false);
-                      setFormData((prev) => {
-                        const v4 = Number(prev.port);
-                        const v6 = Number(prev.ipv6Port);
-                        const needsV4 = LAN_DISCOVERY_PORTS.has(v4);
-                        const needsV6 = LAN_DISCOVERY_PORTS.has(v6);
-                        if (!needsV4 && !needsV6) return prev;
-                        const fallback = ipv4Available.find((item) => !LAN_DISCOVERY_PORTS.has(item.port));
-                        const nextV4 = needsV4 && fallback ? fallback.port : v4;
-                        const preferredV6 = nextV4 - 1000;
-                        const match = ipv6Available.find((item) => item.port === preferredV6 && !LAN_DISCOVERY_PORTS.has(item.port))
-                          || ipv6Available.find((item) => !LAN_DISCOVERY_PORTS.has(item.port));
-                        return {
-                          ...prev,
-                          port: nextV4 ? String(nextV4) : prev.port,
-                          ipv6Port: match ? String(match.port) : prev.ipv6Port,
-                        };
-                      });
-                    }
-                    return next;
-                  });
-                  setError('');
-                }}
-                className={`toggle ${remote ? 'toggle-active' : 'toggle-inactive'} ${remoteCount >= MAX_REMOTE_SERVERS && !remote ? 'opacity-50 cursor-not-allowed' : ''}`}
+                role="radio"
+                aria-checked={serverKind === option.id}
+                disabled={Boolean(option.disabled)}
+                onClick={() => selectServerKind(option.id)}
+                className={`btn ${serverKind === option.id ? 'btn-primary' : 'btn-secondary'} ${
+                  option.disabled ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
               >
-                <span className={`toggle-thumb ${remote ? 'translate-x-6' : 'translate-x-1'}`} />
+                {option.label}
               </button>
-            </div>
-            </div>
+            ))}
           </div>
         </div>
         {java && !remote && (

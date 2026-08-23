@@ -2,7 +2,7 @@
 
 The manager can browse folders of Bedrock packs as a catalog source, alongside CurseForge and Git. CurseForge, Git, and the file catalog can be enabled together or one at a time.
 
-The folder layout is the same as the Git catalog. See [git-mod-catalog.md](git-mod-catalog.md).
+The folder layout is the same as the Git catalog, including `edition` and `loader` in `mod.json`. See [git-mod-catalog.md](git-mod-catalog.md).
 
 ## Sources
 

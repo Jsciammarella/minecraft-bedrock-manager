@@ -131,6 +131,7 @@ Each pack folder may include `mod.json` (or `addon.json`):
   "name": "Example Addon",
   "slug": "example-addon",
   "type": "addon",
+  "edition": "bedrock",
   "version": "1.2.0",
   "description": "Adds extra survival tools for Bedrock servers.",
   "author": "Your Team",
@@ -138,6 +139,21 @@ Each pack folder may include `mod.json` (or `addon.json`):
   "file": "example-addon.mcaddon"
 }
 ```
+
+Java mods use `"edition": "java"` and a launcher (`loader` or `launcher`):
+
+```json
+{
+  "name": "Example Fabric Mod",
+  "slug": "example-fabric-mod",
+  "type": "mod",
+  "edition": "java",
+  "loader": "fabric",
+  "file": "example-fabric-mod.jar"
+}
+```
+
+`edition` is `bedrock` or `java` (default `bedrock`). `loader` is `vanilla`, `fabric`, `neoforge`, or `any`. Java entries without a loader are stored as `unknown` until you pick a launcher in the catalog download dialog.
 
 `file` may be a single filename or an array of archives. A string keeps the previous catalog format. An array stores every listed pack as one library mod, the same way a CurseForge project with both a `.mcworld` and a `.mcpack` is saved:
 
@@ -162,6 +178,8 @@ The Mod Catalog search box, category dropdown, sort dropdown, and source dropdow
 | `slug` | Recommended | Stable id used when downloading. Use lowercase kebab-case. |
 | `type` | Recommended | `addon`, `texture_pack`, `world`, or `skin`. |
 | `file` | Recommended | Pack path as a string, or an array of pack paths for a multi-file library entry. |
+| `edition` | Optional | `bedrock` or `java`. Defaults to `bedrock`. |
+| `loader` | Optional | Java launcher: `vanilla`, `fabric`, `neoforge`, or `any`. `launcher` is accepted as an alias. |
 | `description` | Optional | Shown on the catalog card and matched by search. |
 | `author` | Optional | Shown on the card and matched by search. |
 | `categories` | Optional | Matched by the category filter. |

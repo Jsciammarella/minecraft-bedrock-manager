@@ -3,6 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { serverApi, modApi, playerApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
+import { isModCompatibleWithServer, loaderDisplayName, serverLoaderId } from '../utils/modCompatibility';
 import {
   ArrowLeft, Play, Square, RotateCcw, Terminal, Send, Users,
   Settings, ArrowUpRight, Clock, Package, ChevronDown, ChevronUp,
@@ -394,7 +395,7 @@ function ServerDetail() {
   };
 
   const handleInstallMod = async (mod) => {
-    if (busyModId || server?.kind === 'java' || server?.kind === 'bedrock_connect' || server?.kind === 'remote') return;
+    if (busyModId || server?.kind === 'bedrock_connect' || server?.kind === 'remote') return;
     setBusyModId(mod.id);
     setModMessage(null);
     try {
@@ -533,6 +534,9 @@ function ServerDetail() {
   const isBC = server.kind === 'bedrock_connect';
   const isRemote = server.kind === 'remote';
   const isJava = server.kind === 'java';
+  const visibleLibraryMods = libraryMods
+    .filter((mod) => isModCompatibleWithServer(mod, server))
+    .filter((mod) => !librarySearch || mod.name.toLowerCase().includes(librarySearch.toLowerCase()));
   const gameplayLocked = isBC || isRemote;
   const modsLocked = gameplayLocked;
   const isBuilding = server.status === 'creating';
@@ -681,9 +685,16 @@ function ServerDetail() {
                 </span>
               )}
               {isJava ? (
-                <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                  JAVA
-                </span>
+                <>
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    JAVA
+                  </span>
+                  {loaderDisplayName(serverLoaderId(server)) && (
+                    <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                      {loaderDisplayName(serverLoaderId(server))}
+                    </span>
+                  )}
+                </>
               ) : (
                 <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
                   Bedrock
@@ -1368,9 +1379,16 @@ function ServerDetail() {
                 </div>
               ) : libraryMods.length === 0 ? (
                 <p className="text-sm text-mc-textMuted text-center py-8">No mods in the library yet.</p>
+              ) : visibleLibraryMods.length === 0 ? (
+                <p className="text-sm text-mc-textMuted text-center py-8">
+                  {librarySearch
+                    ? 'No matching mods for this server.'
+                    : isJava
+                      ? 'No compatible Java mods for this launcher.'
+                      : 'No compatible Bedrock packs in the library.'}
+                </p>
               ) : (
-                libraryMods
-                  .filter((mod) => !librarySearch || mod.name.toLowerCase().includes(librarySearch.toLowerCase()))
+                visibleLibraryMods
                   .map((mod) => {
                     const installed = Boolean(server.installedMods?.some((row) => row.id === mod.id));
                     const thumb = modThumbnailSrc(mod);

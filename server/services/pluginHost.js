@@ -301,6 +301,7 @@ function publicPlugin(plugin) {
       id: page.id,
       title: page.title,
       path: page.path,
+      file: page.file || 'index.html',
     })) : [],
     hasBackend: Boolean(plugin.router),
   };

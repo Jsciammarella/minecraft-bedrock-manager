@@ -10,6 +10,7 @@ const logger = require('./logger');
 const db = require('../db/connection');
 const platform = require('./platform');
 const packFiles = require('./packFiles');
+const catalogModMeta = require('./catalogModMeta');
 
 const execFileAsync = promisify(execFile);
 const DATA_DIR = path.join(__dirname, '../../data');
@@ -112,7 +113,8 @@ class FileCatalogClient {
     } = options;
     const all = this.loadEntries()
       .filter((mod) => gitCatalog.matchesQuery(mod, query))
-      .filter((mod) => gitCatalog.matchesCategory(mod, category));
+      .filter((mod) => gitCatalog.matchesCategory(mod, category))
+      .filter((mod) => gitCatalog.matchesEdition(mod, options.edition));
     const sorted = gitCatalog.sortMods(all, sortBy, query);
     const start = Math.max(0, (page - 1) * pageSize);
     return {
@@ -208,7 +210,7 @@ class FileCatalogClient {
     return matched;
   }
 
-  async downloadMod(slug, serverId = null, fileKind = '', selectedFiles = []) {
+  async downloadMod(slug, serverId = null, fileKind = '', selectedFiles = [], options = {}) {
     if (!this.isConfigured()) {
       throw new Error('File catalog is not configured');
     }
@@ -239,6 +241,11 @@ class FileCatalogClient {
     const fileSize = copied.reduce((sum, filePath) => sum + fs.statSync(filePath).size, 0);
     const extraFiles = modArchives.serializeExtraFiles(modArchives.extraFilesFromPaths(copied, copied[0]));
     const thumbnail = mod.thumbnail || '';
+    const declared = catalogModMeta.fromDeclared(mod);
+    const edition = declared.edition;
+    const loader = options.loader
+      ? catalogModMeta.normalizeLoader(options.loader, edition)
+      : declared.loader;
 
     const unlinkOld = (row) => {
       for (const archive of modArchives.archiveList(row)) {
@@ -253,11 +260,11 @@ class FileCatalogClient {
       db.prepare(`
         UPDATE mods
         SET name = ?, type = ?, version = ?, description = ?, author = ?, thumbnail = ?,
-            file_path = ?, file_size = ?, extra_files = ?, downloaded_at = CURRENT_TIMESTAMP
+            file_path = ?, file_size = ?, extra_files = ?, edition = ?, loader = ?, downloaded_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `).run(
         mod.name, mod.type, mod.version || '1.0.0', mod.description || '',
-        mod.author || 'Unknown', thumbnail, copied[0], fileSize, extraFiles, existing.id
+        mod.author || 'Unknown', thumbnail, copied[0], fileSize, extraFiles, edition, loader, existing.id
       );
       if (serverId) await modManager.installModToServer(serverId, existing.id);
       logger.info(`Updated file catalog mod in library: ${mod.slug}`);
@@ -265,8 +272,8 @@ class FileCatalogClient {
     }
 
     const result = db.prepare(`
-      INSERT INTO mods (name, slug, type, version, description, author, thumbnail, file_path, file_size, extra_files, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'file')
+      INSERT INTO mods (name, slug, type, version, description, author, thumbnail, file_path, file_size, extra_files, source, edition, loader)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'file', ?, ?)
     `).run(
       mod.name,
       storedSlug,
@@ -277,7 +284,9 @@ class FileCatalogClient {
       thumbnail,
       copied[0],
       fileSize,
-      extraFiles
+      extraFiles,
+      edition,
+      loader
     );
 
     if (serverId) await modManager.installModToServer(serverId, result.lastInsertRowid);

@@ -7,6 +7,7 @@ import {
 import { serverApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
+import { loaderDisplayName, serverLoaderId } from '../utils/modCompatibility';
 
 function isBedrockConnect(server) {
   return server?.kind === 'bedrock_connect';
@@ -566,9 +567,16 @@ function Dashboard() {
                         </span>
                       )}
                       {isJava(server) ? (
-                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                          JAVA
-                        </span>
+                        <>
+                          <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                            JAVA
+                          </span>
+                          {loaderDisplayName(serverLoaderId(server)) && (
+                            <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                              {loaderDisplayName(serverLoaderId(server))}
+                            </span>
+                          )}
+                        </>
                       ) : (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
                           Bedrock

@@ -276,8 +276,8 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   catalogService.ensureProviders();
 
   const gitOnly = await catalogService.searchMods('anything', { source: 'git', edition: 'java', pageSize: 5 });
-  assert.equal(gitOnly.results.length, 0);
-  assert.match(String(gitOnly.warning || ''), /does not include java/i);
+  assert.notEqual(gitOnly.emptyReason, 'unsupported-combination');
+  assert.ok((gitOnly.results || []).every((item) => !item.edition || item.edition === 'java'));
 
   const javaProvider = javaCatalog.createProvider({
     catalogHttp: {
@@ -657,7 +657,7 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
     (err) => err.code === 'CLIENT_ONLY_FILE'
   );
   await assert.rejects(
-    () => catalogService.downloadMod('sodium', { provider: 'curseforge-java', curseforgeId: 99, edition: 'java', files: ['999'] }),
+    () => catalogService.downloadMod('sodium', { provider: 'curseforge-java', curseforgeId: 99, edition: 'java', files: ['999'], loader: 'fabric' }),
     (err) => err.code === 'UNKNOWN_FILE_ID'
   );
   const picker = await catalogService.downloadMod('sodium', { provider: 'curseforge-java', curseforgeId: 99, edition: 'java' });
@@ -670,11 +670,27 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
     { id: '41', name: 'srv.jar', fileName: 'srv.jar', extension: '.jar', environment: 'server', loader: 'fabric' },
   ];
   catalogDownloadPolicy.clearAvailabilityCache();
+  const javaSinglePicker = await catalogService.downloadMod('server-mod', {
+    provider: 'curseforge-java',
+    curseforgeId: 41,
+    edition: 'java',
+  });
+  assert.equal(javaSinglePicker.needsSelection, true, 'Java downloads should ask for files and a launcher');
+  await assert.rejects(
+    () => catalogService.downloadMod('server-mod', {
+      provider: 'curseforge-java',
+      curseforgeId: 41,
+      edition: 'java',
+      files: ['41'],
+    }),
+    (err) => err.code === 'LOADER_REQUIRED'
+  );
   const serverResult = await catalogService.downloadMod('server-mod', {
     provider: 'curseforge-java',
     curseforgeId: 41,
     edition: 'java',
     files: ['41'],
+    loader: 'fabric',
   });
   assert.equal(serverResult.success, true);
 
@@ -687,6 +703,7 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
     curseforgeId: 31,
     edition: 'java',
     files: ['31'],
+    loader: 'fabric',
   });
   assert.equal(bothResult.success, true);
 
