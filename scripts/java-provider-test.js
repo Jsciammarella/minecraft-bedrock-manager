@@ -696,7 +696,12 @@ versionRange="[13.0.8,)"
   assert.ok(!JSON.stringify(publicVia).includes(String(storedVia.viaproxy_bind_port)));
   const launchVia = geyserProvider.getLaunchSpecification(storedVia);
   assert.equal(launchVia.jar, 'ViaProxy.jar');
-  assert.deepEqual(launchVia.arguments, ['start']);
+  assert.deepEqual(launchVia.arguments, ['config', 'viaproxy.yml']);
+  const viaYml = fs.readFileSync(path.join(storedVia.data_path, 'viaproxy.yml'), 'utf8');
+  assert.match(viaYml, /bind-address:\s*127\.0\.0\.1:\d+/);
+  assert.match(viaYml, /target-address:\s*\S+:\d+/);
+  assert.doesNotMatch(viaYml, /^bind-port:/m);
+  assert.doesNotMatch(viaYml, /^target-port:/m);
   assert.equal(launchVia.shell, undefined);
   assert.equal(launchVia.command, undefined);
   controlledProcess.assertArgArray(launchVia.arguments, 'Launch');

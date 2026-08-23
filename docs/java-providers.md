@@ -68,9 +68,10 @@ Target Java server
 
 Direct mode keeps the existing Geyser Standalone layout. ViaProxy mode runs
 ViaProxy with the official Geyser-ViaProxy plugin inside the same per-gateway
-data directory (`data/gateways/<id>/`). The internal ViaProxy Java listener binds
-to loopback only and is never advertised. Bedrock Connect lists the Geyser
-Bedrock UDP host and port.
+data directory (`data/gateways/<id>/`). The process is started as
+`java -jar ViaProxy.jar config viaproxy.yml` (ViaProxy 3.4.6 has no `start`
+command). The internal ViaProxy Java listener binds to loopback only and is
+never advertised. Bedrock Connect lists the Geyser Bedrock UDP host and port.
 
 ViaProxy is GPL-3.0; Geyser is MIT. Runtime download does not relicense this
 manager. If authentication is Java online-mode, ViaProxy CLI mode requires
@@ -104,6 +105,9 @@ runs in its own isolated process or container.
 
 - **Protocol incompatible:** Direct Geyser only speaks a native Java version
   range. Enable ViaProxy from the Geyser plugin, or update the Java server.
+- **ViaProxy exits immediately:** Java 21+ prints an `Unsafe` warning from
+  ViaProxy; that is not a crash. ViaProxy 3.4.6 must be launched with
+  `config viaproxy.yml`, using `bind-address` / `target-address` as `host:port`.
 - **Authentication misconfigured:** ViaProxy CLI mode cannot join an online-mode
   Java target without Floodgate. Use Floodgate with an explicit key copy, or
   confirm insecure offline mode. The manager will not change server auth itself.

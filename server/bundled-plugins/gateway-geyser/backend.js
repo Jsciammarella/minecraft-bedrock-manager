@@ -19,6 +19,16 @@ function yamlEscape(value) {
   return String(value ?? '').replace(/"/g, '\\"');
 }
 
+function socketAddress(host, port) {
+  const hostname = String(host || '127.0.0.1').trim() || '127.0.0.1';
+  const n = Number(port);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw Object.assign(new Error('Invalid port for ViaProxy address'), { status: 400 });
+  }
+  const wrapped = hostname.includes(':') && !hostname.startsWith('[') ? `[${hostname}]` : hostname;
+  return `${wrapped}:${n}`;
+}
+
 function sendError(res, err) {
   res.status(err.status || 400).json({ error: err.message, code: err.code });
 }
@@ -91,7 +101,7 @@ function createProvider() {
           javaMajor: Number(record.java_major || 21),
           workingDirectory: '.',
           jar: 'ViaProxy.jar',
-          arguments: ['start'],
+          arguments: ['config', 'viaproxy.yml'],
           memory: { minimum: '512M', maximum: '1G' },
           environment: {},
         };
@@ -195,10 +205,8 @@ function createProvider() {
         '',
       ].join('\n');
       const viaConfig = [
-        'bind-address: 127.0.0.1',
-        `bind-port: ${bindPort}`,
-        `target-address: "${yamlEscape(record.target_host || '127.0.0.1')}"`,
-        `target-port: ${Number(record.target_tcp_port || 25565)}`,
+        `bind-address: ${socketAddress('127.0.0.1', bindPort)}`,
+        `target-address: ${socketAddress(record.target_host || '127.0.0.1', record.target_tcp_port || 25565)}`,
         'proxy-online-mode: false',
         'auth-method: NONE',
         'wildcard-domain-handling: NONE',
