@@ -12,15 +12,53 @@ const REQUIRED = [
 
 const gateways = new Map();
 
+const ALLOWED_TARGET_KINDS = new Set(['java', 'bedrock']);
+
+function sanitizeName(value, fallback) {
+  const text = String(value || fallback || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/[\u0000-\u001f]/g, '')
+    .trim()
+    .slice(0, 80);
+  return text || fallback || 'Gateway';
+}
+
+function sanitizeNotices(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item || '').replace(/<[^>]*>/g, '').trim().slice(0, 400))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function sanitizeTargetKinds(value) {
+  const list = Array.isArray(value) ? value : [];
+  const kinds = [];
+  for (const item of list) {
+    const kind = String(item || '').trim().toLowerCase();
+    if (ALLOWED_TARGET_KINDS.has(kind) && !kinds.includes(kind)) kinds.push(kind);
+  }
+  return kinds;
+}
+
+function sanitizePageId(value) {
+  const page = String(value || 'home').trim().toLowerCase();
+  return /^[a-z][a-z0-9-]{0,62}$/.test(page) ? page : 'home';
+}
+
 function publicMetadata(entry) {
-  const meta = entry.provider.getMetadata() || {};
+  const meta = entry.provider.getMetadata ? entry.provider.getMetadata() : {};
   return {
     id: entry.id,
     type: 'gateway',
-    name: meta.name || entry.id,
+    name: sanitizeName(meta.name, entry.id),
     pluginId: entry.pluginId,
-    notices: meta.notices || [],
-    downloadHosts: meta.downloadHosts || [],
+    managementPluginId: entry.pluginId,
+    managementPage: sanitizePageId(meta.managementPage),
+    targetKinds: sanitizeTargetKinds(meta.targetKinds),
+    supportsCreateForTarget: Boolean(meta.supportsCreateForTarget),
+    notices: sanitizeNotices(meta.notices),
+    downloadHosts: Array.isArray(meta.downloadHosts) ? meta.downloadHosts.map(String) : [],
     recommended: Boolean(meta.recommended),
   };
 }
@@ -85,6 +123,10 @@ function list() {
   return [...gateways.values()].map(publicMetadata);
 }
 
+function entries() {
+  return [...gateways.values()];
+}
+
 function requireGateway(id) {
   const entry = get(id);
   if (!entry) {
@@ -94,8 +136,10 @@ function requireGateway(id) {
 }
 
 module.exports = {
+  ALLOWED_TARGET_KINDS,
   REQUIRED,
   clear,
+  entries,
   get,
   list,
   publicMetadata,

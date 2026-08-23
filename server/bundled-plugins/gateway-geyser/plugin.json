@@ -4,8 +4,18 @@
   "version": "1.0.0",
   "author": "Minecraft Bedrock Manager",
   "description": "Powered by Geyser. Downloads Geyser Standalone from GeyserMC on demand so Bedrock clients can join Java servers.",
-  "pages": [],
-  "menus": [],
+  "menu": {
+    "label": "Geyser",
+    "icon": "radio",
+    "order": 100
+  },
+  "pages": [
+    {
+      "id": "home",
+      "title": "Geyser",
+      "file": "index.html"
+    }
+  ],
   "backend": "backend.js",
   "capabilities": [
     "provider:gateway",

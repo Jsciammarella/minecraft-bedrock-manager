@@ -6,6 +6,10 @@ function yamlEscape(value) {
   return String(value ?? '').replace(/"/g, '\\"');
 }
 
+function sendError(res, err) {
+  res.status(err.status || 400).json({ error: err.message, code: err.code });
+}
+
 function createProvider() {
   return {
     getMetadata() {
@@ -13,11 +17,16 @@ function createProvider() {
         id: 'geyser',
         name: 'Geyser',
         recommended: true,
+        targetKinds: ['java'],
+        supportsCreateForTarget: true,
+        managementPage: 'home',
         downloadHosts: ['download.geysermc.org', 'repo.opencollab.dev'],
         notices: [
           'Powered by Geyser. Not affiliated with or endorsed by GeyserMC, Mojang, or Microsoft.',
           'Standalone is recommended for remote Java servers and older Minecraft versions.',
           'Geyser-Fabric and Geyser-NeoForge support fewer Minecraft versions than Standalone.',
+          'Offline authentication is insecure and must not be used on a public network.',
+          'Floodgate requires additional configuration on the Java server.',
         ],
       };
     },
@@ -93,19 +102,115 @@ function createProvider() {
       ].join('\n');
     },
     sanitizePublicRecord(record) {
-      const { floodgate_key_path, ...rest } = record || {};
+      const { floodgate_key_path, floodgate_key_file, ...rest } = record || {};
       return {
         ...rest,
         floodgateConfigured: Boolean(floodgate_key_path),
         floodgate_key_path: undefined,
+        floodgate_key_file: undefined,
       };
     },
   };
 }
 
+function registerRoutes(router, gateways) {
+  if (!router || !gateways) return;
+
+  router.get('/gateways', (req, res) => {
+    try {
+      res.json({ gateways: gateways.listOwn() });
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.post('/gateways', async (req, res) => {
+    try {
+      const gateway = await gateways.create(req.body || {});
+      res.status(201).json(gateway);
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.get('/gateways/:id', (req, res) => {
+    try {
+      res.json(gateways.getOwn(req.params.id));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.patch('/gateways/:id', (req, res) => {
+    try {
+      res.json(gateways.updateOwn(req.params.id, req.body || {}));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.delete('/gateways/:id', (req, res) => {
+    try {
+      res.json(gateways.removeOwn(req.params.id));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.post('/gateways/:id/start', async (req, res) => {
+    try {
+      res.json(await gateways.startOwn(req.params.id));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.post('/gateways/:id/stop', (req, res) => {
+    try {
+      res.json(gateways.stopOwn(req.params.id));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.post('/gateways/:id/restart', async (req, res) => {
+    try {
+      res.json(await gateways.restartOwn(req.params.id));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.get('/gateways/:id/status', (req, res) => {
+    try {
+      res.json(gateways.statusOwn(req.params.id));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.get('/gateways/:id/logs', (req, res) => {
+    try {
+      res.json(gateways.logsOwn(req.params.id));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.get('/java-targets', (req, res) => {
+    try {
+      res.json({ servers: gateways.listJavaTargets() });
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+}
+
 module.exports = {
   createProvider,
-  register({ registerGateway }) {
+  registerRoutes,
+  register({ registerGateway, router, services }) {
     registerGateway(createProvider());
+    registerRoutes(router, services && services.gateways);
   },
 };

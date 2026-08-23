@@ -2,7 +2,8 @@
 
 Plugins add **their own left-hand menu items and pages**. They cannot change how
 core screens look or behave: Dashboard, server details, New Server, Mod Library,
-Mod Catalog, Players, BedrockConnect, Geyser, or Ports.
+Mod Catalog, Players, BedrockConnect, or Ports. Geyser is a bundled plugin page,
+not a hard-coded core screen.
 
 Trust is derived from **where the plugin is installed**, not from a field in
 `plugin.json`. Uploaded plugins can never become Java loader, gateway, or
@@ -29,7 +30,15 @@ that as trusted code. Isolated workers are a follow-up.
 
 First-party Java loaders, Geyser, and the CurseForge Java catalog live under
 `server/bundled-plugins/` and are documented in [`java-providers.md`](./java-providers.md)
-and [`catalog-providers.md`](./catalog-providers.md).
+and [`catalog-providers.md`](./catalog-providers.md). Geyser is opt-in: enabling
+the `gateway-geyser` plugin registers the provider and sidebar entry. Creating a
+Java server does not download Geyser, open a Bedrock UDP port, or start a
+gateway. A gateway must be created and started from the plugin page. The core
+owns ports, downloads, processes, secrets, and audit logging; the plugin owns
+Geyser-specific UI and configuration. Disablement is refused while a Geyser
+gateway is running. Stopped gateway records, files, and keys are preserved.
+Offline authentication is insecure. Floodgate needs extra Java-server setup.
+No Geyser binaries are shipped with the manager.
 
 ## Install
 
@@ -121,7 +130,10 @@ backend. A plugin cannot call another plugin’s API or load another plugin’s 
 registerJavaLoader, registerGateway, registerCatalogSource })`. The router
 is mounted only at `/api/plugins/<id>/`. It cannot replace `/api/servers` or any
 other core route. `registerCatalogSource`, `registerJavaLoader`, and
-`registerGateway` are only provided to bundled plugins.
+`registerGateway` are only provided to bundled plugins. Bundled gateway plugins
+also receive `services.gateways`, a provider-scoped wrapper around core gateway
+lifecycle. They can manage only their own records and cannot read Floodgate
+private keys or bind ports directly.
 
 ```js
 module.exports = {

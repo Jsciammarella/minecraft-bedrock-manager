@@ -565,12 +565,32 @@ function ServerDetail() {
             {server.loaderVersion ? ` ${server.loaderVersion}` : ''}
             {server.javaMajor ? ` · Java ${server.javaMajor}` : ''}
           </p>
-          <p className="mt-1">Bedrock addons and the console LAN proxy stay visible but are disabled. Use Geyser for Bedrock clients.</p>
-          {(server.geyserGateways || []).map((gateway) => (
-            <p key={gateway.id} className="mt-1 text-mc-text">
-              Geyser: Bedrock UDP {gateway.bedrock_udp_port} ({gateway.status}, {gateway.authentication})
-            </p>
-          ))}
+          <p className="mt-1">Bedrock addons and the console LAN proxy stay visible but are disabled. Bedrock clients can join through an optional gateway plugin.</p>
+        </div>
+      )}
+      {isJava && (server.optionalIntegrations || []).length > 0 && (
+        <div className="mb-4 p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg">
+          <h2 className="text-sm font-semibold text-white mb-2">Optional integrations</h2>
+          <div className="space-y-2">
+            {(server.optionalIntegrations || []).map((item) => (
+              <div key={`${item.id}-${item.href}`} className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm text-white">{item.name}</p>
+                  <p className="text-xs text-mc-textMuted">
+                    {item.summary}
+                    {item.status ? ` · ${item.status}` : ''}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary text-xs"
+                  onClick={() => navigate(item.href)}
+                >
+                  {item.action === 'manage' ? 'Manage' : 'Configure'}
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       {location.state?.message && (

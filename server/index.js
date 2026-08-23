@@ -207,7 +207,7 @@ server.listen(PORT, '0.0.0.0', () => {
     logger.warn(`DNS proxy restore failed: ${err.message}`);
   });
   require('./services/gatewayManager').restoreRunning().catch((err) => {
-    logger.warn(`Geyser restore failed: ${err.message}`);
+    logger.warn(`Gateway restore failed: ${err.message}`);
   });
 });
 

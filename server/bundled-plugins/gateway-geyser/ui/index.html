@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Geyser</title>
+  <link rel="stylesheet" href="geyser.css" />
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>Geyser</h1>
+      <p>Powered by Geyser. Standalone gateways translate Bedrock UDP to a Java TCP server. Not affiliated with GeyserMC or Mojang. Geyser is not shipped with the manager; it downloads when you create a gateway.</p>
+    </div>
+    <button type="button" id="add">Add gateway</button>
+  </div>
+  <div id="error" class="error hidden"></div>
+  <form id="create" class="card hidden">
+    <h2>New Geyser Standalone gateway</h2>
+    <p>The gateway stays stopped until you start it. Online authentication is recommended.</p>
+    <label>Name <input id="name" required placeholder="Bedrock access" /></label>
+    <label>Java target
+      <select id="targetType">
+        <option value="local-server">Local Java server</option>
+        <option value="remote-address">Remote Java address</option>
+      </select>
+    </label>
+    <div id="localFields">
+      <label>Local Java server
+        <select id="targetServerId">
+          <option value="">Select a Java server</option>
+        </select>
+      </label>
+    </div>
+    <div id="remoteFields" class="hidden">
+      <div class="grid">
+        <label>Hostname or IP <input id="targetHost" placeholder="192.168.1.10" /></label>
+        <label>Java TCP port <input id="targetTcpPort" type="number" value="25565" min="1" max="65535" /></label>
+      </div>
+    </div>
+    <label>Bedrock UDP port (optional) <input id="bedrockUdpPort" type="number" min="1" max="65535" placeholder="Assigned automatically if empty" /></label>
+    <label>Authentication
+      <select id="authentication">
+        <option value="online">Online (recommended)</option>
+        <option value="floodgate">Floodgate</option>
+        <option value="offline">Offline (insecure)</option>
+      </select>
+    </label>
+    <label id="offlineWarn" class="check hidden">
+      <input type="checkbox" id="confirmOffline" />
+      I understand offline mode disables Java authentication and must not be used on a public network.
+    </label>
+    <label id="floodgateWarn" class="check hidden">
+      <input type="checkbox" id="confirmFloodgate" />
+      The remote Java server already has Floodgate installed and configured.
+    </label>
+    <div class="form-actions">
+      <button type="submit" id="createBtn">Create</button>
+      <button type="button" class="secondary" id="cancel">Cancel</button>
+    </div>
+  </form>
+  <div id="list"></div>
+  <script src="geyser.js"></script>
+</body>
+</html>

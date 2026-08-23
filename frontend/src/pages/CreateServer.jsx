@@ -353,7 +353,8 @@ function CreateServer() {
         {java && !remote && (
           <p className="text-xs text-mc-textMuted -mt-4">
             Downloads official server software when you create the server. Players connect with a Java Edition client on TCP.
-            Optional Geyser gateways are configured after creation. Compatible with Fabric and NeoForge through bundled providers.
+            Bedrock access is optional and can be configured through an enabled gateway plugin after server creation.
+            Compatible with Fabric and NeoForge through bundled providers.
           </p>
         )}
         {remote && (

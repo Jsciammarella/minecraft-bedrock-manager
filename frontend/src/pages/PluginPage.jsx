@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { pluginApi } from '../services/api';
 import { isAllowedPluginNavigatePath, proxyPluginApi } from '../services/pluginBridge';
 
 function PluginPage() {
   const { pluginId, pageId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const iframeRef = useRef(null);
   const [plugin, setPlugin] = useState(null);
   const [error, setError] = useState('');
@@ -35,7 +36,7 @@ function PluginPage() {
 
   const page = plugin?.pages?.find((item) => item.id === pageId)
     || (!pageId ? plugin?.pages?.[0] : null);
-  const src = page ? `/api/plugins/${pluginId}/ui/${page.file}` : '';
+  const src = page ? `/api/plugins/${pluginId}/ui/${page.file}${location.search || ''}` : '';
 
   useEffect(() => {
     function onMessage(event) {
@@ -85,8 +86,8 @@ function PluginPage() {
   if (error || !page) {
     return (
       <div className="p-6 max-w-xl mx-auto">
-        <h1 className="text-xl font-bold text-white mb-2">Plugin page not found</h1>
-        <p className="text-mc-textMuted">{error || 'That plugin page does not exist.'}</p>
+          <h1 className="text-xl font-bold text-white mb-2">Plugin unavailable</h1>
+          <p className="text-mc-textMuted">{error || 'That plugin page does not exist.'}</p>
       </div>
     );
   }

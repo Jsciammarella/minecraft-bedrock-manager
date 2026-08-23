@@ -23,7 +23,7 @@ function publicRecord(row) {
   delete sanitized.floodgate_key_path;
   return {
     ...sanitized,
-    notices: entry?.provider.getMetadata?.()?.notices || [],
+    notices: entry ? (gatewayRegistry.publicMetadata(entry).notices || []) : [],
   };
 }
 
@@ -63,7 +63,7 @@ function allocateUdpPort(preferred) {
     if (port >= 25565 && port <= 25665) continue;
     return port;
   }
-  throw new Error('No free UDP port is available for Geyser');
+  throw new Error('No free UDP port is available for this gateway');
 }
 
 function registerGatewayPort(gatewayId, port) {
@@ -96,7 +96,7 @@ function resolveTarget(config) {
   if (targetType === 'local-server') {
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(config.targetServerId);
     if (!server || server.kind !== 'java') {
-      throw Object.assign(new Error('Geyser local targets must be a managed Java server'), { status: 400 });
+      throw Object.assign(new Error('Local gateway targets must be a managed Java server'), { status: 400 });
     }
     return {
       targetType,
@@ -141,7 +141,10 @@ function writeConfig(row, provider) {
 }
 
 async function create(config) {
-  const providerId = config.providerId || 'geyser';
+  const providerId = String(config.providerId || '').trim();
+  if (!providerId) {
+    throw Object.assign(new Error('Gateway provider is required'), { status: 400 });
+  }
   const entry = gatewayRegistry.requireGateway(providerId);
   const name = String(config.name || '').trim();
   if (!name) throw Object.assign(new Error('Gateway name is required'), { status: 400 });
@@ -266,7 +269,17 @@ async function start(id) {
     throw Object.assign(new Error('Gateway already running'), { status: 400 });
   }
   const entry = gatewayRegistry.requireGateway(row.provider_id);
+  if (row.target_type === 'local-server') {
+    const server = db.prepare('SELECT id FROM servers WHERE id = ? AND kind = ?').get(row.target_server_id, 'java');
+    if (!server) {
+      throw Object.assign(new Error('The associated Java server no longer exists. Choose a new target before starting this gateway.'), { status: 400 });
+    }
+  }
   const spec = entry.provider.getLaunchSpecification(row);
+  if (spec.javaBin || spec.executable || spec.bin || spec.command || spec.shell) {
+    throw Object.assign(new Error('Gateway providers cannot choose an executable path or shell command'), { status: 400 });
+  }
+  const validated = javaLoaderHost.validateLaunchSpec(spec, row.data_path);
   const javaBin = await javaRuntime.ensureJava({ major: spec.javaMajor || 21 });
   const args = javaLoaderHost.buildJavaArgs(spec);
   const { spawn: spawnPty } = require('node-pty');
@@ -274,8 +287,11 @@ async function start(id) {
     name: 'xterm-color',
     cols: 120,
     rows: 30,
-    cwd: row.data_path,
-    env: sanitizedChildEnv({ JAVA_HOME: javaRuntime.javaHomeFromBin(javaBin) }),
+    cwd: validated.cwd,
+    env: sanitizedChildEnv({
+      ...(spec.environment || {}),
+      JAVA_HOME: javaRuntime.javaHomeFromBin(javaBin),
+    }),
   });
   ptySessions.set(String(id), { pty, logs: '' });
   pty.onData((chunk) => {
@@ -291,7 +307,7 @@ async function start(id) {
   });
   db.prepare(`UPDATE gateways SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
   pluginAudit.record('gateway.start', { targetType: 'gateway', targetId: String(id) });
-  return { success: true, message: 'Geyser starting...' };
+  return { success: true, message: 'Gateway starting...' };
 }
 
 function stop(id) {
@@ -338,6 +354,77 @@ function forServer(serverId) {
   return db.prepare(`SELECT * FROM gateways WHERE target_server_id = ?`).all(serverId).map(publicRecord);
 }
 
+function detachServer(serverId) {
+  const rows = db.prepare(`SELECT * FROM gateways WHERE target_server_id = ?`).all(serverId);
+  for (const row of rows) {
+    try { stop(row.id); } catch { /* ignore */ }
+    db.prepare(`
+      UPDATE gateways
+      SET target_server_id = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(row.id);
+    pluginAudit.record('gateway.target.detached', {
+      targetType: 'gateway',
+      targetId: String(row.id),
+      detail: { serverId },
+    });
+  }
+  return rows.length;
+}
+
+function runningForPlugin(pluginId) {
+  const ids = new Set(
+    gatewayRegistry.entries()
+      .filter((entry) => entry.pluginId === pluginId)
+      .map((entry) => entry.id)
+  );
+  return db.prepare('SELECT id, name, provider_id, status FROM gateways').all()
+    .filter((row) => ids.has(row.provider_id) && (
+      row.status === 'running'
+      || row.status === 'starting'
+      || ptySessions.has(String(row.id))
+    ));
+}
+
+function integrationsForServer(server) {
+  if (!server || server.kind !== 'java') return [];
+  const associated = forServer(server.id);
+  const items = [];
+  for (const meta of gatewayRegistry.list()) {
+    if (!(meta.targetKinds || []).includes('java')) continue;
+    const pluginId = meta.managementPluginId || meta.pluginId;
+    if (!pluginId) continue;
+    const page = meta.managementPage && meta.managementPage !== 'home'
+      ? `/${meta.managementPage}`
+      : '';
+    const mine = associated.filter((row) => row.provider_id === meta.id);
+    if (mine.length) {
+      for (const gateway of mine) {
+        items.push({
+          id: meta.id,
+          name: meta.name,
+          configured: true,
+          status: gateway.status,
+          summary: `Bedrock UDP ${gateway.bedrock_udp_port}`,
+          action: 'manage',
+          href: `/plugins/${pluginId}${page}?gatewayId=${encodeURIComponent(gateway.id)}`,
+        });
+      }
+    } else if (meta.supportsCreateForTarget) {
+      items.push({
+        id: meta.id,
+        name: meta.name,
+        configured: false,
+        status: null,
+        summary: 'Bedrock gateway not configured',
+        action: 'configure',
+        href: `/plugins/${pluginId}${page}?targetServerId=${encodeURIComponent(server.id)}`,
+      });
+    }
+  }
+  return items;
+}
+
 function stopAll() {
   for (const id of [...ptySessions.keys()]) {
     try { stop(id); } catch { /* ignore */ }
@@ -349,7 +436,7 @@ async function restoreRunning() {
   for (const row of rows) {
     db.prepare(`UPDATE gateways SET status = 'stopped' WHERE id = ?`).run(row.id);
     try { await start(row.id); } catch (err) {
-      logger.warn(`Could not restore Geyser gateway ${row.id}: ${err.message}`);
+      logger.warn(`Could not restore gateway ${row.id}: ${err.message}`);
     }
   }
 }
@@ -357,8 +444,10 @@ async function restoreRunning() {
 module.exports = {
   allocateUdpPort,
   create,
+  detachServer,
   forServer,
   get,
+  integrationsForServer,
   list,
   logs,
   patch,
@@ -366,6 +455,7 @@ module.exports = {
   remove,
   restart,
   restoreRunning,
+  runningForPlugin,
   start,
   status,
   stop,

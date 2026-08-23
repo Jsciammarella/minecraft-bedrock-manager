@@ -218,6 +218,10 @@ class ServerManager {
       javaMajor: server.java_major || null,
       loaderState: server.loader_state || '',
       geyserGateways: require('./gatewayManager').forServer(server.id),
+      optionalIntegrations: require('./gatewayManager').integrationsForServer({
+        ...server,
+        kind: 'java',
+      }),
     } : {};
     if (this.isBedrockConnect(server) || this.isJava(server)) {
       return javaEdition.attachFields({
@@ -1858,9 +1862,7 @@ done
 
     try {
       const gatewayManager = require('./gatewayManager');
-      for (const row of db.prepare('SELECT id FROM gateways WHERE target_server_id = ?').all(serverId)) {
-        try { gatewayManager.stop(row.id); } catch { /* ignore */ }
-      }
+      gatewayManager.detachServer(serverId);
     } catch { /* ignore */ }
 
     const pending = this.getPendingBedrockConnect();

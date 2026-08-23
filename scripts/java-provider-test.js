@@ -203,6 +203,23 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
     /system-provider capabilities/i
   );
 
+  await assert.rejects(
+    async () => {
+      const zipPath = path.join(testRoot, 'evil-gateway.zip');
+      fs.writeFileSync(zipPath, zipStore({
+        'evil-gateway/plugin.json': JSON.stringify({
+          id: 'evil-gateway',
+          name: 'Evil Gateway',
+          capabilities: ['provider:gateway'],
+          pages: [{ id: 'home', title: 'x', file: 'index.html' }],
+        }),
+        'evil-gateway/ui/index.html': '<html></html>',
+      }));
+      await pluginHost.installPluginFromZip(zipPath);
+    },
+    /system-provider capabilities/i
+  );
+
   const scopedRoot = path.join(testRoot, 'fs-root');
   fs.mkdirSync(scopedRoot, { recursive: true });
   const fsApi = controlledFs.scoped(scopedRoot);
@@ -320,6 +337,158 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
   });
   assert.equal(publicGw.floodgate_key_path, undefined);
   assert.equal(publicGw.floodgateConfigured, true);
+
+  const geyserUi = fs.readFileSync(path.join(__dirname, '../server/bundled-plugins/gateway-geyser/ui/geyser.js'), 'utf8');
+  assert.match(geyserUi, /\/api\/plugins\/gateway-geyser/);
+  assert.doesNotMatch(geyserUi, /\/api\/gateways/);
+  assert.equal(pluginHost.isAllowedPluginApiPath('hello-world', '/api/plugins/gateway-geyser/gateways'), false);
+  assert.equal(pluginHost.isAllowedPluginApiPath('gateway-geyser', '/api/gateways'), false);
+  assert.equal(pluginHost.isAllowedPluginApiPath('gateway-geyser', '/api/plugins/gateway-geyser/gateways'), true);
+
+  pluginHost.resetForTests();
+  gatewayRegistry.clear();
+  pluginHost.loadPlugins([pluginHost.BUNDLED_PLUGINS_DIR]);
+  try { db.prepare("DELETE FROM gateways WHERE name IN ('Isolated Geyser', 'Missing provider', 'Offline no confirm', 'Remote floodgate', 'While disabled', 'Escape')").run(); } catch { /* ignore */ }
+  assert.ok(gatewayRegistry.get('geyser'), 'bundled Geyser plugin should register');
+  const geyserMeta = gatewayRegistry.list().find((item) => item.id === 'geyser');
+  assert.deepEqual(geyserMeta.targetKinds, ['java']);
+  assert.equal(geyserMeta.supportsCreateForTarget, true);
+  assert.equal(geyserMeta.managementPluginId, 'gateway-geyser');
+  assert.ok(pluginHost.getMenuItems().some((item) => item.pluginId === 'gateway-geyser' && item.label === 'Geyser'));
+  assert.equal(pluginHost.getMenuItems().some((item) => item.path === '/gateways'), false);
+
+  await assert.rejects(
+    () => gatewayManager.create({
+      name: 'Missing provider',
+      targetType: 'remote-address',
+      targetHost: '192.168.1.10',
+      targetTcpPort: 25565,
+    }),
+    /provider is required/
+  );
+
+  const originalInstall = javaLoaderHost.executeInstallPlan;
+  javaLoaderHost.executeInstallPlan = async () => ({});
+  let created;
+  try {
+    created = await gatewayManager.create({
+      name: 'Isolated Geyser',
+      providerId: 'geyser',
+      targetType: 'remote-address',
+      targetHost: '192.168.1.20',
+      targetTcpPort: 25565,
+      authentication: 'online',
+    });
+    assert.equal(created.status, 'stopped');
+    assert.equal(created.floodgate_key_path, undefined);
+    assert.equal(JSON.stringify(created).includes('BEGIN PRIVATE'), false);
+    await assert.rejects(
+      () => gatewayManager.create({
+        name: 'Offline no confirm',
+        providerId: 'geyser',
+        targetType: 'remote-address',
+        targetHost: '192.168.1.21',
+        targetTcpPort: 25565,
+        authentication: 'offline',
+      }),
+      /explicit security confirmation/
+    );
+    await assert.rejects(
+      () => gatewayManager.create({
+        name: 'Remote floodgate',
+        providerId: 'geyser',
+        targetType: 'remote-address',
+        targetHost: '192.168.1.22',
+        targetTcpPort: 25565,
+        authentication: 'floodgate',
+      }),
+      /Floodgate/
+    );
+  } finally {
+    javaLoaderHost.executeInstallPlan = originalInstall;
+  }
+
+  const geyserLink = integrations.find((item) => item.id === 'geyser');
+  assert.ok(geyserLink);
+  assert.equal(geyserLink.action, 'configure');
+  assert.match(geyserLink.href, /\/plugins\/gateway-geyser/);
+  assert.match(geyserLink.href, /targetServerId=99999/);
+  assert.equal(gatewayManager.integrationsForServer({ id: 1, kind: 'bedrock' }).length, 0);
+
+  db.prepare(`
+    UPDATE gateways SET status = 'running' WHERE id = ?
+  `).run(created.id);
+  assert.throws(
+    () => pluginHost.setPluginEnabled('gateway-geyser', false),
+    /Stop these gateways/
+  );
+  db.prepare(`UPDATE gateways SET status = 'stopped' WHERE id = ?`).run(created.id);
+  pluginHost.setPluginEnabled('gateway-geyser', false);
+  assert.equal(gatewayRegistry.get('geyser'), null);
+  assert.equal(pluginHost.getMenuItems().some((item) => item.pluginId === 'gateway-geyser'), false);
+  await assert.rejects(
+    () => gatewayManager.create({
+      name: 'While disabled',
+      providerId: 'geyser',
+      targetType: 'remote-address',
+      targetHost: '192.168.1.30',
+      targetTcpPort: 25565,
+    }),
+    /not installed/
+  );
+  const preserved = db.prepare('SELECT * FROM gateways WHERE id = ?').get(created.id);
+  assert.ok(preserved);
+  assert.equal(preserved.status, 'stopped');
+  pluginHost.setPluginEnabled('gateway-geyser', true);
+  assert.ok(gatewayRegistry.get('geyser'));
+  assert.ok(pluginHost.getMenuItems().some((item) => item.pluginId === 'gateway-geyser'));
+
+  const otherProvider = {
+    getMetadata: () => ({
+      id: 'other-gw',
+      name: '<b>Other</b>',
+      targetKinds: ['java', 'nope'],
+      managementPluginId: 'escape',
+      managementPage: '../secret',
+    }),
+    planInstallation: async () => ({ downloads: [], result: {} }),
+    planUpdate: async () => ({ downloads: [], result: {} }),
+    getLaunchSpecification: () => ({ runtime: 'java', jar: 'Geyser.jar', arguments: ['--nogui'] }),
+    getDefaultConfig: () => '',
+    sanitizePublicRecord: (row) => row,
+  };
+  gatewayRegistry.register({
+    id: 'gateway-other',
+    source: 'bundled',
+    capabilities: ['provider:gateway'],
+  }, otherProvider);
+  const otherMeta = gatewayRegistry.list().find((item) => item.id === 'other-gw');
+  assert.equal(otherMeta.name, 'Other');
+  assert.deepEqual(otherMeta.targetKinds, ['java']);
+  assert.equal(otherMeta.managementPluginId, 'gateway-other');
+  assert.equal(otherMeta.managementPage, 'home');
+
+  const scoped = require('../server/services/pluginGatewayService').scopedGatewayService({
+    id: 'gateway-geyser',
+    capabilities: ['provider:gateway'],
+  });
+  await assert.rejects(
+    () => scoped.create({
+      name: 'Escape',
+      providerId: 'other-gw',
+      targetType: 'remote-address',
+      targetHost: '192.168.1.40',
+      targetTcpPort: 25565,
+    }),
+    /another gateway provider/
+  );
+  assert.throws(() => scoped.getOwn(created.id + 9999), /not found/);
+  const own = scoped.listOwn();
+  assert.ok(own.some((row) => row.id === created.id));
+  assert.equal(own.some((row) => row.provider_id === 'other-gw'), false);
+  assert.ok(Array.isArray(scoped.listJavaTargets()));
+
+  try { gatewayManager.remove(created.id); } catch { /* ignore */ }
 
   assert.throws(() => gatewayManager.allocateUdpPort(19132), /reserved/);
   const taken = gatewayManager.takenPorts();

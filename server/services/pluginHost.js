@@ -339,6 +339,9 @@ function createProviderServices(plugin) {
     catalogHttp: (plugin.capabilities || []).includes('provider:catalog-source')
       ? require('./catalogHttp').forPlugin()
       : undefined,
+    gateways: (plugin.capabilities || []).includes('provider:gateway')
+      ? require('./pluginGatewayService').scopedGatewayService(plugin)
+      : undefined,
     audit: pluginAudit,
     logger,
   };
@@ -519,10 +522,22 @@ function isBackendEnabled(id, source, backendDeclared) {
 }
 
 function setPluginEnabled(id, enabled) {
-  if (!getPlugin(id)) {
+  const plugin = getPlugin(id);
+  if (!plugin) {
     const err = new Error('Plugin not found');
     err.status = 404;
     throw err;
+  }
+  if (!enabled && (plugin.capabilities || []).includes('provider:gateway')) {
+    const running = require('./gatewayManager').runningForPlugin(plugin.id);
+    if (running.length) {
+      const names = running.map((row) => row.name).join(', ');
+      const err = new Error(`Stop these gateways before disabling ${plugin.name}: ${names}`);
+      err.status = 400;
+      err.code = 'GATEWAY_RUNNING';
+      err.gateways = running.map((row) => ({ id: row.id, name: row.name }));
+      throw err;
+    }
   }
   const state = readPluginState();
   state.enabled[id] = Boolean(enabled);
