@@ -57,8 +57,9 @@ function parseGameVersions(versions) {
   if (uniqueLoaders.length === 1) loader = uniqueLoaders[0];
   else if (uniqueLoaders.length > 1) loader = 'any';
   let environment = 'unknown';
-  if (envs.includes('client') && envs.includes('server')) environment = 'both';
-  else if (envs.length === 1) environment = envs[0];
+  const uniqueEnvs = [...new Set(envs)];
+  if (uniqueEnvs.includes('client') && uniqueEnvs.includes('server')) environment = 'both';
+  else if (uniqueEnvs.length === 1) environment = uniqueEnvs[0];
   return { loader, environment, minecraftVersions };
 }
 
@@ -89,6 +90,7 @@ function formatProject(item) {
     loader: parsed.loader,
     minecraftVersions: parsed.minecraftVersions,
     environment: parsed.environment,
+    downloadState: 'unknown',
     type: 'mod',
     projectClass: classSlug(item),
   };
@@ -108,6 +110,7 @@ function formatFile(file) {
     fileName: file.fileName || `file-${file.id}`,
     displayName: file.displayName || file.fileName || '',
     type: 'mod',
+    edition: 'java',
     extension: path.extname(file.fileName || '').toLowerCase() || '.jar',
     date: file.fileDate || '',
     size: file.fileLength || 0,
@@ -196,25 +199,47 @@ function createProvider(services) {
       .sort((a, b) => new Date(b.fileDate || 0) - new Date(a.fileDate || 0))
       .map(formatFile);
     if (selected.length) {
-      const wanted = formatted.filter((file) => selected.includes(String(file.id)));
-      if (!wanted.length) throw new Error('Select at least one catalog file to download');
+      const byId = new Map(formatted.map((file) => [String(file.id), file]));
+      const wanted = [];
+      for (const id of selected) {
+        const file = byId.get(id);
+        if (!file) {
+          const err = new Error('Unknown catalog file ID');
+          err.status = 400;
+          err.code = 'UNKNOWN_FILE_ID';
+          err.fileId = id;
+          throw err;
+        }
+        if (file.environment === 'client') {
+          const err = new Error('Client-only files cannot be downloaded for a dedicated server.');
+          err.status = 400;
+          err.code = 'CLIENT_ONLY_FILE';
+          err.fileId = id;
+          throw err;
+        }
+        wanted.push(file);
+      }
       return { files: wanted };
+    }
+    const selectable = formatted.filter((file) => file.environment !== 'client');
+    if (formatted.length > 0 && selectable.length === 0) {
+      const err = new Error('Client-only files cannot be downloaded for a dedicated server.');
+      err.status = 400;
+      err.code = 'CLIENT_ONLY_FILE';
+      throw err;
     }
     const loaders = new Set(formatted.map((file) => file.loader || 'unknown'));
     const mixed = loaders.size > 1 || loaders.has('unknown') || loaders.has('any');
-    const clientOnly = formatted.length > 0 && formatted.every((file) => file.environment === 'client');
-    if (mixed || clientOnly || formatted.length > 1) {
+    if (mixed || formatted.length > 1) {
       return {
         needsSelection: true,
         files: formatted,
         warning: mixed
           ? 'This project publishes files for different loaders or unknown compatibility. Choose a file manually.'
-          : clientOnly
-            ? 'Available files are marked client-only. Confirm before downloading.'
-            : 'Choose a file that matches your Minecraft version and loader.',
+          : 'Choose a file that matches your Minecraft version and loader.',
       };
     }
-    return { files: formatted.slice(0, 1) };
+    return { files: selectable.slice(0, 1) };
   }
 
   return {
@@ -294,6 +319,12 @@ function createProvider(services) {
       const listed = await listModFiles(projectId);
       const selected = selectFiles(listed, fileSelection);
       if (selected.needsSelection) return selected;
+      if ((selected.files || []).some((file) => file.environment === 'client')) {
+        const err = new Error('Client-only files cannot be downloaded for a dedicated server.');
+        err.status = 400;
+        err.code = 'CLIENT_ONLY_FILE';
+        throw err;
+      }
       const planned = [];
       for (const file of selected.files) {
         const urlData = await apiGet(`/v1/mods/${encodeURIComponent(projectId)}/files/${encodeURIComponent(file.fileId)}/download-url`);

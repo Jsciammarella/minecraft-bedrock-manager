@@ -10,6 +10,7 @@ const zipGuard = require('./zipGuard');
 const javaModMetadata = require('./javaModMetadata');
 const modManager = require('./modManager');
 const packFiles = require('./packFiles');
+const catalogDownloadPolicy = require('./catalogDownloadPolicy');
 
 const MODS_DIR = process.env.MC_MANAGER_MODS_DIR
   ? path.resolve(process.env.MC_MANAGER_MODS_DIR)
@@ -28,6 +29,17 @@ async function importDownloadPlan(plan, { allowHosts, providerId } = {}) {
   const project = plan?.project || {};
   const files = Array.isArray(plan?.files) ? plan.files : [];
   if (!files.length) throw new Error('Catalog download did not include a file');
+  try {
+    catalogDownloadPolicy.assertPlanNotClientOnly(plan, { providerId });
+  } catch (err) {
+    catalogDownloadPolicy.auditRejectedDownload({
+      providerId: providerId || project.providerId,
+      projectId: project.curseforgeId || project.slug,
+      fileId: err.fileId,
+      code: err.code,
+    });
+    throw err;
+  }
   pluginAudit.record('catalog.download.start', {
     targetType: 'catalog-source',
     targetId: providerId || project.providerId || '',

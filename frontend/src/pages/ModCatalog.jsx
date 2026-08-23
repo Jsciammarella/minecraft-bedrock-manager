@@ -9,6 +9,82 @@ import {
 } from 'lucide-react';
 
 const CATALOG_PAGE_SIZE = 40;
+const ALLOWED_CATALOG_EDITIONS = ['bedrock', 'java'];
+const EDITION_LABELS = {
+  bedrock: 'Bedrock',
+  java: 'Java',
+};
+
+function sourceValue(provider) {
+  return provider.id === 'curseforge-bedrock' ? 'curseforge' : provider.id;
+}
+
+function editionOptionsFromProviders(providers) {
+  const present = new Set();
+  for (const provider of providers || []) {
+    for (const edition of provider.editions || []) {
+      if (ALLOWED_CATALOG_EDITIONS.includes(edition)) present.add(edition);
+    }
+  }
+  return ALLOWED_CATALOG_EDITIONS.filter((id) => present.has(id));
+}
+
+function reconcileCatalogFilters({ providers = [], source = 'all', edition = 'all', category = '' } = {}) {
+  const ids = new Set((providers || []).map((item) => item.id));
+  const editions = editionOptionsFromProviders(providers);
+  let nextSource = source || 'all';
+  let nextEdition = edition || 'all';
+  let nextCategory = category || '';
+  const sourceId = nextSource === 'curseforge' ? 'curseforge-bedrock' : nextSource;
+  if (nextSource !== 'all' && !ids.has(sourceId)) {
+    nextSource = 'all';
+    nextCategory = '';
+  }
+  if (nextEdition !== 'all' && !editions.includes(nextEdition)) {
+    nextEdition = 'all';
+    if (String(nextCategory).startsWith('curseforge-java:')) nextCategory = '';
+  }
+  if (nextSource !== 'curseforge-java' && String(nextCategory).startsWith('curseforge-java:')) {
+    nextCategory = '';
+  }
+  const changed = nextSource !== (source || 'all')
+    || nextEdition !== (edition || 'all')
+    || nextCategory !== (category || '');
+  return {
+    source: nextSource,
+    edition: nextEdition,
+    category: nextCategory,
+    changed,
+  };
+}
+
+function isClientOnlyProject(mod) {
+  return Boolean(mod && mod.downloadState === 'blocked' && mod.blockedReason === 'client-only');
+}
+
+function sameCatalogMod(a, b) {
+  if (!a || !b) return false;
+  if (a.curseforgeId && a.curseforgeId === b.curseforgeId && (a.providerId || a.source) === (b.providerId || b.source)) {
+    return true;
+  }
+  if (a.providerId && a.providerId === b.providerId && a.slug && a.slug === b.slug) return true;
+  return Boolean(a.id && a.id === b.id && a.source === b.source);
+}
+
+function selectableCatalogFiles(files = []) {
+  return files.filter((file) => file.downloadable !== false);
+}
+
+function defaultSelectedCatalogFileIds(files = []) {
+  return selectableCatalogFiles(files).map((file) => file.id);
+}
+
+function fileEnvironmentLabel(file) {
+  if (file.environment === 'client') return 'Client only';
+  if (file.environment === 'server') return 'Server';
+  if (file.environment === 'both') return 'Client and server';
+  return '';
+}
 
 function ModCatalog() {
   const navigate = useNavigate();
@@ -36,24 +112,30 @@ function ModCatalog() {
   const [expandedMod, setExpandedMod] = useState(null);
   const { status, startSync } = useGitCatalogSync();
   const wasSyncing = useRef(false);
+  const filtersRef = useRef({ source: 'all', edition: 'all', category: '' });
+  const queryRef = useRef({ q: '', sortBy: 'relevancy' });
+  filtersRef.current = { source, edition, category };
+  queryRef.current = { q: search, sortBy };
+
+  const availableEditions = editionOptionsFromProviders(providers);
 
   useEffect(() => {
-    loadProviders();
-    loadCategories();
     loadMultiFileMode();
-    searchMods();
+    refreshProviders({ search: true });
   }, []);
 
   useEffect(() => {
-    if (source === 'curseforge-java' && !providers.some((item) => item.id === 'curseforge-java')) {
-      setSource('all');
-    }
-  }, [providers, source]);
+    const onPluginsChanged = () => {
+      refreshProviders({ search: true });
+    };
+    window.addEventListener('mbm-plugins-changed', onPluginsChanged);
+    return () => window.removeEventListener('mbm-plugins-changed', onPluginsChanged);
+  }, []);
 
   useEffect(() => {
     if (wasSyncing.current && !status.running) {
       loadCategories();
-      searchMods(page, source, edition);
+      searchMods(page, source, edition, category);
       if (status.error) {
         setError(status.error);
       } else if (status.lastSync) {
@@ -89,13 +171,34 @@ function ModCatalog() {
     }
   };
 
-  const loadProviders = async () => {
+  const refreshProviders = async ({ search = false } = {}) => {
     try {
       const res = await modApi.catalogProviders();
-      setProviders(res.data?.providers || []);
+      const nextProviders = res.data?.providers || [];
       if (res.data?.sources) setSources(res.data.sources);
+      setProviders(nextProviders);
+      const current = filtersRef.current;
+      const reconciled = reconcileCatalogFilters({
+        providers: nextProviders,
+        source: current.source,
+        edition: current.edition,
+        category: current.category,
+      });
+      if (reconciled.changed) {
+        setSource(reconciled.source);
+        setEdition(reconciled.edition);
+        setCategory(reconciled.category);
+      }
+      setPage(1);
+      if (search) {
+        await loadCategories(reconciled.source, reconciled.edition);
+        await searchMods(1, reconciled.source, reconciled.edition, reconciled.category);
+      }
     } catch {
-      /* keep defaults until catalog search fills them */
+      if (search) {
+        await loadCategories();
+        await searchMods();
+      }
     }
   };
 
@@ -114,7 +217,12 @@ function ModCatalog() {
     }
   };
 
-  const searchMods = async (requestedPage = page, requestedSource = source, requestedEdition = edition) => {
+  const searchMods = async (
+    requestedPage = page,
+    requestedSource = source,
+    requestedEdition = edition,
+    requestedCategory = category
+  ) => {
     setSearching(true);
     setError('');
     setWarning('');
@@ -125,11 +233,11 @@ function ModCatalog() {
           ? 'curseforge-bedrock'
           : requestedSource;
       const res = await modApi.catalogSearch({
-        q: search,
-        category,
+        q: queryRef.current.q,
+        category: requestedCategory,
         page: requestedPage,
         pageSize: CATALOG_PAGE_SIZE,
-        sortBy,
+        sortBy: queryRef.current.sortBy,
         source: requestedSource,
         provider,
         edition: requestedEdition,
@@ -137,7 +245,6 @@ function ModCatalog() {
       setMods(res.data.results || []);
       setTotal(Number(res.data.total) || 0);
       setSources(res.data.sources || sources);
-      if (res.data.providers) setProviders(res.data.providers);
       if (res.data.warning) setWarning(res.data.warning);
       const sourceErrors = (res.data.errors || []).filter(item => item.source !== 'curseforge' || requestedSource === 'curseforge' || requestedSource === 'curseforge-java');
       if (requestedSource !== 'all' && sourceErrors.length) {
@@ -158,7 +265,7 @@ function ModCatalog() {
     e.preventDefault();
     setPage(1);
     loadCategories(source, edition);
-    searchMods(1, source, edition);
+    searchMods(1, source, edition, category);
   };
 
   const handleRefresh = async () => {
@@ -174,9 +281,28 @@ function ModCatalog() {
     }
   };
 
+  const applyAvailability = (mod, availability) => {
+    if (!mod || !availability) return mod;
+    const next = {
+      ...mod,
+      downloadState: availability.downloadState || mod.downloadState,
+      blockedReason: availability.blockedReason,
+      availableFileCount: availability.availableFileCount,
+      selectableFileCount: availability.selectableFileCount,
+    };
+    setMods((list) => list.map((item) => (sameCatalogMod(item, mod) ? next : item)));
+    setExpandedMod((current) => (current && sameCatalogMod(current, mod) ? next : current));
+    return next;
+  };
+
+  const openDownload = (mod) => {
+    if (!mod || isClientOnlyProject(mod)) return;
+    setDownloadModal(mod);
+  };
+
   const handleDownload = async (files) => {
     const mod = filePicker?.mod || downloadModal;
-    if (!mod) return;
+    if (!mod || isClientOnlyProject(mod)) return;
     if (filePicker && (!files || files.length < 1)) {
       setError('Select at least one file to download');
       return;
@@ -185,10 +311,33 @@ function ModCatalog() {
     setError('');
     try {
       const res = await modApi.catalogDownload(mod, undefined, files);
+      if (res.data?.downloadState === 'blocked' && res.data?.blockedReason === 'client-only') {
+        applyAvailability(mod, res.data);
+        setDownloadModal(null);
+        setFilePicker(null);
+        setSelectedFiles([]);
+        setWarning('All available Java files are marked client-only and cannot run on a dedicated server.');
+        return;
+      }
       if (res.data?.needsSelection) {
         const choices = res.data.files || [];
+        const selectable = selectableCatalogFiles(choices);
+        if (choices.length && selectable.length === 0) {
+          applyAvailability(mod, {
+            downloadState: 'blocked',
+            blockedReason: 'client-only',
+            availableFileCount: choices.length,
+            selectableFileCount: 0,
+          });
+          setDownloadModal(null);
+          setFilePicker(null);
+          setSelectedFiles([]);
+          setWarning('All available Java files are marked client-only and cannot run on a dedicated server.');
+          return;
+        }
+        applyAvailability(mod, res.data);
         setFilePicker({ mod, files: choices, warning: res.data.warning });
-        setSelectedFiles(choices.map((file) => file.id));
+        setSelectedFiles(defaultSelectedCatalogFileIds(choices));
         setDownloadModal(null);
         return;
       }
@@ -204,7 +353,9 @@ function ModCatalog() {
     }
   };
 
-  const togglePickedFile = (id) => {
+  const togglePickedFile = (file) => {
+    if (!file || file.downloadable === false) return;
+    const id = file.id;
     setSelectedFiles((current) => (
       current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
     ));
@@ -238,7 +389,7 @@ function ModCatalog() {
   const goToPage = (nextPage) => {
     const safePage = Math.max(1, nextPage);
     setPage(safePage);
-    searchMods(safePage, source, edition);
+    searchMods(safePage, source, edition, category);
   };
 
   const totalPages = Math.max(1, Math.ceil((total || 0) / CATALOG_PAGE_SIZE));
@@ -344,7 +495,7 @@ function ModCatalog() {
               </p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-start gap-3">
             <select
               value={source}
               onChange={(e) => {
@@ -353,7 +504,7 @@ function ModCatalog() {
                 setPage(1);
                 setCategory('');
                 loadCategories(next, edition);
-                searchMods(1, next, edition);
+                searchMods(1, next, edition, '');
               }}
               className="input w-44"
             >
@@ -384,31 +535,36 @@ function ModCatalog() {
               <option value="lastUpdated">Recently Updated</option>
               <option value="totalDownloads">Most Downloaded</option>
             </select>
-            <button type="submit" className="btn btn-primary" disabled={searching}>
-              {searching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-              Search
-            </button>
+            <div className="flex flex-col items-end gap-3">
+              <button type="submit" className="btn btn-primary" disabled={searching}>
+                {searching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                Search
+              </button>
+              <div className="flex items-center gap-2">
+                <label className="text-sm font-medium text-white whitespace-nowrap" htmlFor="catalog-edition">
+                  Edition
+                </label>
+                <select
+                  id="catalog-edition"
+                  value={availableEditions.includes(edition) || edition === 'all' ? edition : 'all'}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setEdition(next);
+                    setPage(1);
+                    setCategory('');
+                    loadCategories(source, next);
+                    searchMods(1, source, next, '');
+                  }}
+                  className="input w-40"
+                >
+                  <option value="all">All</option>
+                  {availableEditions.map((id) => (
+                    <option key={id} value={id}>{EDITION_LABELS[id] || id}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
           </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-3 mt-4">
-          <label className="text-sm font-medium text-white" htmlFor="catalog-edition">Edition</label>
-          <select
-            id="catalog-edition"
-            value={edition}
-            onChange={(e) => {
-              const next = e.target.value;
-              setEdition(next);
-              setPage(1);
-              setCategory('');
-              loadCategories(source, next);
-              searchMods(1, source, next);
-            }}
-            className="input w-40"
-          >
-            <option value="all">All</option>
-            <option value="bedrock">Bedrock</option>
-            <option value="java">Java</option>
-          </select>
         </div>
       </form>
 
@@ -448,7 +604,7 @@ function ModCatalog() {
                 key={mod.id || `${mod.source}-${mod.slug}-${idx}`}
                 mod={mod}
                 onOpen={() => setExpandedMod(mod)}
-                onDownload={() => setDownloadModal(mod)}
+                onDownload={() => openDownload(mod)}
                 getTypeBadge={getTypeBadge}
                 getSourceBadge={(modSource, fileKind) => getSourceBadge(modSource, fileKind, mod)}
               />
@@ -475,7 +631,7 @@ function ModCatalog() {
             mod={expandedMod}
             expanded
             onClose={() => setExpandedMod(null)}
-            onDownload={() => setDownloadModal(expandedMod)}
+            onDownload={() => openDownload(expandedMod)}
             getTypeBadge={getTypeBadge}
             getSourceBadge={(modSource, fileKind) => getSourceBadge(modSource, fileKind, expandedMod)}
           />
@@ -483,8 +639,11 @@ function ModCatalog() {
       )}
 
       {downloadModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
-          <div className="card max-w-sm w-full animate-slide-up">
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4"
+          onClick={() => { if (!downloading) setDownloadModal(null); }}
+        >
+          <div className="card max-w-sm w-full animate-slide-up" onClick={(event) => event.stopPropagation()}>
             <h3 className="text-lg font-semibold text-white mb-2">Download Mod</h3>
             <p className="text-sm text-mc-textMuted mb-4">
               Download <strong className="text-white">{downloadModal.name}</strong> to your mod library
@@ -526,8 +685,16 @@ function ModCatalog() {
       )}
 
       {filePicker && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4">
-          <div className="card max-w-lg w-full animate-slide-up max-h-[90vh] overflow-y-auto">
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4"
+          onClick={() => {
+            if (!downloading) {
+              setFilePicker(null);
+              setSelectedFiles([]);
+            }
+          }}
+        >
+          <div className="card max-w-lg w-full animate-slide-up max-h-[90vh] overflow-y-auto" onClick={(event) => event.stopPropagation()}>
             <h3 className="text-lg font-semibold text-white mb-2">Choose files to download</h3>
             <p className="text-sm text-mc-textMuted mb-3">
               <strong className="text-white">{filePicker.mod.name}</strong> includes more than one file.
@@ -541,15 +708,20 @@ function ModCatalog() {
               </p>
             </div>
             <div className="space-y-2 mb-4">
-              {filePicker.files.map((file) => (
+              {filePicker.files.map((file) => {
+                const blocked = file.downloadable === false;
+                const envLabel = fileEnvironmentLabel(file);
+                return (
                 <label
                   key={file.id}
-                  className="flex items-start gap-3 p-3 bg-mc-darker rounded-lg cursor-pointer"
+                  className={`flex items-start gap-3 p-3 bg-mc-darker rounded-lg ${blocked ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}
                 >
                   <input
                     type="checkbox"
                     checked={selectedFiles.includes(file.id)}
-                    onChange={() => togglePickedFile(file.id)}
+                    onChange={() => togglePickedFile(file)}
+                    disabled={blocked}
+                    aria-disabled={blocked}
                     className="mt-1"
                   />
                   <span className="min-w-0">
@@ -558,26 +730,30 @@ function ModCatalog() {
                       {file.displayName && file.displayName !== file.name ? `${file.displayName} • ` : ''}
                       {(file.type || 'file').replace('_', ' ')}
                       {file.extension ? ` • ${file.extension}` : ''}
-                      {(file.minecraftVersions || []).length ? ` • MC ${(file.minecraftVersions || []).join(', ')}` : ''}
+                      {(file.minecraftVersions || []).length ? ` • Minecraft ${(file.minecraftVersions || []).join(', ')}` : ''}
                       {file.loader ? ` • ${file.loader === 'unknown' ? 'loader unknown' : file.loader}` : ''}
                       {file.fabric ? ' • Fabric' : ''}
                       {file.neoforge ? ' • NeoForge' : ''}
-                      {file.environment && file.environment !== 'unknown' ? ` • ${file.environment}` : ''}
+                      {envLabel ? ` • ${envLabel}` : ''}
                       {file.releaseType ? ` • ${file.releaseType}` : ''}
                       {file.date ? ` • ${new Date(file.date).toLocaleDateString()}` : ''}
                       {file.size ? ` • ${formatFileSize(file.size)}` : ''}
                     </span>
-                    {file.warning && (
+                    {blocked && file.environment === 'client' && (
+                      <span className="block text-xs text-amber-300 mt-1">Cannot run on a dedicated server</span>
+                    )}
+                    {!blocked && file.warning && (
                       <span className="block text-xs text-amber-300 mt-1">{file.warning}</span>
                     )}
                   </span>
                 </label>
-              ))}
+                );
+              })}
             </div>
             <div className="flex items-center gap-3">
               <button
-                onClick={() => handleDownload(selectedFiles)}
-                disabled={downloading || selectedFiles.length < 1}
+                onClick={() => handleDownload(selectableCatalogFiles(filePicker.files).filter((file) => selectedFiles.includes(file.id)).map((file) => file.id))}
+                disabled={downloading || selectableCatalogFiles(filePicker.files).filter((file) => selectedFiles.includes(file.id)).length < 1}
                 className="btn btn-primary flex-1"
               >
                 {downloading ? (
@@ -755,14 +931,36 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
         )}
       </div>
 
+      {expanded && isClientOnlyProject(mod) && (
+        <div className="mb-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-start gap-2">
+          <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-300">
+            All available Java files are marked client-only and cannot run on a dedicated server.
+          </p>
+        </div>
+      )}
+
       <div className={`flex items-center gap-2 ${expanded ? '' : 'mt-auto'}`} onClick={(event) => event.stopPropagation()}>
-        <button
-          onClick={onDownload}
-          className={`btn btn-primary flex-1 ${expanded ? '' : 'text-xs'}`}
-        >
-          <Download className={expanded ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
-          Download
-        </button>
+        {isClientOnlyProject(mod) ? (
+          <button
+            type="button"
+            disabled
+            aria-disabled="true"
+            title="All available Java files are marked client-only and cannot run on a dedicated server."
+            className={`btn btn-client-only flex-1 ${expanded ? '' : 'text-xs'}`}
+          >
+            Client Side Only
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onDownload}
+            className={`btn btn-primary flex-1 ${expanded ? '' : 'text-xs'}`}
+          >
+            <Download className={expanded ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
+            Download
+          </button>
+        )}
         {mod.websiteUrl && (
           <a
             href={mod.websiteUrl}

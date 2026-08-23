@@ -387,7 +387,7 @@ router.post('/catalog/download/:slug', async (req, res) => {
     const result = await catalog.downloadMod(req.params.slug, req.body || {});
     res.json(result);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
   }
 });
 

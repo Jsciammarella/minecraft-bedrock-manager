@@ -138,9 +138,18 @@ core application folders.
 
 Catalog-source providers reuse core credential brokers. They never receive raw
 API keys. Enabling or disabling a bundled catalog plugin registers or unregisters
-its source without deleting Mod Library files. Uploaded Java mods are executable
-code; loader compatibility is checked again when installing to a Fabric or
-NeoForge server.
+its source without deleting Mod Library files. Catalog providers declare
+`bedrock` or `java` edition identifiers; the core validates them and renders the
+Mod Catalog edition dropdown. Plugins cannot inject that dropdown’s labels or
+markup. `all` is a core-only option.
+
+Catalog plugins classify file compatibility. The core enforces download policy,
+including blocking Java files marked client-only. Plugins cannot inject catalog
+buttons, colors, or labels. A yellow disabled **Client Side Only** button means
+every inspected Java JAR for that project is client-only. Unknown files are not
+treated as client-only. Uploaded and catalog Java mods are executable code;
+loader compatibility is checked again when installing to a Fabric or NeoForge
+server.
 
 First-party edition features ship as folders under `server/bundled-plugins/`
 using the same manifest.

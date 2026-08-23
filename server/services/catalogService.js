@@ -5,6 +5,8 @@ const catalogProviderRegistry = require('./catalogProviderRegistry');
 const coreCatalogProviders = require('./coreCatalogProviders');
 const catalogLibrary = require('./catalogLibrary');
 const pluginAudit = require('./pluginAudit');
+const { ALLOWED_CATALOG_EDITIONS } = require('./catalogEditions');
+const catalogDownloadPolicy = require('./catalogDownloadPolicy');
 
 const CATALOG_PAGE_SIZE = 40;
 const LOCAL_FETCH_SIZE = 10000;
@@ -25,7 +27,8 @@ function ensureProviders() {
 
 function normalizeEdition(value) {
   const edition = String(value || 'all').toLowerCase();
-  if (edition === 'java' || edition === 'bedrock') return edition;
+  if (edition === 'all') return 'all';
+  if (ALLOWED_CATALOG_EDITIONS.includes(edition)) return edition;
   return 'all';
 }
 
@@ -104,11 +107,7 @@ function matchingEntries({ source = 'all', provider, edition = 'all' } = {}) {
     }
   }
   if (edition !== 'all') {
-    list = list.filter((entry) => {
-      const meta = entry.provider.getMetadata() || {};
-      const editions = Array.isArray(meta.editions) ? meta.editions : [meta.edition || 'bedrock'];
-      return editions.includes(edition);
-    });
+    list = list.filter((entry) => (entry.editions || []).includes(edition));
   }
   return list;
 }
@@ -194,7 +193,11 @@ async function searchMods(query = '', options = {}) {
       return withMeta(unsupportedCombination(source, edition, matched[0].id), errors, available);
     }
     const result = await searchProvider(matched[0], query, { ...options, category }, errors, true);
-    return withMeta({ results: result.results, total: result.total, page }, errors, available);
+    return withMeta({
+      results: (result.results || []).map(catalogDownloadPolicy.applyCachedProjectAvailability),
+      total: result.total,
+      page,
+    }, errors, available);
   }
 
   const local = [];
@@ -207,7 +210,7 @@ async function searchMods(query = '', options = {}) {
       page: 1,
       pageSize: LOCAL_FETCH_SIZE,
     }, errors, source === entry.id);
-    local.push(...result.results);
+    local.push(...(result.results || []).map(catalogDownloadPolicy.applyCachedProjectAvailability));
   }
 
   if (!remotes.length) {
@@ -240,7 +243,7 @@ async function searchMods(query = '', options = {}) {
     }, errors, source !== 'all' && matched.length === 1);
     remoteTotal += result.total || 0;
     if (remaining > 0) {
-      const take = result.results.slice(0, remaining);
+      const take = result.results.slice(0, remaining).map(catalogDownloadPolicy.applyCachedProjectAvailability);
       remoteResults.push(...take);
       remaining -= take.length;
     }
@@ -314,27 +317,69 @@ async function downloadMod(slug, body = {}) {
   ensureProviders();
   const entry = resolveDownloadEntry(body);
   const selectedFiles = Array.isArray(body.files) ? body.files.map(String).filter(Boolean) : [];
+  const javaPolicy = catalogDownloadPolicy.appliesJavaPolicy(entry, body);
+  const projectId = body.curseforgeId || slug;
   let files = [];
   try {
     files = await listDownloadFiles(slug, body);
-  } catch {
+  } catch (err) {
+    if (javaPolicy && selectedFiles.length) throw err;
     files = [];
   }
+  const availability = javaPolicy
+    ? catalogDownloadPolicy.projectAvailability(files, { complete: true })
+    : null;
+  if (javaPolicy && files.length) {
+    catalogDownloadPolicy.setCachedAvailability(entry.id, projectId, { files, availability });
+  }
+
+  if (javaPolicy && selectedFiles.length) {
+    try {
+      catalogDownloadPolicy.assertNoClientOnlySelection(files, selectedFiles, {
+        providerId: entry.id,
+        projectId,
+      });
+    } catch (err) {
+      catalogDownloadPolicy.auditRejectedDownload({
+        providerId: entry.id,
+        projectId,
+        fileId: err.fileId,
+        code: err.code,
+      });
+      throw err;
+    }
+  } else if (javaPolicy && catalogDownloadPolicy.isClientOnlyAvailability(availability)) {
+    catalogDownloadPolicy.auditRejectedDownload({
+      providerId: entry.id,
+      projectId,
+      code: catalogDownloadPolicy.CLIENT_ONLY_CODE,
+    });
+    return {
+      ...availability,
+      files,
+    };
+  }
+
   const mode = settingsStore.getMultiFileMode();
   const javaCatalog = entry.id === JAVA_CURSEFORGE_ID;
   const mixedLoaders = new Set(files.map((file) => file.loader || 'unknown')).size > 1;
   const unknownCompat = files.some((file) => !file.loader || file.loader === 'unknown');
-  if (!selectedFiles.length && files.length > 1 && (mode === 'manual' || javaCatalog && (mixedLoaders || unknownCompat))) {
+  const needsJavaPicker = javaCatalog && (
+    mixedLoaders
+    || unknownCompat
+    || availability?.downloadState === 'requires-selection'
+  );
+  if (!selectedFiles.length && files.length > 1 && (mode === 'manual' || needsJavaPicker)) {
     return {
       needsSelection: true,
       files,
       warning: javaCatalog
         ? 'Choose a file that matches your Minecraft version and loader. The newest file is not always compatible.'
         : undefined,
+      ...(availability || {}),
     };
   }
 
-  const projectId = body.curseforgeId || slug;
   const downloaded = await entry.provider.download(projectId, selectedFiles, {
     slug,
     projectClass: body.projectClass,
@@ -343,8 +388,30 @@ async function downloadMod(slug, body = {}) {
     fileKind: body.fileKind,
     serverId: body.serverId,
   });
-  if (downloaded?.needsSelection) return downloaded;
+  if (downloaded?.needsSelection) {
+    const listed = javaPolicy
+      ? (downloaded.files || []).map(catalogDownloadPolicy.annotateFile)
+      : downloaded.files;
+    return {
+      ...downloaded,
+      files: listed,
+      ...(availability || {}),
+    };
+  }
   if (downloaded?.plan) {
+    if (javaPolicy) {
+      try {
+        catalogDownloadPolicy.assertPlanNotClientOnly(downloaded, { providerId: entry.id });
+      } catch (err) {
+        catalogDownloadPolicy.auditRejectedDownload({
+          providerId: entry.id,
+          projectId,
+          fileId: err.fileId,
+          code: err.code,
+        });
+        throw err;
+      }
+    }
     return catalogLibrary.importDownloadPlan(downloaded, {
       allowHosts: entry.downloadHosts || entry.provider.getMetadata()?.downloadHosts || [],
       providerId: entry.id,
@@ -356,12 +423,26 @@ async function downloadMod(slug, body = {}) {
 async function listDownloadFiles(slug, body = {}) {
   ensureProviders();
   const entry = resolveDownloadEntry(body);
-  return entry.provider.listDownloadFiles(body.curseforgeId || slug, {
+  const projectId = body.curseforgeId || slug;
+  const javaPolicy = catalogDownloadPolicy.appliesJavaPolicy(entry, body);
+  if (javaPolicy) {
+    const cached = catalogDownloadPolicy.getCachedAvailability(entry.id, projectId);
+    if (cached?.files) return cached.files;
+  }
+  const files = await entry.provider.listDownloadFiles(projectId, {
     slug,
     projectClass: body.projectClass,
     curseforgeId: body.curseforgeId,
     fileKind: body.fileKind,
   });
+  if (!javaPolicy) return files;
+  const annotated = (files || []).map(catalogDownloadPolicy.annotateFile);
+  const availability = catalogDownloadPolicy.projectAvailability(annotated, { complete: true });
+  catalogDownloadPolicy.setCachedAvailability(entry.id, projectId, {
+    files: annotated,
+    availability,
+  });
+  return annotated;
 }
 
 function setMultiFileMode(mode) {
@@ -372,15 +453,20 @@ function setMultiFileMode(mode) {
 async function getDetails(slug, query = {}) {
   ensureProviders();
   const entry = resolveDownloadEntry(query);
-  return entry.provider.getDetails(query.curseforgeId || slug, {
+  const details = await entry.provider.getDetails(query.curseforgeId || slug, {
     slug,
     projectClass: query.projectClass,
     fileKind: query.fileKind,
   });
+  return details ? catalogDownloadPolicy.applyCachedProjectAvailability(details) : details;
 }
 
 function listProviders() {
-  return publicSources();
+  const listed = publicSources();
+  return {
+    ...listed,
+    editions: catalogProviderRegistry.availableEditions(),
+  };
 }
 
 function getSettings() {

@@ -45,17 +45,21 @@ function zipStore(files) {
   return Buffer.concat([localBuf, centralBuf, end]);
 }
 
-function catalogProviderFixture() {
+function catalogProviderFixture(overrides = {}) {
+  const editions = Object.prototype.hasOwnProperty.call(overrides, 'editions')
+    ? overrides.editions
+    : ['java'];
+  const id = overrides.id || 'fixture-catalog';
   return {
     getMetadata: () => ({
-      id: 'fixture-catalog',
+      id,
       name: 'Fixture Catalog',
       source: 'fixture',
-      editions: ['java'],
+      editions,
       downloadHosts: ['example.test'],
     }),
     isAvailable: () => true,
-    getCategories: async () => [{ id: 'fixture-catalog:mods', name: 'Mods' }],
+    getCategories: async () => [{ id: `${id}:mods`, name: 'Mods' }],
     search: async () => ({ results: [], total: 0, page: 1 }),
     getDetails: async () => null,
     listDownloadFiles: async () => [],
@@ -66,6 +70,8 @@ function catalogProviderFixture() {
 async function runCatalogProviderTests({ pluginHost, testRoot }) {
   const pluginCapabilities = require('../server/services/pluginCapabilities');
   const catalogProviderRegistry = require('../server/services/catalogProviderRegistry');
+  const catalogEditions = require('../server/services/catalogEditions');
+  const catalogDownloadPolicy = require('../server/services/catalogDownloadPolicy');
   const catalogHttp = require('../server/services/catalogHttp');
   const catalogService = require('../server/services/catalogService');
   const catalogLibrary = require('../server/services/catalogLibrary');
@@ -89,7 +95,90 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   };
   catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture());
   assert.equal(catalogProviderRegistry.list().some((item) => item.id === 'fixture-catalog'), true);
-  assert.equal(typeof catalogProviderRegistry.list()[0].search, 'undefined');
+  assert.deepEqual(catalogProviderRegistry.get('fixture-catalog') && catalogProviderRegistry.list().find((item) => item.id === 'fixture-catalog').editions, ['java']);
+  assert.equal(typeof catalogProviderRegistry.list().find((item) => item.id === 'fixture-catalog').search, 'undefined');
+
+  assert.throws(
+    () => catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'bad-empty', editions: [] })),
+    /at least one edition/
+  );
+  assert.throws(
+    () => catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'bad-missing', editions: undefined })),
+    /at least one edition/
+  );
+  assert.throws(
+    () => catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'bad-all', editions: ['all'] })),
+    /cannot declare edition "all"/
+  );
+  assert.throws(
+    () => catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'bad-unknown', editions: ['unknown'] })),
+    /not allowed/
+  );
+  assert.throws(
+    () => catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'bad-html', editions: ['custom-html'] })),
+    /not allowed/
+  );
+  assert.throws(
+    () => catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'bad-js', editions: ['javascript:alert(1)'] })),
+    /not allowed/
+  );
+  assert.throws(
+    () => catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'bad-label', editions: ['Java Edition'] })),
+    /not allowed/
+  );
+  assert.throws(
+    () => catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'bad-type', editions: [1] })),
+    /must be strings/
+  );
+
+  catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'fixture-bedrock', editions: ['bedrock'] }));
+  catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'fixture-java-dup', editions: ['Java', 'java'] }));
+  const dupMeta = catalogProviderRegistry.list().find((item) => item.id === 'fixture-java-dup');
+  assert.deepEqual(dupMeta.editions, ['java']);
+  assert.deepEqual(catalogProviderRegistry.availableEditions(), ['bedrock', 'java']);
+  assert.equal(catalogProviderRegistry.availableEditions().filter((item) => item === 'java').length, 1);
+
+  catalogProviderRegistry.unregisterPlugins(['ok-catalog']);
+  catalogService.ensureProviders();
+  assert.deepEqual(catalogProviderRegistry.availableEditions(), ['bedrock']);
+  assert.equal(catalogProviderRegistry.availableEditions().includes('java'), false);
+
+  catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'java-one', editions: ['java'] }));
+  catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'java-two', editions: ['java'] }));
+  assert.ok(catalogProviderRegistry.availableEditions().includes('java'));
+  catalogProviderRegistry.unregisterPlugins(['ok-catalog']);
+  catalogService.ensureProviders();
+  catalogProviderRegistry.register({ id: 'java-one-plugin', source: 'bundled', capabilities: ['provider:catalog-source'] }, catalogProviderFixture({ id: 'java-one', editions: ['java'] }));
+  catalogProviderRegistry.register({ id: 'java-two-plugin', source: 'bundled', capabilities: ['provider:catalog-source'] }, catalogProviderFixture({ id: 'java-two', editions: ['java'] }));
+  catalogProviderRegistry.unregisterPlugins(['java-one-plugin']);
+  assert.ok(catalogProviderRegistry.availableEditions().includes('java'));
+  catalogProviderRegistry.unregisterPlugins(['java-two-plugin']);
+  assert.equal(catalogProviderRegistry.availableEditions().includes('java'), false);
+
+  const reset = catalogEditions.reconcileCatalogFilters({
+    providers: catalogProviderRegistry.list(),
+    source: 'curseforge-java',
+    edition: 'java',
+    category: 'curseforge-java:mc-mods',
+  });
+  assert.equal(reset.source, 'all');
+  assert.equal(reset.edition, 'all');
+  assert.equal(reset.category, '');
+  assert.equal(reset.page, 1);
+
+  catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture());
+  const keepJava = catalogEditions.reconcileCatalogFilters({
+    providers: [
+      ...catalogProviderRegistry.list(),
+      { id: 'java-one', editions: ['java'] },
+      { id: 'java-two', editions: ['java'] },
+    ],
+    source: 'all',
+    edition: 'java',
+    category: '',
+  });
+  assert.equal(keepJava.changed, false);
+  assert.equal(keepJava.edition, 'java');
 
   assert.throws(
     () => catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture()),
@@ -172,8 +261,14 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   pluginHost.resetForTests();
   pluginHost.loadPlugins([pluginHost.BUNDLED_PLUGINS_DIR]);
   assert.ok(catalogProviderRegistry.get('curseforge-java'), 'bundled CurseForge Java plugin should register');
+  catalogDownloadPolicy.setCachedAvailability('curseforge-java', '99', {
+    files: [{ id: '1', name: 'a.jar', extension: '.jar', environment: 'client' }],
+    availability: { downloadState: 'blocked', blockedReason: 'client-only' },
+  });
+  assert.ok(catalogDownloadPolicy.getCachedAvailability('curseforge-java', '99'));
   pluginHost.setPluginEnabled('catalog-curseforge-java', false);
   assert.equal(catalogProviderRegistry.get('curseforge-java'), null);
+  assert.equal(catalogDownloadPolicy.getCachedAvailability('curseforge-java', '99'), null);
   pluginHost.setPluginEnabled('catalog-curseforge-java', true);
   assert.ok(catalogProviderRegistry.get('curseforge-java'));
   pluginHost.resetForTests();
@@ -230,6 +325,43 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
         if (url.includes('/files/11/download-url')) {
           return { data: { data: 'https://edge.forgecdn.net/files/sodium.jar' } };
         }
+        if (url.includes('/files/12/download-url')) {
+          return { data: { data: 'https://edge.forgecdn.net/files/sodium-neo.jar' } };
+        }
+        if (url.endsWith('/v1/mods/77')) {
+          return {
+            data: {
+              data: {
+                id: 77,
+                name: 'Iris',
+                slug: 'iris',
+                classId: 6,
+                latestFiles: [{ gameVersions: ['1.21.1', 'Fabric', 'Client'] }],
+              },
+            },
+          };
+        }
+        if (url.includes('/mods/77/files')) {
+          return {
+            data: {
+              data: [
+                {
+                  id: 21,
+                  fileName: 'iris-client.jar',
+                  fileDate: '2026-01-02T00:00:00Z',
+                  gameVersions: ['1.21.1', 'Fabric', 'Client'],
+                },
+                {
+                  id: 22,
+                  fileName: 'iris-client-2.jar',
+                  fileDate: '2026-01-01T00:00:00Z',
+                  gameVersions: ['1.21.1', 'Fabric', 'Client'],
+                },
+              ],
+              pagination: { totalCount: 2 },
+            },
+          };
+        }
         if (url.endsWith('/files')) {
           return {
             data: {
@@ -272,19 +404,76 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   const unknownParsed = javaProvider.parseGameVersions(['1.21.1']);
   assert.equal(unknownParsed.loader, 'unknown');
   assert.equal(unknownParsed.environment, 'unknown');
+  assert.equal(javaProvider.parseGameVersions(['1.21.1', 'Fabric', 'Client', 'Server']).environment, 'both');
+  assert.equal(javaProvider.parseGameVersions(['1.21.1', 'ClientOnly', 'Dedicated']).environment, 'unknown');
+  assert.equal(javaProvider.parseGameVersions(['Client', 'client']).environment, 'client');
+
+  assert.equal(catalogDownloadPolicy.normalizeEnvironment('client'), 'client');
+  assert.equal(catalogDownloadPolicy.normalizeEnvironment('SERVER'), 'server');
+  assert.equal(catalogDownloadPolicy.normalizeEnvironment('both'), 'both');
+  assert.equal(catalogDownloadPolicy.normalizeEnvironment(''), 'unknown');
+  assert.equal(catalogDownloadPolicy.normalizeEnvironment('client-only'), 'unknown');
+  assert.equal(catalogDownloadPolicy.annotateFile({ environment: 'client-only' }).environment, 'unknown');
+  assert.equal(catalogDownloadPolicy.annotateFile({ environment: 'client-only' }).downloadable, true);
+  assert.equal(catalogDownloadPolicy.annotateFile({ environment: 'client', downloadable: true }).downloadable, false);
+  assert.equal(catalogDownloadPolicy.annotateFile({}).environment, 'unknown');
+  assert.equal(catalogDownloadPolicy.annotateFile({}).downloadable, true);
+
+  const clientJar = (id, env = 'client') => ({
+    id: String(id),
+    name: `${id}.jar`,
+    fileName: `${id}.jar`,
+    extension: '.jar',
+    environment: env,
+  });
+  assert.equal(catalogDownloadPolicy.projectAvailability([clientJar(1), clientJar(2)]).downloadState, 'blocked');
+  assert.equal(catalogDownloadPolicy.projectAvailability([clientJar(1), clientJar(2)]).blockedReason, 'client-only');
+  assert.equal(catalogDownloadPolicy.projectAvailability([clientJar(1), clientJar(2, 'server')]).downloadState, 'requires-selection');
+  assert.equal(catalogDownloadPolicy.projectAvailability([clientJar(1), clientJar(2, 'both')]).blockedReason, undefined);
+  assert.notEqual(catalogDownloadPolicy.projectAvailability([clientJar(1), clientJar(2, 'both')]).downloadState, 'blocked');
+  assert.notEqual(catalogDownloadPolicy.projectAvailability([clientJar(1), clientJar(2, 'unknown')]).downloadState, 'blocked');
+  assert.notEqual(catalogDownloadPolicy.projectAvailability([]).downloadState, 'blocked');
+  assert.equal(catalogDownloadPolicy.projectAvailability([]).downloadState, 'unknown');
+  assert.notEqual(catalogDownloadPolicy.projectAvailability([
+    { id: '1', name: 'pack.mcaddon', extension: '.mcaddon', environment: 'client' },
+  ]).downloadState, 'blocked');
+  assert.equal(catalogDownloadPolicy.projectAvailability([clientJar(1, 'server'), clientJar(2, 'server')]).downloadState, 'allowed');
+  assert.equal(catalogDownloadPolicy.projectAvailability([clientJar(1)], { complete: false }).downloadState, 'unknown');
 
   const search = await javaProvider.search('optimization', { page: 1, pageSize: 10, category: 'curseforge-java:mc-mods' });
   assert.equal(search.results[0].edition, 'java');
   assert.equal(search.results[0].providerId, 'curseforge-java');
   assert.equal(search.results[0].loader, 'fabric');
+  assert.equal(search.results[0].downloadState, 'unknown');
 
   const files = await javaProvider.listDownloadFiles(99);
   assert.equal(files[0].neoforge, true);
+  assert.equal(files[0].edition, 'java');
   assert.equal(files.some((item) => item.fabric), true);
   const auto = await javaProvider.download(99, []);
   assert.equal(auto.needsSelection, true);
   const picked = files.find((item) => item.environment === 'client');
   assert.ok(picked.warning);
+  await assert.rejects(
+    () => javaProvider.download(99, ['11']),
+    (err) => err.code === 'CLIENT_ONLY_FILE'
+  );
+  const serverPlan = await javaProvider.download(99, ['12']);
+  assert.equal(serverPlan.plan, true);
+  assert.equal(serverPlan.files.length, 1);
+  assert.equal(serverPlan.files[0].environment, 'server');
+  await assert.rejects(
+    () => javaProvider.download(99, ['11', '12']),
+    (err) => err.code === 'CLIENT_ONLY_FILE'
+  );
+  await assert.rejects(
+    () => javaProvider.download(99, ['missing-id']),
+    (err) => err.code === 'UNKNOWN_FILE_ID'
+  );
+  await assert.rejects(
+    () => javaProvider.download(77, []),
+    (err) => err.code === 'CLIENT_ONLY_FILE'
+  );
 
   const jarPath = path.join(testRoot, 'invalid.txt');
   fs.writeFileSync(jarPath, 'not a zip');
@@ -297,7 +486,7 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
       id: 'sodium',
       name: 'Sodium',
       version: '0.6.0',
-      environment: 'client',
+      environment: '*',
       depends: { minecraft: '1.21.1' },
     }),
   });
@@ -331,6 +520,22 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
       /byte limit/
     );
 
+    await assert.rejects(
+      () => catalogLibrary.importDownloadPlan({
+        project: { name: 'Sodium', slug: 'sodium-client', edition: 'java', source: 'curseforge', providerId: 'curseforge-java' },
+        files: [{
+          url: 'https://edge.forgecdn.net/files/sodium.jar',
+          fileName: 'sodium-fabric.jar',
+          environment: 'client',
+        }],
+      }, { allowHosts: ['edge.forgecdn.net'], providerId: 'curseforge-java' }),
+      (err) => err.code === 'CLIENT_ONLY_FILE' && err.message.includes('Client-only')
+    );
+    assert.doesNotThrow(() => catalogDownloadPolicy.assertPlanNotClientOnly({
+      project: { edition: 'bedrock', providerId: 'curseforge-bedrock' },
+      files: [{ id: '1', fileName: 'pack.mcaddon', url: 'https://edge.forgecdn.net/pack.mcaddon' }],
+    }));
+
     const imported = await catalogLibrary.importDownloadPlan({
       project: {
         name: 'Sodium',
@@ -349,7 +554,7 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
         fileId: 11,
         loader: 'fabric',
         minecraftVersions: ['1.21.1'],
-        environment: 'client',
+        environment: 'both',
         displayName: '0.6.0',
       }],
     }, { allowHosts: ['edge.forgecdn.net'], providerId: 'curseforge-java' });
@@ -364,6 +569,175 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   } finally {
     controlledDownload.downloadToFile = originalDownload;
   }
+
+  catalogDownloadPolicy.clearAvailabilityCache();
+  catalogProviderRegistry.clear();
+  catalogService.ensureProviders();
+  let listCalls = 0;
+  let downloadCalls = 0;
+  let currentFiles = [];
+  catalogProviderRegistry.register({
+    id: 'catalog-curseforge-java',
+    source: 'bundled',
+    capabilities: ['provider:catalog-source'],
+  }, {
+    getMetadata: () => ({
+      id: 'curseforge-java',
+      name: 'CurseForge Java',
+      source: 'curseforge',
+      editions: ['java'],
+      downloadHosts: ['edge.forgecdn.net'],
+    }),
+    isAvailable: () => true,
+    getCategories: async () => [],
+    search: async () => ({
+      results: [{
+        id: 99,
+        providerId: 'curseforge-java',
+        edition: 'java',
+        curseforgeId: 99,
+        slug: 'sodium',
+        name: 'Sodium',
+        downloadState: 'blocked',
+        blockedReason: 'client-only',
+      }],
+      total: 1,
+      page: 1,
+    }),
+    getDetails: async () => ({
+      id: 99,
+      providerId: 'curseforge-java',
+      edition: 'java',
+      curseforgeId: 99,
+      slug: 'sodium',
+    }),
+    listDownloadFiles: async () => {
+      listCalls += 1;
+      return currentFiles;
+    },
+    download: async (projectId, selection) => {
+      downloadCalls += 1;
+      const selected = (selection || []).map(String);
+      if (selected.some((id) => ['11', '21', '22'].includes(id))) {
+        const err = new Error('Client-only files cannot be downloaded for a dedicated server.');
+        err.code = 'CLIENT_ONLY_FILE';
+        err.status = 400;
+        throw err;
+      }
+      const wanted = currentFiles.filter((file) => selected.includes(String(file.id)));
+      return { success: true, name: 'ok', files: wanted.map((file) => file.name), projectId };
+    },
+  });
+
+  currentFiles = [
+    { id: '21', name: 'a.jar', fileName: 'a.jar', extension: '.jar', environment: 'client', loader: 'fabric' },
+    { id: '22', name: 'b.jar', fileName: 'b.jar', extension: '.jar', environment: 'client', loader: 'fabric' },
+  ];
+  const blocked = await catalogService.downloadMod('iris', { provider: 'curseforge-java', curseforgeId: 77, edition: 'java' });
+  assert.equal(blocked.downloadState, 'blocked');
+  assert.equal(blocked.blockedReason, 'client-only');
+  assert.equal(blocked.selectableFileCount, 0);
+  assert.equal(downloadCalls, 0);
+  await assert.rejects(
+    () => catalogService.downloadMod('iris', { provider: 'curseforge-java', curseforgeId: 77, edition: 'java', files: ['21'] }),
+    (err) => err.code === 'CLIENT_ONLY_FILE'
+  );
+
+  currentFiles = [
+    { id: '11', name: 'client.jar', fileName: 'client.jar', extension: '.jar', environment: 'client', loader: 'fabric' },
+    { id: '12', name: 'server.jar', fileName: 'server.jar', extension: '.jar', environment: 'server', loader: 'neoforge' },
+  ];
+  catalogDownloadPolicy.clearAvailabilityCache();
+  await assert.rejects(
+    () => catalogService.downloadMod('sodium', { provider: 'curseforge-java', curseforgeId: 99, edition: 'java', files: ['11'] }),
+    (err) => err.code === 'CLIENT_ONLY_FILE'
+  );
+  await assert.rejects(
+    () => catalogService.downloadMod('sodium', { provider: 'curseforge-java', curseforgeId: 99, edition: 'java', files: ['11', '12'] }),
+    (err) => err.code === 'CLIENT_ONLY_FILE'
+  );
+  await assert.rejects(
+    () => catalogService.downloadMod('sodium', { provider: 'curseforge-java', curseforgeId: 99, edition: 'java', files: ['999'] }),
+    (err) => err.code === 'UNKNOWN_FILE_ID'
+  );
+  const picker = await catalogService.downloadMod('sodium', { provider: 'curseforge-java', curseforgeId: 99, edition: 'java' });
+  assert.equal(picker.needsSelection, true);
+  assert.equal(picker.downloadState, 'requires-selection');
+  assert.equal(picker.files.find((item) => item.id === '11').downloadable, false);
+  assert.equal(picker.files.find((item) => item.id === '12').downloadable, true);
+
+  currentFiles = [
+    { id: '41', name: 'srv.jar', fileName: 'srv.jar', extension: '.jar', environment: 'server', loader: 'fabric' },
+  ];
+  catalogDownloadPolicy.clearAvailabilityCache();
+  const serverResult = await catalogService.downloadMod('server-mod', {
+    provider: 'curseforge-java',
+    curseforgeId: 41,
+    edition: 'java',
+    files: ['41'],
+  });
+  assert.equal(serverResult.success, true);
+
+  currentFiles = [
+    { id: '31', name: 'both.jar', fileName: 'both.jar', extension: '.jar', environment: 'both', loader: 'fabric' },
+  ];
+  catalogDownloadPolicy.clearAvailabilityCache();
+  const bothResult = await catalogService.downloadMod('both-mod', {
+    provider: 'curseforge-java',
+    curseforgeId: 31,
+    edition: 'java',
+    files: ['31'],
+  });
+  assert.equal(bothResult.success, true);
+
+  currentFiles = [
+    { id: '11', name: 'client.jar', fileName: 'client.jar', extension: '.jar', environment: 'client', loader: 'fabric' },
+    { id: '12', name: 'server.jar', fileName: 'server.jar', extension: '.jar', environment: 'server', loader: 'neoforge' },
+  ];
+  catalogDownloadPolicy.clearAvailabilityCache();
+  listCalls = 0;
+  await catalogService.listDownloadFiles('sodium', { provider: 'curseforge-java', curseforgeId: 99, edition: 'java' });
+  await catalogService.listDownloadFiles('sodium', { provider: 'curseforge-java', curseforgeId: 99, edition: 'java' });
+  assert.equal(listCalls, 1);
+  const cached = catalogDownloadPolicy.getCachedAvailability('curseforge-java', 99);
+  assert.ok(cached);
+  assert.equal(JSON.stringify(cached).includes('cf-test-secret'), false);
+  assert.equal(JSON.stringify(cached).toLowerCase().includes('x-api-key'), false);
+  assert.equal(cached.files.some((file) => file.url || file.headers || file.apiKey), false);
+  catalogDownloadPolicy.setCachedAvailability('curseforge-java', 99, {
+    files: currentFiles,
+    availability: { downloadState: 'requires-selection' },
+  }, { at: Date.now() - catalogDownloadPolicy.CACHE_TTL_MS - 25 });
+  assert.equal(catalogDownloadPolicy.getCachedAvailability('curseforge-java', 99), null);
+
+  catalogDownloadPolicy.clearAvailabilityCache();
+  const searchSanitized = await catalogService.searchMods('x', { provider: 'curseforge-java', edition: 'java' });
+  assert.equal(searchSanitized.results[0].downloadState, 'unknown');
+  assert.equal(searchSanitized.results[0].blockedReason, undefined);
+
+  const frontendSource = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/ModCatalog.jsx'), 'utf8');
+  assert.match(frontendSource, /Client Side Only/);
+  assert.match(frontendSource, /btn-client-only/);
+  assert.match(frontendSource, /isClientOnlyProject/);
+  assert.match(frontendSource, /All available Java files are marked client-only/);
+  assert.match(frontendSource, /downloadable === false/);
+  assert.match(frontendSource, /setDownloadModal\(null\)/);
+  assert.match(frontendSource, /onClick=\{\(\) => \{ if \(!downloading\) setDownloadModal\(null\); \}\}/);
+  assert.doesNotMatch(frontendSource, /dangerouslySetInnerHTML/);
+  const uiClientOnly = { downloadState: 'blocked', blockedReason: 'client-only' };
+  const uiMixed = { downloadState: 'requires-selection' };
+  const uiUnknown = { downloadState: 'unknown' };
+  assert.equal(uiClientOnly.downloadState === 'blocked' && uiClientOnly.blockedReason === 'client-only', true);
+  assert.equal(uiMixed.downloadState === 'blocked', false);
+  assert.equal(uiUnknown.downloadState === 'blocked', false);
+  assert.deepEqual(
+    [{ id: '1', downloadable: false }, { id: '2' }].filter((file) => file.downloadable !== false).map((file) => file.id),
+    ['2']
+  );
+  assert.deepEqual(
+    [{ id: 'pack', extension: '.mcaddon' }].filter((file) => file.downloadable !== false).map((file) => file.id),
+    ['pack']
+  );
 
   const missingKeyProvider = javaCatalog.createProvider({
     catalogHttp: {

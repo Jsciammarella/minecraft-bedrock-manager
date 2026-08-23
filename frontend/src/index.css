@@ -74,6 +74,10 @@
   .btn-warning {
     @apply bg-mc-warning text-mc-darker hover:bg-amber-600 focus:ring-mc-warning;
   }
+
+  .btn-client-only {
+    @apply bg-amber-400 text-yellow-950 cursor-not-allowed hover:bg-amber-400 focus:ring-mc-warning disabled:opacity-100 disabled:cursor-not-allowed;
+  }
   
   .card {
     @apply bg-mc-surface rounded-xl border border-mc-surfaceLight p-6 
