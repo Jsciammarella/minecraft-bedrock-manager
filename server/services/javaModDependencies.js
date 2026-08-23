@@ -730,14 +730,30 @@ async function resolveOne(server, dep, overrides = {}) {
       .filter((file) => fileMatchesServer(file, server, { allowUnknown: false }))
       .sort((a, b) => scoreFile(b, server) - scoreFile(a, server));
     if (selectable.length) {
-      const installed = await installCatalogFile(server, project, selectable[0]);
-      if (installed.status === 'installed') {
-        removeIncompatibleJars(server, dep);
-        const done = concludeInstalled(server, dep, installed);
-        if (done) return done;
-      }
-      if (installed.status === 'mismatch' && installed.files?.length && !mismatchOffer) {
-        mismatchOffer = installed;
+      try {
+        const installed = await installCatalogFile(server, project, selectable[0]);
+        if (installed.status === 'installed') {
+          removeIncompatibleJars(server, dep);
+          const done = concludeInstalled(server, dep, installed);
+          if (done) return done;
+        }
+        if (installed.status === 'mismatch' && installed.files?.length && !mismatchOffer) {
+          mismatchOffer = installed;
+        }
+      } catch (err) {
+        logger.warn(`Could not install ${project.name || dep.id} from the catalog: ${err.message}`);
+        const overrideFiles = listed.filter((file) => file.environment !== 'client');
+        if (overrideFiles.length && !mismatchOffer) {
+          const projectRef = catalogProjectRef(project);
+          mismatchOffer = {
+            status: 'mismatch',
+            name: project.name,
+            source: 'catalog',
+            project: projectRef,
+            warning: `Automatic install failed: ${err.message}. You can pick a file anyway; it may not work.`,
+            files: overrideFiles.map((file) => publicMismatchFile(file, { source: 'catalog', project: projectRef })),
+          };
+        }
       }
       continue;
     }

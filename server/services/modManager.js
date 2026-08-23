@@ -87,7 +87,10 @@ class ModManager {
         const ext = path.extname(file.originalname).toLowerCase();
         try {
           if (ext === '.jar') {
-            require('./zipGuard').assertSafeZipNames(require('./zipGuard').listStoredZipEntries(destPath));
+            require('./zipGuard').assertSafeZipNames(
+              require('./zipGuard').listStoredZipEntries(destPath, { limitEntries: false }),
+              { limitEntries: false }
+            );
           } else {
             await packInstaller.verifyArchive(destPath);
           }
@@ -346,7 +349,10 @@ class ModManager {
         const destPath = this.storeUploadedFile(file);
         const ext = path.extname(file.originalname).toLowerCase();
         if (ext === '.jar' || ext === '.zip') {
-          require('./zipGuard').assertSafeZipNames(require('./zipGuard').listStoredZipEntries(destPath));
+          require('./zipGuard').assertSafeZipNames(
+            require('./zipGuard').listStoredZipEntries(destPath, { limitEntries: false }),
+            { limitEntries: false }
+          );
         } else {
           throw new Error('Java mods only accept JAR or ZIP files');
         }

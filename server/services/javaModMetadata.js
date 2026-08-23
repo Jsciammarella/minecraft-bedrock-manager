@@ -77,7 +77,10 @@ function detectNeoForge(text) {
 }
 
 function inspectJar(filePath) {
-  const names = zipGuard.assertSafeZipNames(zipGuard.listStoredZipEntries(filePath));
+  const names = zipGuard.assertSafeZipNames(
+    zipGuard.listStoredZipEntries(filePath, { limitEntries: false }),
+    { limitEntries: false }
+  );
   const fabricName = names.find((name) => name === 'fabric.mod.json' || name.endsWith('/fabric.mod.json'));
   const neoName = names.find((name) => name.endsWith('neoforge.mods.toml') || name.endsWith('mods.toml'));
   let detected = null;

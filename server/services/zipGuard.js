@@ -8,7 +8,7 @@ const controlledFs = require('./controlledFs');
 
 const execFileAsync = promisify(execFile);
 
-function listStoredZipEntries(filePath) {
+function listStoredZipEntries(filePath, { limitEntries = true } = {}) {
   const buf = fs.readFileSync(filePath);
   let eocd = -1;
   for (let i = buf.length - 22; i >= 0 && i > buf.length - 65557; i -= 1) {
@@ -18,13 +18,15 @@ function listStoredZipEntries(filePath) {
     }
   }
   if (eocd < 0) throw new Error('Not a zip archive');
-  const entries = buf.readUInt16LE(eocd + 10);
-  if (entries > controlledFs.MAX_ARCHIVE_ENTRIES) {
+  const recorded = buf.readUInt16LE(eocd + 10);
+  if (limitEntries && recorded > controlledFs.MAX_ARCHIVE_ENTRIES) {
     throw Object.assign(new Error('Archive has too many entries'), { status: 400 });
   }
   let offset = buf.readUInt32LE(eocd + 16);
   const names = [];
-  for (let i = 0; i < entries; i += 1) {
+  const walkCap = limitEntries ? recorded : 1_000_000;
+  for (let i = 0; i < walkCap; i += 1) {
+    if (offset + 46 > buf.length) break;
     if (buf.readUInt32LE(offset) !== 0x02014b50) break;
     const nameLen = buf.readUInt16LE(offset + 28);
     const extraLen = buf.readUInt16LE(offset + 30);
@@ -33,10 +35,13 @@ function listStoredZipEntries(filePath) {
     names.push(name.replace(/\\/g, '/'));
     offset += 46 + nameLen + extraLen + commentLen;
   }
+  if (limitEntries && names.length > controlledFs.MAX_ARCHIVE_ENTRIES) {
+    throw Object.assign(new Error('Archive has too many entries'), { status: 400 });
+  }
   return names;
 }
 
-function assertSafeZipNames(names) {
+function assertSafeZipNames(names, { limitEntries = true } = {}) {
   let totalHint = 0;
   for (const name of names) {
     const normalized = String(name || '').replace(/\\/g, '/');
@@ -46,7 +51,7 @@ function assertSafeZipNames(names) {
     }
     totalHint += 1;
   }
-  if (totalHint > controlledFs.MAX_ARCHIVE_ENTRIES) {
+  if (limitEntries && totalHint > controlledFs.MAX_ARCHIVE_ENTRIES) {
     throw Object.assign(new Error('Archive has too many entries'), { status: 400 });
   }
   return names;
@@ -62,9 +67,11 @@ function inflateEntry(filePath, wanted) {
     }
   }
   if (eocd < 0) return null;
-  const entries = buf.readUInt16LE(eocd + 10);
+  const recorded = buf.readUInt16LE(eocd + 10);
   let offset = buf.readUInt32LE(eocd + 16);
-  for (let i = 0; i < entries; i += 1) {
+  const walkCap = recorded === 0xffff ? 1_000_000 : Math.max(recorded, 1);
+  for (let i = 0; i < walkCap; i += 1) {
+    if (offset + 46 > buf.length) break;
     if (buf.readUInt32LE(offset) !== 0x02014b50) break;
     const method = buf.readUInt16LE(offset + 10);
     const compSize = buf.readUInt32LE(offset + 20);
@@ -91,7 +98,10 @@ function inflateEntry(filePath, wanted) {
 }
 
 function readNamedText(filePath, entryName) {
-  const names = assertSafeZipNames(listStoredZipEntries(filePath));
+  const names = assertSafeZipNames(
+    listStoredZipEntries(filePath, { limitEntries: false }),
+    { limitEntries: false }
+  );
   const wanted = names.find((name) => name === entryName || name.endsWith(`/${entryName}`));
   if (!wanted) return null;
   return inflateEntry(filePath, wanted);

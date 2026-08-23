@@ -77,6 +77,7 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   const catalogLibrary = require('../server/services/catalogLibrary');
   const controlledDownload = require('../server/services/controlledDownload');
   const zipGuard = require('../server/services/zipGuard');
+  const javaModMetadata = require('../server/services/javaModMetadata');
   const settingsStore = require('../server/services/settingsStore');
   const javaCatalog = require('../server/bundled-plugins/catalog-curseforge-java/backend');
 
@@ -512,6 +513,18 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   fs.writeFileSync(jarPath, 'not a zip');
   assert.throws(() => zipGuard.listStoredZipEntries(jarPath), /Not a zip archive/);
 
+  const bulkyFiles = {
+    'fabric.mod.json': JSON.stringify({ id: 'create', name: 'Create', version: '1.0.0', depends: { minecraft: '1.21.1' } }),
+  };
+  for (let i = 0; i < 8010; i += 1) bulkyFiles[`com/example/C${i}.class`] = 'x';
+  const bulkyPath = path.join(testRoot, 'create-like.jar');
+  fs.writeFileSync(bulkyPath, zipStore(bulkyFiles));
+  assert.throws(() => zipGuard.listStoredZipEntries(bulkyPath), /too many entries/i);
+  assert.equal(zipGuard.listStoredZipEntries(bulkyPath, { limitEntries: false }).length, 8011);
+  const bulkyMeta = javaModMetadata.inspectJar(bulkyPath);
+  assert.equal(bulkyMeta.loader, 'fabric');
+  assert.equal(bulkyMeta.metadata?.modId, 'create');
+
   const tmpRoot = path.join(testRoot, 'catalog-dl');
   fs.mkdirSync(tmpRoot, { recursive: true });
   const goodJar = zipStore({
@@ -827,6 +840,11 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   assert.match(frontendSource, /All available Java files are marked client-only/);
   assert.match(frontendSource, /downloadable === false/);
   assert.match(frontendSource, /setDownloadModal\(null\)/);
+  assert.match(frontendSource, /justify-center/);
+  assert.match(frontendSource, /You are about to download/);
+  assert.match(frontendSource, /DOWNLOAD_ALL_CONFIRM_AFTER/);
+  assert.match(frontendSource, /setFilePicker\(null\)/);
+  assert.match(frontendSource, /requestDownloadAll/);
   assert.match(frontendSource, /onClick=\{\(\) => \{ if \(!downloading\) setDownloadModal\(null\); \}\}/);
   assert.doesNotMatch(frontendSource, /dangerouslySetInnerHTML/);
   const uiClientOnly = { downloadState: 'blocked', blockedReason: 'client-only' };

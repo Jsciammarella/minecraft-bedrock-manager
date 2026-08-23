@@ -90,7 +90,10 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
         throw err;
       }
       if (JAVA_EXTS.has(ext)) {
-        zipGuard.assertSafeZipNames(zipGuard.listStoredZipEntries(tmpPath));
+        zipGuard.assertSafeZipNames(
+          zipGuard.listStoredZipEntries(tmpPath, { limitEntries: false }),
+          { limitEntries: false }
+        );
       }
       const destName = modManager.getAvailableFilename(tmpName);
       const dest = path.join(MODS_DIR, destName);

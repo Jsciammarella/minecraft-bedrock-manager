@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 
 const CATALOG_PAGE_SIZE = 40;
+const DOWNLOAD_ALL_CONFIRM_AFTER = 10;
 const ALLOWED_CATALOG_EDITIONS = ['bedrock', 'java'];
 const EDITION_LABELS = {
   bedrock: 'Bedrock',
@@ -146,6 +147,7 @@ function ModCatalog() {
   const [downloadModal, setDownloadModal] = useState(null);
   const [filePicker, setFilePicker] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
+  const [confirmDownloadAll, setConfirmDownloadAll] = useState(null);
   const [multiFileMode, setMultiFileMode] = useState('manual');
   const [downloading, setDownloading] = useState(false);
   const [expandedMod, setExpandedMod] = useState(null);
@@ -393,13 +395,29 @@ function ModCatalog() {
       setDownloadModal(null);
       setFilePicker(null);
       setSelectedFiles([]);
+      setConfirmDownloadAll(null);
       setExpandedMod(null);
       setTimeout(() => setSuccess(''), 4000);
     } catch (err) {
+      setFilePicker(null);
+      setDownloadModal(null);
+      setSelectedFiles([]);
+      setConfirmDownloadAll(null);
+      setExpandedMod(null);
       setError(err.response?.data?.error || err.message || 'Download failed');
     } finally {
       setDownloading(false);
     }
+  };
+
+  const requestDownloadAll = () => {
+    if (!filePicker) return;
+    const ids = selectableCatalogFiles(filePicker.files).map((file) => file.id);
+    if (ids.length > DOWNLOAD_ALL_CONFIRM_AFTER) {
+      setConfirmDownloadAll({ count: ids.length, fileIds: ids });
+      return;
+    }
+    handleDownload(ids);
   };
 
   const togglePickedFile = (file) => {
@@ -815,7 +833,7 @@ function ModCatalog() {
                 );
               })}
             </div>
-            <div className="flex flex-wrap items-stretch gap-3">
+            <div className="flex flex-wrap items-center justify-center gap-3">
               <button
                 onClick={() => handleDownload(selectableCatalogFiles(filePicker.files).filter((file) => selectedFiles.includes(file.id)).map((file) => file.id))}
                 disabled={
@@ -837,7 +855,7 @@ function ModCatalog() {
                 )}
               </button>
               <button
-                onClick={() => handleDownload(selectableCatalogFiles(filePicker.files).map((file) => file.id))}
+                onClick={requestDownloadAll}
                 disabled={downloading || selectableCatalogFiles(filePicker.files).length < 1}
                 className="btn btn-secondary whitespace-nowrap shrink-0 min-w-[10rem]"
               >
@@ -848,8 +866,42 @@ function ModCatalog() {
                 onClick={() => {
                   setFilePicker(null);
                   setSelectedFiles([]);
+                  setConfirmDownloadAll(null);
                 }}
                 className="btn btn-secondary whitespace-nowrap shrink-0 min-w-[6rem]"
+                disabled={downloading}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDownloadAll && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[80] p-4">
+          <div className="card max-w-md w-full animate-slide-up" onClick={(event) => event.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-white mb-2">Download many files?</h3>
+            <p className="text-sm text-mc-textMuted mb-4">
+              You are about to download {confirmDownloadAll.count} files. Are you sure you want to continue?
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                className="btn btn-primary whitespace-nowrap min-w-[7rem]"
+                onClick={() => {
+                  const ids = confirmDownloadAll.fileIds;
+                  setConfirmDownloadAll(null);
+                  handleDownload(ids);
+                }}
+                disabled={downloading}
+              >
+                Continue
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary whitespace-nowrap min-w-[7rem]"
+                onClick={() => setConfirmDownloadAll(null)}
                 disabled={downloading}
               >
                 Cancel
