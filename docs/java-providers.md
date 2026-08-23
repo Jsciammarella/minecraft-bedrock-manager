@@ -69,8 +69,11 @@ Target Java server
 Direct mode keeps the existing Geyser Standalone layout. ViaProxy mode runs
 ViaProxy with the official Geyser-ViaProxy plugin inside the same per-gateway
 data directory (`data/gateways/<id>/`). The process is started as
-`java -jar ViaProxy.jar config viaproxy.yml` (ViaProxy 3.4.6 has no `start`
-command). The internal ViaProxy Java listener binds to loopback only and is
+`java -jar ViaProxy.jar config viaproxy.yml` (ViaProxy 3.4.12 has no `start`
+command). Geyser currently emulates a Java 1.26.2 client, so ViaProxy 3.4.12
+is required to translate that to older Java servers. Geyser-ViaProxy connects
+through ViaProxy to the target Java server; it does not loop back to ViaProxy's
+own bind port. The internal ViaProxy Java listener binds to loopback only and is
 never advertised. Bedrock Connect lists the Geyser Bedrock UDP host and port.
 
 ViaProxy is GPL-3.0; Geyser is MIT. Runtime download does not relicense this
@@ -104,10 +107,14 @@ runs in its own isolated process or container.
 ## Troubleshooting
 
 - **Protocol incompatible:** Direct Geyser only speaks a native Java version
-  range. Enable ViaProxy from the Geyser plugin, or update the Java server.
+  (currently 1.26.2). Enable ViaProxy from the Geyser plugin, or update the Java
+  server.
 - **ViaProxy exits immediately:** Java 21+ prints an `Unsafe` warning from
-  ViaProxy; that is not a crash. ViaProxy 3.4.6 must be launched with
+  ViaProxy; that is not a crash. ViaProxy 3.4.12 must be launched with
   `config viaproxy.yml`, using `bind-address` / `target-address` as `host:port`.
+- **Client version is not supported by ViaProxy:** That message is about Geyser's
+  Java protocol (1.26.2), not Bedrock. Use ViaProxy 3.4.12 or newer. Do not point
+  Geyser's `remote` at ViaProxy's loopback bind port.
 - **Authentication misconfigured:** ViaProxy CLI mode cannot join an online-mode
   Java target without Floodgate. Use Floodgate with an explicit key copy, or
   confirm insecure offline mode. The manager will not change server auth itself.

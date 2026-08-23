@@ -2,9 +2,9 @@ const DOWNLOAD = 'https://download.geysermc.org/v2/projects/geyser/versions/late
 const FABRIC_DOWNLOAD = 'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/fabric';
 const NEOFORGE_DOWNLOAD = 'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/neoforge';
 const GEYSER_VIAPROXY_DOWNLOAD = 'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/viaproxy';
-const VIAPROXY_VERSION = '3.4.6';
+const VIAPROXY_VERSION = '3.4.12';
 const VIAPROXY_DOWNLOAD = `https://github.com/ViaVersion/ViaProxy/releases/download/v${VIAPROXY_VERSION}/ViaProxy-${VIAPROXY_VERSION}.jar`;
-const GEYSER_NATIVE_JAVA_VERSIONS = ['1.21.8', '1.21.7', '1.21.6', '1.21.5', '1.21.4'];
+const GEYSER_NATIVE_JAVA_VERSIONS = ['1.26.2'];
 const DOWNLOAD_HOSTS = [
   'download.geysermc.org',
   'repo.opencollab.dev',
@@ -44,6 +44,7 @@ function createProvider() {
         supportsCreateForTarget: true,
         managementPage: 'home',
         downloadHosts: DOWNLOAD_HOSTS,
+        viaproxyVersion: VIAPROXY_VERSION,
         notices: [
           'Powered by Geyser. Not affiliated with or endorsed by GeyserMC, Mojang, or Microsoft.',
           'Standalone is recommended when the Java server matches Geyser\'s native protocol.',
@@ -195,12 +196,13 @@ function createProvider() {
         '  motd1: "Geyser"',
         `  motd2: "${yamlEscape(record.name)}"`,
         'remote:',
-        '  address: "127.0.0.1"',
-        `  port: ${bindPort}`,
+        `  address: "${yamlEscape(record.target_host || '127.0.0.1')}"`,
+        `  port: ${Number(record.target_tcp_port || 25565)}`,
         `  auth-type: ${auth}`,
-        'passthrough-motd: true',
+        'use-direct-connection: true',
+        'passthrough-motd: false',
         'passthrough-protocol-name: false',
-        'passthrough-player-counts: true',
+        'passthrough-player-counts: false',
         `floodgate-key-file: "${yamlEscape(record.floodgate_key_file || 'key.pem')}"`,
         '',
       ].join('\n');

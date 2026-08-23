@@ -661,8 +661,10 @@ versionRange="[13.0.8,)"
   const oldProtocol = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '1.20.1' });
   assert.equal(oldProtocol.recommendedMode, 'viaproxy');
   assert.match(oldProtocol.message, /does not support the protocol required by the current Geyser release/);
-  const nativeProtocol = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '1.21.8' });
+  const nativeProtocol = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '1.26.2' });
   assert.equal(nativeProtocol.recommendedMode, 'direct');
+  const viaForCurrentJava = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '1.21.8' });
+  assert.equal(viaForCurrentJava.recommendedMode, 'viaproxy');
 
   await assert.rejects(
     () => gatewayManager.installCompatibility(created.id, {}),
@@ -673,6 +675,7 @@ versionRange="[13.0.8,)"
 
   const viaPlan = await geyserProvider.planCompatibilityInstallation({ confirmViaProxy: true });
   javaLoaderHost.validatePlan(viaPlan);
+  assert.equal(viaPlan.result.viaproxyVersion, '3.4.12');
   for (const item of viaPlan.downloads) {
     assert.ok(geyser.DOWNLOAD_HOSTS.includes(new URL(item.url).hostname));
     assert.doesNotMatch(item.url, /^http:/);
@@ -702,6 +705,13 @@ versionRange="[13.0.8,)"
   assert.match(viaYml, /target-address:\s*\S+:\d+/);
   assert.doesNotMatch(viaYml, /^bind-port:/m);
   assert.doesNotMatch(viaYml, /^target-port:/m);
+  const geyserYml = fs.readFileSync(path.join(storedVia.data_path, 'plugins', 'Geyser', 'config.yml'), 'utf8');
+  assert.match(geyserYml, /use-direct-connection:\s*true/);
+  assert.match(geyserYml, /passthrough-motd:\s*false/);
+  assert.match(geyserYml, new RegExp(`address: "${storedVia.target_host}"`));
+  assert.match(geyserYml, new RegExp(`port: ${Number(storedVia.target_tcp_port)}`));
+  assert.doesNotMatch(geyserYml, new RegExp(`port: ${Number(storedVia.viaproxy_bind_port)}`));
+  assert.equal(geyser.VIAPROXY_VERSION, '3.4.12');
   assert.equal(launchVia.shell, undefined);
   assert.equal(launchVia.command, undefined);
   controlledProcess.assertArgArray(launchVia.arguments, 'Launch');

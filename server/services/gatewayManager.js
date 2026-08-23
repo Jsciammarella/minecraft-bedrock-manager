@@ -572,16 +572,21 @@ async function start(id) {
   if (typeof entry.provider.validateLaunch === 'function') {
     entry.provider.validateLaunch(get(id));
   }
+  if (compatibilityModeOf(row.compatibility_mode) === 'viaproxy') {
+    const wanted = typeof entry.provider.getMetadata === 'function'
+      ? entry.provider.getMetadata().viaproxyVersion
+      : null;
+    const jar = path.join(row.data_path, 'ViaProxy.jar');
+    if (wanted && (!fs.existsSync(jar) || String(row.viaproxy_version || '') !== String(wanted))) {
+      await installCompatibility(id, { confirmViaProxy: true, confirmModeSwitch: true });
+    } else if (!fs.existsSync(jar)) {
+      throw Object.assign(new Error('ViaProxy is not installed for this gateway. Install compatibility mode from the Geyser plugin first.'), { status: 400 });
+    }
+  }
   writeRuntimeFiles(get(id), entry.provider);
   const spec = entry.provider.getLaunchSpecification(get(id));
   if (Array.isArray(spec.jvmArguments) && spec.jvmArguments.length) {
     throw Object.assign(new Error('Gateway providers cannot supply extra JVM arguments'), { status: 400 });
-  }
-  if (compatibilityModeOf(row.compatibility_mode) === 'viaproxy') {
-    const jar = path.join(row.data_path, 'ViaProxy.jar');
-    if (!fs.existsSync(jar)) {
-      throw Object.assign(new Error('ViaProxy is not installed for this gateway. Install compatibility mode from the Geyser plugin first.'), { status: 400 });
-    }
   }
   if (spec.javaBin || spec.executable || spec.bin || spec.command || spec.shell) {
     throw Object.assign(new Error('Gateway providers cannot choose an executable path or shell command'), { status: 400 });
