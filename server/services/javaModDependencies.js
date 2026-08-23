@@ -7,10 +7,14 @@ const javaModMetadata = require('./javaModMetadata');
 const javaModInstall = require('./javaModInstall');
 const minecraftVersions = require('./minecraftVersions');
 const catalogModMeta = require('./catalogModMeta');
+const modCompatibility = require('./modCompatibility');
 
 const BUILTIN = new Set([
   'minecraft', 'java', 'fabricloader', 'fabric-loader', 'fabric',
   'neoforge', 'forge', 'fml', 'mcp', 'quilt_loader',
+]);
+const FABRIC_ONLY = new Set([
+  'fabric-api', 'fabric', 'fabricloader', 'fabric-loader', 'fabric-language-kotlin', 'quilted_fabric_api',
 ]);
 
 function parseJson(raw, fallback) {
@@ -73,6 +77,24 @@ function depKey(dep) {
 
 function isBuiltin(id) {
   return BUILTIN.has(String(id || '').toLowerCase());
+}
+
+function isForeignForLoader(id, serverLoader) {
+  const key = String(id || '').toLowerCase();
+  if (isBuiltin(key)) return true;
+  const loader = catalogModMeta.normalizeLoader(serverLoader, 'java');
+  if ((loader === 'neoforge' || loader === 'forge') && FABRIC_ONLY.has(key)) return true;
+  return false;
+}
+
+function jarIdentityKeys(info, fileName) {
+  const meta = info?.metadata || {};
+  const keys = [];
+  for (const value of [meta.modId, meta.id, info?.name, path.parse(fileName || '').name]) {
+    const key = String(value || '').trim().toLowerCase();
+    if (key) keys.push(key);
+  }
+  return keys;
 }
 
 function mergeDeps(list, extra, optional) {
@@ -150,6 +172,19 @@ function parseLoaderCrash(text) {
   return mergeDeps([], required, false);
 }
 
+function parseWrongLoaderSkips(text) {
+  const skipped = [];
+  const re = /(?:Skipping jar\. File |File )(.+?\.jar) is a (Fabric|Forge|NeoForge|Quilt) mod and cannot be loaded/gi;
+  let match;
+  while ((match = re.exec(String(text || '')))) {
+    skipped.push({
+      filePath: match[1].trim(),
+      loader: String(match[2] || '').toLowerCase(),
+    });
+  }
+  return skipped;
+}
+
 function readNamedLogs(dataPath, names) {
   let out = '';
   for (const rel of names) {
@@ -197,8 +232,10 @@ function readCrashReports(dataPath, sinceMs = 0) {
 
 function installedIdentities(server) {
   const ids = new Set();
+  const serverLoader = server.loader_provider_id;
   for (const item of javaModInstall.list(server.id)) {
     const mod = item.mod || {};
+    if (!modCompatibility.loadersCompatible(mod.loader, serverLoader, { allowUnknown: false })) continue;
     const meta = parseJson(mod.metadata_json, mod.metadata || {});
     for (const value of [mod.name, meta.modId, meta.id, path.parse(mod.filePath || '').name]) {
       const key = String(value || '').trim().toLowerCase();
@@ -211,13 +248,10 @@ function installedIdentities(server) {
       if (!name.toLowerCase().endsWith('.jar')) continue;
       try {
         const info = javaModMetadata.inspectJar(path.join(modsDir, name));
-        const meta = info.metadata || {};
-        for (const value of [info.name, meta.modId, meta.id, path.parse(name).name]) {
-          const key = String(value || '').trim().toLowerCase();
-          if (key) ids.add(key);
-        }
+        if (!modCompatibility.loadersCompatible(info.loader, serverLoader, { allowUnknown: false })) continue;
+        for (const key of jarIdentityKeys(info, name)) ids.add(key);
       } catch {
-        ids.add(path.parse(name).name.toLowerCase());
+        /* unreadable jars do not satisfy a dependency */
       }
     }
   } catch {
@@ -228,12 +262,14 @@ function installedIdentities(server) {
 
 function manifestDependencies(server) {
   const deps = [];
+  const serverLoader = server.loader_provider_id;
   const modsDir = path.join(server.data_path, 'mods');
   try {
     for (const name of fs.readdirSync(modsDir)) {
       if (!name.toLowerCase().endsWith('.jar') || name.toLowerCase().endsWith('.pending')) continue;
       try {
         const info = javaModMetadata.inspectJar(path.join(modsDir, name));
+        if (!modCompatibility.loadersCompatible(info.loader, serverLoader, { allowUnknown: false })) continue;
         deps.push(...(info.dependencies || []));
       } catch {
         /* skip unreadable jars */
@@ -243,13 +279,15 @@ function manifestDependencies(server) {
     /* ignore */
   }
   for (const item of javaModInstall.list(server.id)) {
-    deps.push(...(item.mod?.dependencies || []));
+    const mod = item.mod || {};
+    if (!modCompatibility.loadersCompatible(mod.loader, serverLoader, { allowUnknown: false })) continue;
+    deps.push(...(mod.dependencies || []));
   }
   return deps;
 }
 
 function looksLikeDependencyFailure(text) {
-  return /ModLoadingException|ModLoadingCrashException|is not installed|which is missing|Mod resolution failed|Missing or unsupported mandatory dependencies|Actual version:\s*'\[MISSING\]'|Mod loading has failed|pre-loading phase|Failure message:|Loading errors encountered|Mod\s+\S+\s+requires\s+\S+/i.test(String(text || ''));
+  return /ModLoadingException|ModLoadingCrashException|is not installed|which is missing|Mod resolution failed|Missing or unsupported mandatory dependencies|Actual version:\s*'\[MISSING\]'|Mod loading has failed|pre-loading phase|Failure message:|Loading errors encountered|Mod\s+\S+\s+requires\s+\S+|cannot be loaded|Skipping jar/i.test(String(text || ''));
 }
 
 function looksLikeStarted(text) {
@@ -261,15 +299,30 @@ function detectFromText(server, text, options = {}) {
   const loader = String(server.loader_provider_id || 'vanilla');
   if (loader === 'vanilla') return null;
   const fromLog = parseLoaderCrash(text);
-  const extraRequired = options.extraRequired || [];
+  const extraRequired = [...(options.extraRequired || [])];
+  for (const skipped of parseWrongLoaderSkips(text)) {
+    try {
+      if (!skipped.filePath || !fs.existsSync(skipped.filePath)) continue;
+      const info = javaModMetadata.inspectJar(skipped.filePath);
+      const id = info.metadata?.modId || info.metadata?.id || path.parse(skipped.filePath).name;
+      extraRequired.push({ id, version: '*', optional: false, displayName: id });
+    } catch {
+      extraRequired.push({
+        id: path.parse(skipped.filePath).name,
+        version: '*',
+        optional: false,
+        displayName: path.parse(skipped.filePath).name,
+      });
+    }
+  }
   const installed = installedIdentities(server);
   let missingRequired = mergeDeps([], fromLog, false);
   missingRequired = mergeDeps(missingRequired, extraRequired, false)
-    .filter((dep) => !installed.has(depKey(dep)) && !isBuiltin(dep.id));
+    .filter((dep) => !installed.has(depKey(dep)) && !isForeignForLoader(dep.id, loader));
   const fromManifest = manifestDependencies(server);
   if (options.includeManifestRequired) {
     const manifestRequired = fromManifest
-      .filter((dep) => !dep.optional && !isBuiltin(dep.id) && !installed.has(depKey(dep)))
+      .filter((dep) => !dep.optional && !isForeignForLoader(dep.id, loader) && !installed.has(depKey(dep)))
       .map((dep) => ({
         id: dep.id,
         version: dep.version || '*',
@@ -279,7 +332,7 @@ function detectFromText(server, text, options = {}) {
     missingRequired = mergeDeps(missingRequired, manifestRequired, false);
   }
   const missingOptional = fromManifest
-    .filter((dep) => dep.optional && !isBuiltin(dep.id) && !installed.has(depKey(dep)))
+    .filter((dep) => dep.optional && !isForeignForLoader(dep.id, loader) && !installed.has(depKey(dep)))
     .map((dep) => ({
       id: dep.id,
       version: dep.version || '*',
@@ -290,11 +343,16 @@ function detectFromText(server, text, options = {}) {
   const optional = mergeDeps([], missingOptional, true)
     .filter((dep) => !required.some((item) => depKey(item) === depKey(dep)));
   if (!required.length && !optional.length) return null;
+  const skippedWrongLoader = parseWrongLoaderSkips(text).length > 0;
   return {
     required,
     optional,
     catalogAvailable: true,
-    message: required.length ? 'There are missing dependencies.' : '',
+    message: required.length
+      ? (skippedWrongLoader
+        ? `A dependency jar is for a different loader. Resolve to install the ${loader} build that matches this server.`
+        : 'There are missing dependencies.')
+      : '',
     unresolved: [],
   };
 }
@@ -330,24 +388,44 @@ function maybeClearOnReady(server, text) {
   clear(server.id);
 }
 
-function fileMatchesServer(file, server) {
-  const loader = String(server.loader_provider_id || '').toLowerCase();
-  const fileLoader = String(file.loader || '').toLowerCase();
+function fileMatchesServer(file, server, { allowUnknown = false } = {}) {
   if (file.environment === 'client') return false;
-  if (fileLoader && fileLoader !== 'any' && fileLoader !== 'unknown' && fileLoader !== loader) {
-    if (!(loader === 'neoforge' && fileLoader === 'forge')) return false;
+  if (!minecraftVersions.supportsMinecraftVersion(file.minecraftVersions || [], server.minecraft_version)) {
+    return false;
   }
-  return minecraftVersions.supportsMinecraftVersion(file.minecraftVersions || [], server.minecraft_version);
+  const loader = String(server.loader_provider_id || '').toLowerCase();
+  const name = String(file.fileName || file.name || '').toLowerCase();
+  if (loader !== 'fabric' && name.includes('fabric')) return false;
+  if (loader === 'fabric' && name.includes('neoforge')) return false;
+  return modCompatibility.loadersCompatible(file.loader, loader, { allowUnknown });
 }
 
-function scoreProject(project, dep) {
+function scoreFile(file, server) {
+  let score = 0;
+  const name = String(file.fileName || file.name || '').toLowerCase();
+  const loader = String(server.loader_provider_id || '').toLowerCase();
+  if (fileMatchesServer(file, server)) score += 100;
+  if (loader && name.includes(loader)) score += 25;
+  if (loader === 'neoforge' && /forge/.test(name) && !name.includes('fabric')) score += 10;
+  if (loader !== 'fabric' && name.includes('fabric')) score -= 60;
+  if (loader !== 'neoforge' && loader !== 'forge' && name.includes('neoforge')) score -= 40;
+  return score;
+}
+
+function scoreProject(project, dep, server) {
   const id = depKey(dep);
   const slug = String(project.slug || '').toLowerCase();
   const name = String(project.name || '').toLowerCase();
-  if (slug === id || name === id) return 100;
-  if (slug.includes(id) || name.includes(id)) return 80;
-  if (slug.replace(/-/g, '') === id.replace(/-/g, '')) return 90;
-  return 10;
+  const loader = String(server?.loader_provider_id || '').toLowerCase();
+  let score = 10;
+  if (slug === id || name === id) score = 100;
+  else if (slug.replace(/-/g, '') === id.replace(/-/g, '')) score = 90;
+  else if (slug.includes(id) || name.includes(id)) score = 80;
+  if (loader && `${slug} ${name}`.includes(loader)) score += 25;
+  if (loader === 'neoforge' && `${slug} ${name}`.includes('fabric') && !`${slug} ${name}`.includes('neoforge')) {
+    score -= 40;
+  }
+  return score;
 }
 
 async function catalogIsReachable() {
@@ -361,51 +439,92 @@ async function catalogIsReachable() {
   }
 }
 
-function libraryMatch(dep) {
+function libraryMatch(dep, server) {
   const id = depKey(dep);
   const rows = db.prepare('SELECT * FROM mods WHERE edition = ?').all('java');
-  return rows.find((row) => {
+  const matches = rows.filter((row) => {
     const meta = parseJson(row.metadata_json, {});
     const names = [row.name, row.slug, meta.modId, meta.id].map((item) => String(item || '').toLowerCase());
     return names.includes(id) || names.some((name) => name.includes(id));
   });
+  return matches.find((row) => {
+    let loader = row.loader;
+    try {
+      if (row.file_path && fs.existsSync(row.file_path)) {
+        const info = javaModMetadata.inspectJar(row.file_path);
+        if (info.loader && info.loader !== 'any' && info.loader !== 'unknown') loader = info.loader;
+      }
+    } catch {
+      /* keep declared loader */
+    }
+    return modCompatibility.compatibleWithServer({ ...row, loader }, server);
+  }) || null;
 }
 
-async function resolveOne(server, dep) {
-  const existing = libraryMatch(dep);
-  if (existing) {
-    const already = db.prepare('SELECT id FROM server_mods WHERE server_id = ? AND mod_id = ?')
-      .get(server.id, existing.id);
-    if (already) return { id: dep.id, status: 'installed' };
-    javaModInstall.install(server, existing.id);
-    return { id: dep.id, status: 'installed', name: existing.name };
+function removeIncompatibleJars(server, dep) {
+  const wanted = depKey(dep);
+  if (!wanted) return;
+  const modsDir = path.join(server.data_path, 'mods');
+  try {
+    for (const name of fs.readdirSync(modsDir)) {
+      if (!name.toLowerCase().endsWith('.jar')) continue;
+      const filePath = path.join(modsDir, name);
+      try {
+        const info = javaModMetadata.inspectJar(filePath);
+        const keys = jarIdentityKeys(info, name);
+        if (!keys.includes(wanted)) continue;
+        if (modCompatibility.loadersCompatible(info.loader, server.loader_provider_id, { allowUnknown: false })) {
+          continue;
+        }
+        fs.unlinkSync(filePath);
+        logger.info(`Removed ${name} from server ${server.id}; it is not built for ${server.loader_provider_id}`);
+      } catch {
+        /* skip unreadable jars */
+      }
+    }
+  } catch {
+    /* mods dir may not exist */
   }
+  for (const item of javaModInstall.list(server.id)) {
+    const mod = item.mod || {};
+    const meta = parseJson(mod.metadata_json, mod.metadata || {});
+    const names = [mod.name, meta.modId, meta.id, path.parse(mod.filePath || '').name]
+      .map((value) => String(value || '').toLowerCase());
+    if (!names.includes(wanted)) continue;
+    let loader = mod.loader;
+    try {
+      if (mod.filePath && fs.existsSync(mod.filePath)) {
+        const info = javaModMetadata.inspectJar(mod.filePath);
+        if (info.loader && info.loader !== 'any' && info.loader !== 'unknown') loader = info.loader;
+      }
+    } catch {
+      /* keep declared loader */
+    }
+    const dest = path.join(modsDir, path.basename(mod.filePath || ''));
+    const destMissing = Boolean(mod.filePath) && !fs.existsSync(dest);
+    if (!destMissing && modCompatibility.loadersCompatible(loader, server.loader_provider_id, { allowUnknown: false })) {
+      continue;
+    }
+    try { javaModInstall.remove(server, item.id); } catch { /* already gone */ }
+  }
+}
 
+async function searchCatalog(dep, server, { loader } = {}) {
   const catalogService = require('./catalogService');
   const query = String(dep.id || '').replace(/[-_]/g, ' ');
   const result = await catalogService.searchMods(query, {
     edition: 'java',
-    pageSize: 10,
+    pageSize: 15,
     page: 1,
     sortBy: 'relevancy',
+    loader: loader || undefined,
     gameVersions: [{ version: server.minecraft_version, edition: 'java' }],
   });
-  const hits = [...(result.results || [])].sort((a, b) => scoreProject(b, dep) - scoreProject(a, dep));
-  const project = hits.find((item) => scoreProject(item, dep) >= 80) || hits[0];
-  if (!project) {
-    return { id: dep.id, status: 'missing', error: 'Not found in the catalog' };
-  }
-  const files = await catalogService.listDownloadFiles(project.slug || project.id, {
-    provider: project.providerId,
-    source: project.source,
-    edition: 'java',
-    curseforgeId: project.curseforgeId || project.id,
-  });
-  const selectable = (files || []).filter((file) => fileMatchesServer(file, server));
-  const file = selectable[0] || (files || []).find((item) => item.environment !== 'client');
-  if (!file) {
-    return { id: dep.id, status: 'missing', error: 'No compatible catalog file' };
-  }
+  return [...(result.results || [])].sort((a, b) => scoreProject(b, dep, server) - scoreProject(a, dep, server));
+}
+
+async function installCatalogFile(server, project, file) {
+  const catalogService = require('./catalogService');
   const loader = catalogModMeta.normalizeLoader(server.loader_provider_id, 'java');
   const downloaded = await catalogService.downloadMod(project.slug || String(project.id), {
     provider: project.providerId,
@@ -415,13 +534,58 @@ async function resolveOne(server, dep) {
     files: [String(file.id || file.fileId)],
     loader,
   });
-  if (!downloaded?.modId) {
-    return { id: dep.id, status: 'missing', error: 'Catalog download did not return a library mod' };
-  }
+  if (!downloaded?.modId) return { status: 'missing', error: 'Catalog download did not return a library mod' };
+  const row = db.prepare('SELECT * FROM mods WHERE id = ?').get(downloaded.modId);
+  const check = javaModInstall.validate(server, row);
+  if (!check.ok) return { status: 'missing', error: check.error, modId: downloaded.modId };
   const already = db.prepare('SELECT id FROM server_mods WHERE server_id = ? AND mod_id = ?')
     .get(server.id, downloaded.modId);
   if (!already) javaModInstall.install(server, downloaded.modId);
-  return { id: dep.id, status: 'installed', name: downloaded.name };
+  return { status: 'installed', name: downloaded.name, modId: downloaded.modId };
+}
+
+async function resolveOne(server, dep) {
+  removeIncompatibleJars(server, dep);
+  const existing = libraryMatch(dep, server);
+  if (existing) {
+    const already = db.prepare('SELECT id FROM server_mods WHERE server_id = ? AND mod_id = ?')
+      .get(server.id, existing.id);
+    if (already) return { id: dep.id, status: 'installed', name: existing.name };
+    javaModInstall.install(server, existing.id);
+    return { id: dep.id, status: 'installed', name: existing.name };
+  }
+
+  const catalogService = require('./catalogService');
+  let hits = await searchCatalog(dep, server, { loader: server.loader_provider_id });
+  if (!hits.length) hits = await searchCatalog(dep, server, {});
+  if (!hits.length) {
+    return { id: dep.id, status: 'missing', error: 'Not found in the catalog' };
+  }
+
+  for (const project of hits) {
+    const files = await catalogService.listDownloadFiles(project.slug || project.id, {
+      provider: project.providerId,
+      source: project.source,
+      edition: 'java',
+      curseforgeId: project.curseforgeId || project.id,
+    });
+    const listed = files || [];
+    let selectable = listed
+      .filter((file) => fileMatchesServer(file, server, { allowUnknown: false }))
+      .sort((a, b) => scoreFile(b, server) - scoreFile(a, server));
+    if (!selectable.length) {
+      selectable = listed
+        .filter((file) => fileMatchesServer(file, server, { allowUnknown: true }))
+        .sort((a, b) => scoreFile(b, server) - scoreFile(a, server));
+    }
+    if (!selectable.length) continue;
+    const installed = await installCatalogFile(server, project, selectable[0]);
+    if (installed.status === 'installed') {
+      removeIncompatibleJars(server, dep);
+      return { id: dep.id, ...installed };
+    }
+  }
+  return { id: dep.id, status: 'missing', error: `No ${server.loader_provider_id || 'compatible'} catalog file` };
 }
 
 async function resolve(server, selectedIds) {
@@ -488,9 +652,11 @@ module.exports = {
   maybeClearOnReady,
   mergeDeps,
   parseLoaderCrash,
+  parseWrongLoaderSkips,
   publicState,
   readCrashReports,
   readStored,
   recordFromCrash,
   resolve,
+  fileMatchesServer,
 };

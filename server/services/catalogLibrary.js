@@ -8,6 +8,7 @@ const pluginAudit = require('./pluginAudit');
 const controlledDownload = require('./controlledDownload');
 const zipGuard = require('./zipGuard');
 const javaModMetadata = require('./javaModMetadata');
+const catalogModMeta = require('./catalogModMeta');
 const modManager = require('./modManager');
 const packFiles = require('./packFiles');
 const catalogDownloadPolicy = require('./catalogDownloadPolicy');
@@ -24,6 +25,16 @@ function json(value) {
 
 function cleanup(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+}
+
+function resolvedCatalogLoader({ jarLoader, fileLoader, requestedLoader } = {}) {
+  const jar = catalogModMeta.normalizeLoader(jarLoader, 'java');
+  const file = catalogModMeta.normalizeLoader(fileLoader, 'java');
+  const requested = catalogModMeta.normalizeLoader(requestedLoader, 'java');
+  if (jar && jar !== 'unknown' && jar !== 'any') return jar;
+  if (file && file !== 'unknown' && file !== 'any') return file;
+  if (requested && requested !== 'unknown' && requested !== 'any') return requested;
+  return jar || file || requested || 'unknown';
 }
 
 async function importDownloadPlan(plan, { allowHosts, providerId, loader: requestedLoader } = {}) {
@@ -117,9 +128,11 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
     }));
     const extraJson = extraFiles.length ? require('./modArchives').serializeExtraFiles(extraFiles) : null;
     const fileSize = stored.reduce((sum, file) => sum + (file.size || 0), 0);
-    const loader = (requestedLoader && requestedLoader !== 'unknown' && requestedLoader !== 'any')
-      ? requestedLoader
-      : (primary.loader && primary.loader !== 'unknown' ? primary.loader : (jarMeta.loader || 'unknown'));
+    const loader = resolvedCatalogLoader({
+      jarLoader: jarMeta.loader,
+      fileLoader: primary.loader,
+      requestedLoader,
+    });
     const environment = primary.environment && primary.environment !== 'unknown'
       ? primary.environment
       : (jarMeta.environment || 'unknown');
@@ -199,4 +212,5 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
 
 module.exports = {
   importDownloadPlan,
+  resolvedCatalogLoader,
 };

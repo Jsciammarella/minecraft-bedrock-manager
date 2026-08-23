@@ -3,6 +3,8 @@ const path = require('path');
 const db = require('../db/connection');
 const pluginAudit = require('./pluginAudit');
 const javaLoaderRegistry = require('./javaLoaderRegistry');
+const javaModMetadata = require('./javaModMetadata');
+const catalogModMeta = require('./catalogModMeta');
 const controlledFs = require('./controlledFs');
 
 function parseJson(raw, fallback) {
@@ -75,11 +77,24 @@ function pending(serverId) {
   return list(serverId).filter((item) => item.pendingAction || item.status === 'pending');
 }
 
+function jarLoader(artifact) {
+  try {
+    if (artifact?.filePath && fs.existsSync(artifact.filePath)) {
+      const info = javaModMetadata.inspectJar(artifact.filePath);
+      if (info.loader && info.loader !== 'any' && info.loader !== 'unknown') return info.loader;
+    }
+  } catch {
+    /* keep declared loader */
+  }
+  return artifact?.loader || 'unknown';
+}
+
 function validate(server, mod) {
   const artifact = artifactFromRow(mod);
   if (artifact.edition && artifact.edition !== 'java') {
     return { ok: false, error: 'Bedrock packs cannot be installed on a Java server' };
   }
+  artifact.loader = catalogModMeta.normalizeLoader(jarLoader(artifact), 'java');
   const { provider } = modsDirFor(server);
   const result = provider.validateMod(server, artifact);
   const installed = list(server.id);

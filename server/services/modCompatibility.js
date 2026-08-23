@@ -12,6 +12,15 @@ function loaderSupportsMods(loaderId) {
   return Boolean(entry.provider.getModSupport?.()?.supportsMods);
 }
 
+function loadersCompatible(modLoader, serverLoader, { allowUnknown = true } = {}) {
+  const mod = catalogModMeta.normalizeLoader(modLoader, 'java');
+  const server = catalogModMeta.normalizeLoader(serverLoader, 'java');
+  if (!server || server === 'vanilla' || server === 'any') return false;
+  if (!mod || mod === 'any' || mod === 'unknown') return allowUnknown;
+  if (server === 'neoforge' && (mod === 'neoforge' || mod === 'forge')) return true;
+  return mod === server;
+}
+
 function compatibleWithServer(mod, server) {
   if (!server || server.kind === 'remote' || server.kind === 'bedrock_connect') return false;
   const javaMod = catalogModMeta.isJavaMod(mod);
@@ -19,21 +28,19 @@ function compatibleWithServer(mod, server) {
     if (!javaMod) return false;
     const loaderId = serverLoaderId(server);
     if (!loaderSupportsMods(loaderId)) return false;
-    const modLoader = catalogModMeta.normalizeLoader(mod.loader, 'java');
     const versionOk = minecraftVersions.supportsMinecraftVersion(
       minecraftVersions.modMinecraftVersions(mod),
       minecraftVersions.serverMinecraftVersion(server)
     );
-    if (!modLoader || modLoader === 'any' || modLoader === 'unknown') return versionOk;
-    if (loaderId === 'neoforge' && (modLoader === 'neoforge' || modLoader === 'forge')) return versionOk;
-    if (modLoader !== loaderId) return false;
-    return versionOk;
+    if (!versionOk) return false;
+    return loadersCompatible(mod.loader, loaderId);
   }
   return !javaMod;
 }
 
 module.exports = {
   compatibleWithServer,
+  loadersCompatible,
   loaderSupportsMods,
   serverLoaderId,
 };

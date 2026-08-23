@@ -425,6 +425,22 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   assert.equal(javaProvider.parseGameVersions(['1.21.1', 'ClientOnly', 'Dedicated']).environment, 'unknown');
   assert.equal(javaProvider.parseGameVersions(['Client', 'client']).environment, 'client');
 
+  let capturedSearch = null;
+  const loaderSearchProvider = javaCatalog.createProvider({
+    catalogHttp: {
+      isConfigured: () => true,
+      request: async ({ url, params }) => {
+        if (url.endsWith('/v1/categories')) {
+          return { data: { data: [{ id: 6, slug: 'mc-mods', name: 'Mods', isClass: true }] } };
+        }
+        capturedSearch = params;
+        return { data: { data: [], pagination: { totalCount: 0 } } };
+      },
+    },
+  });
+  await loaderSearchProvider.search('owo', { loader: 'neoforge' });
+  assert.equal(capturedSearch.modLoaderType, 6);
+
   assert.equal(catalogDownloadPolicy.normalizeEnvironment('client'), 'client');
   assert.equal(catalogDownloadPolicy.normalizeEnvironment('SERVER'), 'server');
   assert.equal(catalogDownloadPolicy.normalizeEnvironment('both'), 'both');

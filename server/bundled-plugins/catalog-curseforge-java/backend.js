@@ -24,6 +24,12 @@ const RELEASE_TYPES = {
   2: 'beta',
   3: 'alpha',
 };
+const MOD_LOADER_TYPES = {
+  forge: 1,
+  fabric: 4,
+  quilt: 5,
+  neoforge: 6,
+};
 
 function namespaceCategory(id) {
   return `curseforge-java:${id}`;
@@ -295,6 +301,8 @@ function createProvider(services) {
         sortOrder: 'desc',
       };
       if (query) params.searchFilter = query;
+      const loaderType = MOD_LOADER_TYPES[String(options.loader || '').trim().toLowerCase()];
+      if (loaderType) params.modLoaderType = loaderType;
       await applyCategory(params, options.category);
       const versions = Array.isArray(options.minecraftVersions) ? options.minecraftVersions.filter(Boolean) : [];
       if (versions.length === 1) {

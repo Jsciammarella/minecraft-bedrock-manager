@@ -374,6 +374,36 @@ mandatory=true
 versionRange="[13.0.8,)"
 `);
   assert.ok(neoToml.dependencies.some((item) => item.id === 'architectury' && !item.optional));
+  const owoLog = [
+    "Skipping jar. File /tmp/mods/owo-lib-0.13.0-alpha.15_1.21.jar is a Fabric mod and cannot be loaded",
+    "Mod ID: 'owo', Requested by: 'accessories', Expected range: '[0.12.15.0+1.21,)', Actual version: '[MISSING]'",
+    'Mod accessories requires owo 0.12.15.0+1.21 or above',
+    'Currently, owo is not installed',
+  ].join('\n');
+  const owoDeps = javaModDependencies.parseLoaderCrash(owoLog);
+  assert.ok(owoDeps.some((item) => String(item.id).toLowerCase() === 'owo'));
+  const skipped = javaModDependencies.parseWrongLoaderSkips(owoLog);
+  assert.equal(skipped.length, 1);
+  assert.match(skipped[0].filePath, /owo-lib-0\.13\.0-alpha\.15_1\.21\.jar$/);
+  assert.equal(skipped[0].loader, 'fabric');
+  assert.equal(javaModDependencies.looksLikeDependencyFailure(owoLog), true);
+  assert.equal(javaModDependencies.fileMatchesServer(
+    { loader: 'fabric', environment: 'both', minecraftVersions: ['1.21.1'] },
+    { loader_provider_id: 'neoforge', minecraft_version: '1.21.1' }
+  ), false);
+  assert.equal(javaModDependencies.fileMatchesServer(
+    { loader: 'neoforge', environment: 'both', minecraftVersions: ['1.21.1'] },
+    { loader_provider_id: 'neoforge', minecraft_version: '1.21.1' }
+  ), true);
+  const modCompatibility = require('../server/services/modCompatibility');
+  assert.equal(modCompatibility.loadersCompatible('fabric', 'neoforge', { allowUnknown: false }), false);
+  assert.equal(modCompatibility.loadersCompatible('neoforge', 'neoforge', { allowUnknown: false }), true);
+  const catalogLibrary = require('../server/services/catalogLibrary');
+  assert.equal(catalogLibrary.resolvedCatalogLoader({
+    jarLoader: 'fabric',
+    fileLoader: 'unknown',
+    requestedLoader: 'neoforge',
+  }), 'fabric');
   const fabricToml = javaModMetadata.detectFabric(JSON.stringify({
     id: 'yagm',
     name: 'YAGM',
@@ -406,7 +436,6 @@ versionRange="[13.0.8,)"
   pluginHost.resetForTests();
   gatewayRegistry.clear();
   pluginHost.loadPlugins([pluginHost.BUNDLED_PLUGINS_DIR]);
-  const modCompatibility = require('../server/services/modCompatibility');
   assert.equal(modCompatibility.compatibleWithServer(
     { edition: 'java', loader: 'fabric', minecraft_versions: JSON.stringify(['1.21.1']) },
     { kind: 'java', loader_provider_id: 'fabric', minecraft_version: '1.26.1' }
