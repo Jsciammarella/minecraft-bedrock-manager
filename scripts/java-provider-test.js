@@ -395,6 +395,32 @@ versionRange="[13.0.8,)"
     { loader: 'neoforge', environment: 'both', minecraftVersions: ['1.21.1'] },
     { loader_provider_id: 'neoforge', minecraft_version: '1.21.1' }
   ), true);
+  assert.equal(javaModDependencies.fileMatchesServer(
+    { loader: 'unknown', environment: 'both', minecraftVersions: ['1.21.1'] },
+    { loader_provider_id: 'neoforge', minecraft_version: '1.21.1' }
+  ), false);
+  assert.equal(javaModDependencies.fileMatchesServer(
+    { loader: 'unknown', environment: 'both', minecraftVersions: ['1.21.1'] },
+    { loader_provider_id: 'neoforge', minecraft_version: '1.21.1' },
+    { allowUnknown: true }
+  ), true);
+  assert.equal(javaModDependencies.fileMatchesServer(
+    { loader: 'unknown', fabric: true, environment: 'both', minecraftVersions: ['1.21.1'] },
+    { loader_provider_id: 'neoforge', minecraft_version: '1.21.1' },
+    { allowUnknown: true }
+  ), false);
+  const javaModFiles = require('../server/services/javaModFiles');
+  const fabricLibraryMod = {
+    file_path: '/tmp/owo-lib-fabric.jar',
+    loader: 'fabric',
+    extra_files: null,
+    sha256: 'abc123',
+    minecraft_versions: JSON.stringify(['1.21.1']),
+    environment: 'both',
+  };
+  const neoServer = { loader_provider_id: 'neoforge', minecraft_version: '1.21.1' };
+  assert.equal(javaModFiles.bestFileForServer(fabricLibraryMod, neoServer, { sha256: 'abc123' }), null);
+  assert.equal(javaModFiles.bestFileForServer(fabricLibraryMod, neoServer, { sha256: 'abc123', allowMismatch: true })?.sha256, 'abc123');
   const modCompatibility = require('../server/services/modCompatibility');
   assert.equal(modCompatibility.loadersCompatible('fabric', 'neoforge', { allowUnknown: false }), false);
   assert.equal(modCompatibility.loadersCompatible('neoforge', 'neoforge', { allowUnknown: false }), true);

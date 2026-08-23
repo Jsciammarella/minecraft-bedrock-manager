@@ -759,7 +759,7 @@ function ModCatalog() {
             }
           }}
         >
-          <div className="card max-w-lg w-full animate-slide-up max-h-[90vh] overflow-y-auto" onClick={(event) => event.stopPropagation()}>
+          <div className="card max-w-3xl w-full animate-slide-up max-h-[90vh] overflow-y-auto" onClick={(event) => event.stopPropagation()}>
             <h3 className="text-lg font-semibold text-white mb-2">Choose files to download</h3>
             <p className="text-sm text-mc-textMuted mb-3">
               <strong className="text-white">{filePicker.mod.name}</strong> includes more than one file.
@@ -815,14 +815,14 @@ function ModCatalog() {
                 );
               })}
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-stretch gap-3">
               <button
                 onClick={() => handleDownload(selectableCatalogFiles(filePicker.files).filter((file) => selectedFiles.includes(file.id)).map((file) => file.id))}
                 disabled={
                   downloading
                   || selectableCatalogFiles(filePicker.files).filter((file) => selectedFiles.includes(file.id)).length < 1
                 }
-                className="btn btn-primary flex-1"
+                className="btn btn-primary whitespace-nowrap shrink-0 min-w-[11rem]"
               >
                 {downloading ? (
                   <>
@@ -837,11 +837,19 @@ function ModCatalog() {
                 )}
               </button>
               <button
+                onClick={() => handleDownload(selectableCatalogFiles(filePicker.files).map((file) => file.id))}
+                disabled={downloading || selectableCatalogFiles(filePicker.files).length < 1}
+                className="btn btn-secondary whitespace-nowrap shrink-0 min-w-[10rem]"
+              >
+                <Download className="w-4 h-4" />
+                Download all
+              </button>
+              <button
                 onClick={() => {
                   setFilePicker(null);
                   setSelectedFiles([]);
                 }}
-                className="btn btn-secondary"
+                className="btn btn-secondary whitespace-nowrap shrink-0 min-w-[6rem]"
                 disabled={downloading}
               >
                 Cancel

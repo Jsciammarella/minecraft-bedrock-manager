@@ -139,7 +139,9 @@ function bestFileForServer(mod, server, { sha256, allowUnknown = false, allowMis
     const exact = files.find((file) => file.sha256 && file.sha256 === sha256)
       || files.find((file) => path.basename(file.path) === sha256)
       || files.find((file) => file.path === sha256);
-    if (exact) return exact;
+    if (exact) {
+      if (allowMismatch || fileMatchesServer(exact, server, { allowUnknown })) return exact;
+    }
   }
   const matched = files.filter((file) => fileMatchesServer(file, server, { allowUnknown }));
   if (matched.length) return matched[0];

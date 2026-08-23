@@ -1104,7 +1104,7 @@ function ServerDetail() {
               <div className={`space-y-2 ${missingDepItems.length > 10 ? 'max-h-[22rem] overflow-y-auto pr-1' : ''}`}>
                 {missingDepItems.map((dep) => {
                   const checked = selectedDepIds.includes(dep.id);
-                  const mismatch = depMismatches[dep.id];
+                  const mismatch = depMismatches[dep.id] || dep.mismatch;
                   const override = depOverrides[dep.id];
                   return (
                     <div key={`${dep.optional ? 'opt' : 'req'}-${dep.id}`} className="p-2 rounded-lg bg-mc-darker space-y-2">
@@ -1145,9 +1145,9 @@ function ServerDetail() {
                                 ...current,
                                 [dep.id]: chosen ? {
                                   ...chosen,
-                                  source: mismatch.source,
-                                  modId: mismatch.modId,
-                                  project: mismatch.project,
+                                  source: chosen.source || mismatch.source,
+                                  modId: chosen.modId || mismatch.modId,
+                                  project: chosen.project || mismatch.project,
                                   fileId: chosen.fileId || chosen.id,
                                   allowMismatch: true,
                                 } : undefined,
