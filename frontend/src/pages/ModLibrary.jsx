@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { modApi, serverApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import ModTileTags from '../components/ModTileTags';
-import { isJavaLibraryMod, isModCompatibleWithServer, loaderDisplayName } from '../utils/modCompatibility';
+import { isJavaLibraryMod, isModCompatibleWithServer, loaderDisplayName, modLoaderIds, modVersionTags } from '../utils/modCompatibility';
 import {
   ArrowLeft, Package, Upload, Search, Trash2, Plus, X,
   AlertCircle, Check, Loader2, Server, Download, Settings, ImagePlus
@@ -37,6 +37,8 @@ function ModLibrary() {
   const [uploadName, setUploadName] = useState('');
   const [uploadDesc, setUploadDesc] = useState('');
   const [uploadType, setUploadType] = useState('addon');
+  const [uploadEdition, setUploadEdition] = useState('bedrock');
+  const [uploadJavaMeta, setUploadJavaMeta] = useState([]);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showCurseforgeModal, setShowCurseforgeModal] = useState(false);
   const [curseforgeUrl, setCurseforgeUrl] = useState('');
@@ -55,7 +57,11 @@ function ModLibrary() {
 
   const [settingsModal, setSettingsModal] = useState(null);
   const [settingsDesc, setSettingsDesc] = useState('');
-  const [settingsLoader, setSettingsLoader] = useState('');
+  const [fileDeleteModal, setFileDeleteModal] = useState(null);
+  const [addingJarFiles, setAddingJarFiles] = useState([]);
+  const [addingJarMeta, setAddingJarMeta] = useState([]);
+  const [addingJars, setAddingJars] = useState(false);
+  const addJarInputRef = useRef(null);
   const [settingsImage, setSettingsImage] = useState(null);
   const [settingsPreview, setSettingsPreview] = useState('');
   const [clearThumbnail, setClearThumbnail] = useState(false);
@@ -101,11 +107,22 @@ function ModLibrary() {
     })[0];
     setUploadName(primary.name.replace(/\.[^/.]+$/, ''));
     setUploadType(typeFromFileName(primary.name));
+    setUploadJavaMeta(files.map((file) => ({
+      name: file.name,
+      loader: '',
+      minecraftVersions: '',
+      environment: 'unknown',
+    })));
   };
 
   const handleUpload = async () => {
     if (!uploadFiles.length) {
       setError('Please select a file');
+      return;
+    }
+
+    if (uploadEdition === 'java' && !uploadFiles.every((file) => /\.(jar|zip)$/i.test(file.name))) {
+      setError('Java mods must be JAR or ZIP files');
       return;
     }
 
@@ -116,7 +133,14 @@ function ModLibrary() {
       await modApi.upload(uploadFiles, {
         name: uploadName || uploadFiles[0].name.replace(/\.[^/.]+$/, ''),
         description: uploadDesc,
-        type: uploadType,
+        type: uploadEdition === 'java' ? 'mod' : uploadType,
+        edition: uploadEdition,
+        javaFiles: uploadEdition === 'java' ? uploadJavaMeta.map((item, index) => ({
+          name: uploadFiles[index]?.name || item.name,
+          loader: item.loader,
+          minecraftVersions: String(item.minecraftVersions || '').split(/[,;]/).map((part) => part.trim()).filter(Boolean),
+          environment: item.environment || 'unknown',
+        })) : undefined,
       }, (percent) => setUploadProgress(percent));
       loadMods();
       setSuccess('Mod uploaded successfully!');
@@ -124,6 +148,8 @@ function ModLibrary() {
       setUploadFiles([]);
       setUploadName('');
       setUploadDesc('');
+      setUploadEdition('bedrock');
+      setUploadJavaMeta([]);
       setUploadProgress(null);
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
@@ -273,7 +299,9 @@ function ModLibrary() {
   const openSettings = (mod) => {
     setSettingsModal(mod);
     setSettingsDesc(mod.description || '');
-    setSettingsLoader(mod.loader || '');
+    setFileDeleteModal(null);
+    setAddingJarFiles([]);
+    setAddingJarMeta([]);
     setSettingsImage(null);
     setClearThumbnail(false);
     setSettingsPreview(libraryThumbnailSrc(mod) || '');
@@ -297,7 +325,6 @@ function ModLibrary() {
         description: settingsDesc,
         thumbnailFile: settingsImage,
         clearThumbnail: clearThumbnail && !settingsImage,
-        loader: isJavaLibraryMod(settingsModal) && javaProviders.length ? settingsLoader : undefined,
       });
       setSuccess('Mod details saved');
       setSettingsModal(null);
@@ -310,14 +337,97 @@ function ModLibrary() {
     }
   };
 
+  const handleAddJarSelect = (e) => {
+    const files = Array.from(e.target.files || []);
+    setAddingJarFiles(files);
+    setAddingJarMeta(files.map((file) => ({
+      name: file.name,
+      loader: '',
+      minecraftVersions: '',
+      environment: 'unknown',
+    })));
+  };
+
+  const handleAddJars = async () => {
+    if (!settingsModal || !addingJarFiles.length) return;
+    setAddingJars(true);
+    setError('');
+    try {
+      const updated = await modApi.addFiles(settingsModal.id, addingJarFiles, {
+        javaFiles: addingJarMeta.map((item, index) => ({
+          name: addingJarFiles[index]?.name || item.name,
+          loader: item.loader,
+          minecraftVersions: String(item.minecraftVersions || '').split(/[,;]/).map((part) => part.trim()).filter(Boolean),
+          environment: item.environment || 'unknown',
+        })),
+      });
+      setSettingsModal(updated.data);
+      setAddingJarFiles([]);
+      setAddingJarMeta([]);
+      if (addJarInputRef.current) addJarInputRef.current.value = '';
+      await loadMods();
+      setSuccess('Jar files added');
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to add jar files');
+    } finally {
+      setAddingJars(false);
+    }
+  };
+
+  const requestDeleteJar = (file) => {
+    setFileDeleteModal({
+      file,
+      servers: file.usedBy || [],
+      inUse: Boolean(file.inUse || (file.usedBy || []).length),
+    });
+  };
+
+  const performDeleteJar = async (uninstallFromAll) => {
+    if (!settingsModal || !fileDeleteModal) return;
+    setDeleting(true);
+    setError('');
+    try {
+      const result = await modApi.deleteFile(settingsModal.id, {
+        sha256: fileDeleteModal.file.sha256,
+        name: fileDeleteModal.file.name,
+        uninstallFromAll,
+      });
+      setFileDeleteModal(null);
+      if (!result.data?.id) {
+        setSettingsModal(null);
+        setSuccess('Mod deleted from the library');
+      } else {
+        setSettingsModal(result.data);
+        setSuccess('Jar removed from this mod');
+      }
+      await loadMods();
+      await refresh();
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      if (err.response?.status === 409) {
+        setFileDeleteModal((current) => current ? {
+          ...current,
+          inUse: true,
+          servers: err.response.data?.servers || current.servers,
+        } : current);
+        setError(err.response?.data?.error || 'This file is in use on a server');
+      } else {
+        setError(err.response?.data?.error || err.message);
+      }
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const filteredMods = mods.filter(mod => {
     const matchesSearch = !search || mod.name.toLowerCase().includes(search.toLowerCase());
     const matchesType = filterType === 'all' || mod.type === filterType;
     const matchesEdition = filterEdition === 'all'
-      || (filterEdition === 'java' && (mod.edition === 'java' || mod.loader === 'fabric' || mod.loader === 'neoforge'))
+      || (filterEdition === 'java' && (mod.edition === 'java' || modLoaderIds(mod).length > 0))
       || (filterEdition === 'bedrock' && (mod.edition || 'bedrock') !== 'java')
-      || (filterEdition === 'fabric' && mod.loader === 'fabric')
-      || (filterEdition === 'neoforge' && mod.loader === 'neoforge')
+      || (filterEdition === 'fabric' && modLoaderIds(mod).includes('fabric'))
+      || (filterEdition === 'neoforge' && modLoaderIds(mod).includes('neoforge'))
       || (filterEdition === 'server' && (mod.environment === 'server' || mod.environment === 'both'))
       || (filterEdition === 'client' && (mod.environment === 'client' || mod.environment === 'both'));
     return matchesSearch && matchesType && matchesEdition;
@@ -398,6 +508,8 @@ function ModLibrary() {
           <button
             onClick={() => {
               setUploadProgress(null);
+              setUploadEdition('bedrock');
+              setUploadJavaMeta([]);
               setShowUploadModal(true);
             }}
             className="btn btn-primary"
@@ -563,7 +675,7 @@ function ModLibrary() {
       {/* Upload Modal */}
       {showUploadModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
-          <div className="card max-w-md w-full animate-slide-up">
+          <div className="card max-w-lg w-full animate-slide-up max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-white">Upload Mod</h3>
               <button
@@ -583,6 +695,39 @@ function ModLibrary() {
             )}
 
             <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-mc-text mb-2">Edition</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUploadEdition('bedrock');
+                      setUploadFiles([]);
+                      setUploadJavaMeta([]);
+                      if (fileInputRef.current) fileInputRef.current.value = '';
+                    }}
+                    disabled={uploading}
+                    className={`btn w-full ${uploadEdition === 'bedrock' ? 'btn-primary' : 'btn-secondary'}`}
+                  >
+                    Bedrock
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUploadEdition('java');
+                      setUploadFiles([]);
+                      setUploadJavaMeta([]);
+                      setUploadType('mod');
+                      if (fileInputRef.current) fileInputRef.current.value = '';
+                    }}
+                    disabled={uploading}
+                    className={`btn w-full ${uploadEdition === 'java' ? 'btn-primary' : 'btn-secondary'}`}
+                  >
+                    Java
+                  </button>
+                </div>
+              </div>
+
               {/* File Drop */}
               <div
                 className={`border-2 border-dashed border-mc-surfaceLight rounded-lg p-8 text-center 
@@ -597,24 +742,30 @@ function ModLibrary() {
                 ) : (
                   <p className="text-sm text-mc-textMuted">Click to select one or more files</p>
                 )}
-                <p className="text-xs text-mc-textMuted mt-1">.mcpack, .mcaddon, .mcworld, .mctemplate, .mcstructure, .zip</p>
+                <p className="text-xs text-mc-textMuted mt-1">
+                  {uploadEdition === 'java'
+                    ? '.jar, .zip — launcher and Minecraft version come from each file or the fields below.'
+                    : '.mcpack, .mcaddon, .mcworld, .mctemplate, .mcstructure, .zip'}
+                </p>
                 <p className="text-xs text-mc-textMuted mt-1">Multiple archives are stored as one library mod.</p>
                 <input
                   ref={fileInputRef}
                   type="file"
                   multiple
-                  accept=".mcpack,.mcaddon,.mcworld,.zip,.mctemplate,.mcstructure"
+                  accept={uploadEdition === 'java' ? '.jar,.zip' : '.mcpack,.mcaddon,.mcworld,.zip,.mctemplate,.mcstructure'}
                   onChange={handleFileSelect}
                   className="hidden"
                 />
               </div>
 
-              {uploadFiles.length > 1 && (
-                <ul className="max-h-28 overflow-y-auto text-xs text-mc-textMuted space-y-1">
-                  {uploadFiles.map((file, index) => (
-                    <li key={`${file.name}-${index}`}>{file.name}</li>
-                  ))}
-                </ul>
+              {uploadEdition === 'java' && uploadFiles.length > 0 && (
+                <JavaFileMetaFields
+                  files={uploadFiles}
+                  meta={uploadJavaMeta}
+                  onChange={setUploadJavaMeta}
+                  javaProviders={javaProviders}
+                  disabled={uploading}
+                />
               )}
 
               <div>
@@ -629,6 +780,7 @@ function ModLibrary() {
                 />
               </div>
 
+              {uploadEdition !== 'java' && (
               <div>
                 <label className="block text-sm font-medium text-mc-text mb-2">Type</label>
                 <select
@@ -645,6 +797,7 @@ function ModLibrary() {
                   <option value="skin">Skin</option>
                 </select>
               </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-mc-text mb-2">Description</label>
@@ -905,8 +1058,8 @@ function ModLibrary() {
             {deleteModal.servers.length ? (
               <>
                 <p className="text-sm text-mc-textMuted mb-3">
-                  This mod is installed on {deleteModal.servers.length}{' '}
-                  {deleteModal.servers.length === 1 ? 'server' : 'servers'}:
+                  This mod is in use on {deleteModal.servers.length}{' '}
+                  {deleteModal.servers.length === 1 ? 'server' : 'servers'} and may be a required dependency:
                 </p>
                 <ul className="mb-4 space-y-1 max-h-40 overflow-y-auto">
                   {deleteModal.servers.map((server) => (
@@ -917,7 +1070,7 @@ function ModLibrary() {
                   ))}
                 </ul>
                 <p className="text-sm text-mc-textMuted mb-4">
-                  Would you like it removed from ALL servers and the mod library?
+                  Deleting it removes the mod from those servers and from the library.
                 </p>
               </>
             ) : (
@@ -937,7 +1090,7 @@ function ModLibrary() {
                     Removing...
                   </>
                 ) : (
-                  'Yes'
+                  'Delete'
                 )}
               </button>
               <button
@@ -1046,7 +1199,7 @@ function ModLibrary() {
 
       {settingsModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4">
-          <div className="card max-w-md w-full animate-slide-up">
+          <div className="card max-w-lg w-full animate-slide-up max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-white">Mod Settings</h3>
               <button onClick={() => setSettingsModal(null)} className="p-1 hover:bg-mc-surfaceLight rounded">
@@ -1112,23 +1265,73 @@ function ModLibrary() {
                 />
               </div>
 
-              {isJavaLibraryMod(settingsModal) && javaProviders.length > 0 && (
+              {isJavaLibraryMod(settingsModal) && (
                 <div>
-                  <label className="block text-sm font-medium text-mc-text mb-2">Launcher</label>
-                  <select
-                    value={javaProviders.some((item) => item.id === settingsLoader) ? settingsLoader : (settingsModal.loader || '')}
-                    onChange={(e) => setSettingsLoader(e.target.value)}
-                    className="input"
-                  >
-                    {!javaProviders.some((item) => item.id === (settingsLoader || settingsModal.loader)) && (settingsModal.loader || settingsLoader) && (
-                      <option value={settingsLoader || settingsModal.loader}>
-                        {loaderDisplayName(settingsLoader || settingsModal.loader) || settingsLoader || settingsModal.loader}
-                      </option>
+                  <label className="block text-sm font-medium text-mc-text mb-2">Downloaded jars</label>
+                  <ul className="space-y-2">
+                    {(settingsModal.files || []).map((file) => {
+                      const inUse = Boolean(file.inUse || (file.usedBy || []).length);
+                      return (
+                        <li key={file.sha256 || file.path || file.name} className="flex items-center gap-2 p-2 bg-mc-darker rounded-lg">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-white truncate">{file.name}</p>
+                            <p className="text-xs text-mc-textMuted">
+                              {loaderDisplayName(file.loader) || file.loader || 'unknown'}
+                              {(file.minecraftVersions || []).length ? ` • ${(file.minecraftVersions || []).join(', ')}` : ''}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => requestDeleteJar(file)}
+                            className="p-2 rounded transition-colors"
+                            title={inUse ? 'This jar is installed on a server' : 'Delete this jar'}
+                            aria-label={`Delete ${file.name}`}
+                          >
+                            <Trash2 className={`w-4 h-4 ${inUse ? 'text-orange-400' : 'text-red-400'}`} />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <div className="mt-3 space-y-2">
+                    <button
+                      type="button"
+                      onClick={() => addJarInputRef.current?.click()}
+                      className="btn btn-secondary w-full text-sm"
+                      disabled={addingJars}
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add jar files
+                    </button>
+                    <input
+                      ref={addJarInputRef}
+                      type="file"
+                      multiple
+                      accept=".jar,.zip"
+                      className="hidden"
+                      onChange={handleAddJarSelect}
+                    />
+                    {addingJarFiles.length > 0 && (
+                      <>
+                        <JavaFileMetaFields
+                          files={addingJarFiles}
+                          meta={addingJarMeta}
+                          onChange={setAddingJarMeta}
+                          javaProviders={javaProviders}
+                          disabled={addingJars}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddJars}
+                          disabled={addingJars}
+                          className="btn btn-primary w-full text-sm"
+                        >
+                          {addingJars ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                          {addingJars ? 'Adding...' : `Add ${addingJarFiles.length} file${addingJarFiles.length === 1 ? '' : 's'}`}
+                        </button>
+                      </>
                     )}
-                    {javaProviders.map((provider) => (
-                      <option key={provider.id} value={provider.id}>{provider.name}</option>
-                    ))}
-                  </select>
+                  </div>
                 </div>
               )}
 
@@ -1161,6 +1364,126 @@ function ModLibrary() {
           </div>
         </div>
       )}
+
+      {fileDeleteModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[90] p-4">
+          <div className="card max-w-md w-full animate-slide-up">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">
+                {fileDeleteModal.inUse ? 'Jar is in use' : 'Delete jar'}
+              </h3>
+              <button
+                onClick={() => setFileDeleteModal(null)}
+                disabled={deleting}
+                className="p-1 hover:bg-mc-surfaceLight rounded disabled:opacity-30"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            {fileDeleteModal.inUse ? (
+              <>
+                <p className="text-sm text-mc-textMuted mb-3">
+                  <strong className="text-white">{fileDeleteModal.file.name}</strong> is installed on{' '}
+                  {fileDeleteModal.servers.length} {fileDeleteModal.servers.length === 1 ? 'server' : 'servers'}:
+                </p>
+                <ul className="mb-4 space-y-1 max-h-40 overflow-y-auto">
+                  {fileDeleteModal.servers.map((server) => (
+                    <li key={server.id} className="text-sm text-white flex items-center gap-2">
+                      <Server className="w-4 h-4 text-mc-textMuted flex-shrink-0" />
+                      {server.name}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-sm text-mc-textMuted mb-4">
+                  Deleting it removes the file from those Java servers. If a server required this dependency, the next start will show the missing-dependency prompt.
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-mc-textMuted mb-4">
+                Remove <strong className="text-white">{fileDeleteModal.file.name}</strong> from this library mod?
+              </p>
+            )}
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => performDeleteJar(Boolean(fileDeleteModal.inUse || fileDeleteModal.servers.length))}
+                disabled={deleting}
+                className="btn btn-primary flex-1"
+              >
+                {deleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Removing...
+                  </>
+                ) : (
+                  'Delete'
+                )}
+              </button>
+              <button
+                onClick={() => setFileDeleteModal(null)}
+                disabled={deleting}
+                className="btn btn-secondary"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function JavaFileMetaFields({ files, meta, onChange, javaProviders = [], disabled = false }) {
+  return (
+    <div className="space-y-3 max-h-64 overflow-y-auto">
+      {files.map((file, index) => {
+        const row = meta[index] || { loader: '', minecraftVersions: '', environment: 'unknown' };
+        const update = (patch) => {
+          const next = meta.slice();
+          next[index] = { ...row, name: file.name, ...patch };
+          onChange(next);
+        };
+        return (
+          <div key={`${file.name}-${index}`} className="p-3 bg-mc-darker rounded-lg space-y-2">
+            <p className="text-xs text-white break-all">{file.name}</p>
+            <label className="block text-xs text-mc-textMuted">Launcher</label>
+            <select
+              value={row.loader}
+              onChange={(e) => update({ loader: e.target.value })}
+              disabled={disabled}
+              className="input text-sm"
+            >
+              <option value="">Detect from file</option>
+              {javaProviders.filter((item) => item.id !== 'vanilla').map((provider) => (
+                <option key={provider.id} value={provider.id}>{provider.name}</option>
+              ))}
+              {!javaProviders.some((item) => item.id === 'fabric') && <option value="fabric">Fabric</option>}
+              {!javaProviders.some((item) => item.id === 'neoforge') && <option value="neoforge">NeoForge</option>}
+            </select>
+            <label className="block text-xs text-mc-textMuted">Minecraft versions</label>
+            <input
+              type="text"
+              value={row.minecraftVersions}
+              onChange={(e) => update({ minecraftVersions: e.target.value })}
+              disabled={disabled}
+              className="input text-sm"
+              placeholder="1.21.1, 1.21.4"
+            />
+            <label className="block text-xs text-mc-textMuted">Environment</label>
+            <select
+              value={row.environment || 'unknown'}
+              onChange={(e) => update({ environment: e.target.value })}
+              disabled={disabled}
+              className="input text-sm"
+            >
+              <option value="unknown">Unknown / detect</option>
+              <option value="both">Client and server</option>
+              <option value="server">Server</option>
+              <option value="client">Client</option>
+            </select>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1175,6 +1498,9 @@ function typeFromFileName(name) {
 }
 
 function extraArchiveNames(mod) {
+  if (Array.isArray(mod?.files) && mod.files.length) {
+    return mod.files.slice(1).map((item) => item.name).filter(Boolean);
+  }
   if (!mod?.extra_files) return [];
   try {
     const parsed = typeof mod.extra_files === 'string' ? JSON.parse(mod.extra_files) : mod.extra_files;
@@ -1318,9 +1644,13 @@ function LibraryTile({
       <ModTileTags>
         {getTypeBadge(mod.type)}
         {getSourceBadge(mod.source)}
-        {isJavaLibraryMod(mod) && loaderDisplayName(mod.loader) && (
-          <span className="badge badge-info">{loaderDisplayName(mod.loader)}</span>
-        )}
+        {isJavaLibraryMod(mod) && <span className="badge badge-warning">Java</span>}
+        {modLoaderIds(mod).map((id) => (
+          loaderDisplayName(id) ? <span key={id} className="badge badge-info">{loaderDisplayName(id)}</span> : null
+        ))}
+        {modVersionTags(mod).slice(0, 4).map((version) => (
+          <span key={version} className="badge badge-success">{version}</span>
+        ))}
       </ModTileTags>
 
       <h3

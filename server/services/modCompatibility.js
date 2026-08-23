@@ -21,6 +21,42 @@ function loadersCompatible(modLoader, serverLoader, { allowUnknown = true } = {}
   return mod === server;
 }
 
+function fileCompatibleWithServer(file, server, { allowUnknown = false } = {}) {
+  if (!file || !server) return false;
+  if (file.environment === 'client') return false;
+  if (!minecraftVersions.supportsMinecraftVersion(
+    file.minecraftVersions || [],
+    minecraftVersions.serverMinecraftVersion(server)
+  )) {
+    return false;
+  }
+  return loadersCompatible(file.loader, serverLoaderId(server), { allowUnknown });
+}
+
+function filesFromMod(mod) {
+  if (!mod) return [];
+  const extras = require('./modArchives').parseExtraFiles(mod.extra_files);
+  const primaryVersions = minecraftVersions.modMinecraftVersions(mod);
+  const files = [];
+  if (mod.file_path || extras.length) {
+    files.push({
+      loader: mod.loader,
+      minecraftVersions: primaryVersions,
+      environment: mod.environment,
+    });
+  }
+  for (const extra of extras) {
+    files.push({
+      loader: extra.loader || mod.loader,
+      minecraftVersions: Array.isArray(extra.minecraftVersions) && extra.minecraftVersions.length
+        ? extra.minecraftVersions
+        : primaryVersions,
+      environment: extra.environment || mod.environment,
+    });
+  }
+  return files;
+}
+
 function compatibleWithServer(mod, server) {
   if (!server || server.kind === 'remote' || server.kind === 'bedrock_connect') return false;
   const javaMod = catalogModMeta.isJavaMod(mod);
@@ -28,6 +64,10 @@ function compatibleWithServer(mod, server) {
     if (!javaMod) return false;
     const loaderId = serverLoaderId(server);
     if (!loaderSupportsMods(loaderId)) return false;
+    const files = filesFromMod(mod);
+    if (files.length) {
+      return files.some((file) => fileCompatibleWithServer(file, server));
+    }
     const versionOk = minecraftVersions.supportsMinecraftVersion(
       minecraftVersions.modMinecraftVersions(mod),
       minecraftVersions.serverMinecraftVersion(server)
@@ -40,6 +80,8 @@ function compatibleWithServer(mod, server) {
 
 module.exports = {
   compatibleWithServer,
+  fileCompatibleWithServer,
+  filesFromMod,
   loadersCompatible,
   loaderSupportsMods,
   serverLoaderId,

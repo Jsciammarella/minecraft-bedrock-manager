@@ -444,6 +444,40 @@ versionRange="[13.0.8,)"
     { edition: 'java', loader: 'fabric', minecraft_versions: JSON.stringify(['1.21.1']) },
     { kind: 'java', loader_provider_id: 'fabric', minecraft_version: '1.21.1' }
   ), true);
+  assert.equal(modCompatibility.compatibleWithServer(
+    {
+      edition: 'java',
+      loader: 'neoforge',
+      file_path: '/tmp/neoforge-old.jar',
+      minecraft_versions: JSON.stringify(['1.20.1']),
+      extra_files: JSON.stringify([{
+        path: '/tmp/fabric-new.jar',
+        name: 'fabric-new.jar',
+        loader: 'fabric',
+        minecraftVersions: ['1.21.1'],
+        environment: 'both',
+      }]),
+    },
+    { kind: 'java', loader_provider_id: 'fabric', minecraft_version: '1.21.1' }
+  ), true);
+  const modArchives = require('../server/services/modArchives');
+  const serialized = JSON.parse(modArchives.serializeExtraFiles([{
+    path: '/tmp/fabric-new.jar',
+    name: 'fabric-new.jar',
+    loader: 'fabric',
+    minecraftVersions: ['1.21.1'],
+    sha256: 'abc',
+  }]));
+  assert.equal(serialized[0].loader, 'fabric');
+  assert.deepEqual(serialized[0].minecraftVersions, ['1.21.1']);
+  const libraryUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/ModLibrary.jsx'), 'utf8');
+  assert.match(libraryUi, /Downloaded jars/);
+  assert.match(libraryUi, /Add jar files/);
+  const tileUi = fs.readFileSync(path.join(__dirname, '../frontend/src/components/ModTileTags.jsx'), 'utf8');
+  assert.match(tileUi, /slice\(0, 8\)/);
+  const detailUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/ServerDetail.jsx'), 'utf8');
+  assert.match(detailUi, /Re-evaluate/);
+  assert.match(detailUi, /Wrong version \/ launcher/);
   try { db.prepare("DELETE FROM gateways WHERE name IN ('Isolated Geyser', 'Missing provider', 'Offline no confirm', 'Remote floodgate', 'While disabled', 'Escape')").run(); } catch { /* ignore */ }
   assert.ok(gatewayRegistry.get('geyser'), 'bundled Geyser plugin should register');
   const geyserMeta = gatewayRegistry.list().find((item) => item.id === 'geyser');

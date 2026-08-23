@@ -59,6 +59,28 @@ export function supportsMinecraftVersion(versions, serverVersion) {
   return list.some((item) => listedSupportsServer(item, wanted));
 }
 
+export function loadersCompatible(modLoader, serverLoader, { allowUnknown = true } = {}) {
+  const mod = String(modLoader || 'any').toLowerCase();
+  const server = String(serverLoader || '').toLowerCase();
+  if (!server || server === 'vanilla' || server === 'any') return false;
+  if (!mod || mod === 'any' || mod === 'unknown') return allowUnknown;
+  if (server === 'neoforge' && (mod === 'neoforge' || mod === 'forge')) return true;
+  return mod === server;
+}
+
+export function modLoaderIds(mod) {
+  const fromFiles = (mod?.files || []).map((file) => file.loader);
+  const listed = Array.isArray(mod?.loaders) ? mod.loaders : [];
+  return [...new Set([...listed, ...fromFiles, mod?.loader]
+    .map((item) => String(item || '').toLowerCase())
+    .filter((item) => item && item !== 'any' && item !== 'unknown'))];
+}
+
+export function modVersionTags(mod) {
+  const fromFiles = (mod?.files || []).flatMap((file) => parseModMinecraftVersions(file));
+  return [...new Set([...parseModMinecraftVersions(mod), ...fromFiles])];
+}
+
 export function isModCompatibleWithServer(mod, server, { loaders = [] } = {}) {
   if (!server || server.kind === 'remote' || server.kind === 'bedrock_connect') return false;
   const javaMod = isJavaLibraryMod(mod);
@@ -68,14 +90,25 @@ export function isModCompatibleWithServer(mod, server, { loaders = [] } = {}) {
     const meta = loaders.find((item) => item.id === loaderId);
     if (meta?.supportsMods === false) return false;
     if (!loaders.length && loaderId === 'vanilla') return false;
-    const modLoader = String(mod.loader || 'any').toLowerCase();
-    const versionOk = supportsMinecraftVersion(parseModMinecraftVersions(mod), serverMinecraftVersion(server));
-    if (!modLoader || modLoader === 'any' || modLoader === 'unknown') {
-      if (!(meta ? meta.supportsMods !== false : loaderId !== 'vanilla')) return false;
-      return versionOk;
+    const files = Array.isArray(mod.files) && mod.files.length ? mod.files : null;
+    if (files) {
+      return files.some((file) => {
+        if (file.environment === 'client') return false;
+        const versionOk = supportsMinecraftVersion(
+          file.minecraftVersions?.length ? file.minecraftVersions : parseModMinecraftVersions(mod),
+          serverMinecraftVersion(server)
+        );
+        if (!versionOk) return false;
+        return loadersCompatible(file.loader || mod.loader, loaderId, { allowUnknown: true });
+      });
     }
-    if (loaderId === 'neoforge' && (modLoader === 'neoforge' || modLoader === 'forge')) return versionOk;
-    return modLoader === loaderId && versionOk;
+    const versionOk = supportsMinecraftVersion(parseModMinecraftVersions(mod), serverMinecraftVersion(server));
+    if (!versionOk) return false;
+    const ids = modLoaderIds(mod);
+    if (!ids.length) {
+      return meta ? meta.supportsMods !== false : loaderId !== 'vanilla';
+    }
+    return ids.some((id) => loadersCompatible(id, loaderId, { allowUnknown: false }));
   }
   return !javaMod;
 }

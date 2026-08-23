@@ -274,6 +274,12 @@ if (!serverModColumns.has('staged_path')) {
 if (!serverModColumns.has('previous_path')) {
   db.exec('ALTER TABLE server_mods ADD COLUMN previous_path TEXT');
 }
+if (!serverModColumns.has('installed_file')) {
+  db.exec('ALTER TABLE server_mods ADD COLUMN installed_file TEXT');
+}
+if (!serverModColumns.has('compatibility_override')) {
+  db.exec('ALTER TABLE server_mods ADD COLUMN compatibility_override INTEGER NOT NULL DEFAULT 0');
+}
 
 ensureServerColumn('loader_provider_id', 'TEXT');
 ensureServerColumn('loader_version', 'TEXT');

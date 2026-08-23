@@ -398,12 +398,6 @@ async function downloadMod(slug, body = {}) {
   }
 
   const requestedLoader = catalogModMeta.normalizeLoader(body.loader, javaPolicy ? 'java' : 'bedrock');
-  if (javaPolicy && selectedFiles.length && (!requestedLoader || requestedLoader === 'any' || requestedLoader === 'unknown')) {
-    throw Object.assign(new Error('Select a Java launcher before downloading'), {
-      status: 400,
-      code: 'LOADER_REQUIRED',
-    });
-  }
 
   const downloaded = await entry.provider.download(projectId, selectedFiles, {
     slug,

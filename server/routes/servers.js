@@ -300,7 +300,8 @@ router.post('/:id/java/dependencies/resolve', async (req, res) => {
     }
     const javaModDependencies = require('../services/javaModDependencies');
     const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
-    const result = await javaModDependencies.resolve(server, ids);
+    const overrides = req.body?.overrides && typeof req.body.overrides === 'object' ? req.body.overrides : {};
+    const result = await javaModDependencies.resolve(server, ids, overrides);
     serverManager.invalidateServerCache(server.id);
     const updated = serverManager.getServer(server.id);
     res.json({
@@ -353,7 +354,10 @@ router.post('/:id/java/mods', (req, res) => {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
     const javaModInstall = require('../services/javaModInstall');
-    const result = javaModInstall.install(server, req.body?.modId);
+    const result = javaModInstall.install(server, req.body?.modId, {
+      fileSha256: req.body?.fileSha256,
+      override: false,
+    });
     if (result.restartRequired) {
       serverManager.markRestartRequired(server.id, 'Java mods changed');
     }
@@ -373,6 +377,29 @@ router.delete('/:id/java/mods/:installationId', (req, res) => {
       serverManager.markRestartRequired(server.id, 'Java mods changed');
     }
     res.json({ ...result, mods: javaModInstall.list(server.id) });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+router.post('/:id/java/dependencies/reevaluate', async (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    if (server.kind !== 'java') return res.status(400).json({ error: 'Not a Java server' });
+    const javaModDependencies = require('../services/javaModDependencies');
+    javaModDependencies.pruneResolved(server);
+    if (server.status === 'running' || server.status === 'starting') {
+      await serverManager.restartServer(server.id);
+    } else if (server.status !== 'creating') {
+      await serverManager.startServer(server.id);
+    }
+    serverManager.invalidateServerCache(server.id);
+    const updated = serverManager.getServer(server.id);
+    res.json({
+      success: true,
+      missingModDependencies: javaModDependencies.publicState(updated),
+    });
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message });
   }

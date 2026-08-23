@@ -601,6 +601,31 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
     assert.ok(fs.existsSync(row.file_path));
     assert.equal(JSON.parse(row.metadata_json).providerId, 'curseforge-java');
 
+    const merged = await catalogLibrary.importDownloadPlan({
+      project: {
+        name: 'Sodium',
+        slug: 'sodium-catalog',
+        edition: 'java',
+        source: 'curseforge',
+        providerId: 'curseforge-java',
+        curseforgeId: 99,
+        artifactType: 'mod',
+      },
+      files: [{
+        url: 'https://edge.forgecdn.net/files/sodium-neoforge.jar',
+        fileName: 'sodium-neoforge.jar',
+        fileId: 12,
+        loader: 'neoforge',
+        minecraftVersions: ['1.21.4'],
+        environment: 'both',
+        displayName: '0.6.1',
+      }],
+    }, { allowHosts: ['edge.forgecdn.net'], providerId: 'curseforge-java' });
+    assert.equal(merged.success, true);
+    assert.equal(merged.merged, true);
+    assert.equal(merged.modId, imported.modId);
+    assert.equal(db.prepare('SELECT COUNT(*) as c FROM mods WHERE curseforge_id = ?').get('99').c, 1);
+
     const originalRename = fs.renameSync;
     fs.renameSync = () => {
       const err = new Error('EXDEV: cross-device link not permitted');
@@ -746,22 +771,12 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
     curseforgeId: 41,
     edition: 'java',
   });
-  assert.equal(javaSinglePicker.needsSelection, true, 'Java downloads should ask for files and a launcher');
-  await assert.rejects(
-    () => catalogService.downloadMod('server-mod', {
-      provider: 'curseforge-java',
-      curseforgeId: 41,
-      edition: 'java',
-      files: ['41'],
-    }),
-    (err) => err.code === 'LOADER_REQUIRED'
-  );
+  assert.equal(javaSinglePicker.needsSelection, true, 'Java downloads should ask which files to keep');
   const serverResult = await catalogService.downloadMod('server-mod', {
     provider: 'curseforge-java',
     curseforgeId: 41,
     edition: 'java',
     files: ['41'],
-    loader: 'fabric',
   });
   assert.equal(serverResult.success, true);
 
@@ -807,6 +822,8 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   assert.match(frontendSource, /Client Side Only/);
   assert.match(frontendSource, /btn-client-only/);
   assert.match(frontendSource, /isClientOnlyProject/);
+  assert.doesNotMatch(frontendSource, /Select a Java launcher before downloading/);
+  assert.doesNotMatch(frontendSource, /selectedLoader/);
   assert.match(frontendSource, /All available Java files are marked client-only/);
   assert.match(frontendSource, /downloadable === false/);
   assert.match(frontendSource, /setDownloadModal\(null\)/);

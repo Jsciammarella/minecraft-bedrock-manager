@@ -160,6 +160,49 @@ router.put('/:id', (req, res) => {
   });
 });
 
+router.post('/:id/files', (req, res) => {
+  upload.fields([
+    { name: 'files', maxCount: 20 },
+    { name: 'file', maxCount: 20 },
+  ])(req, res, async (uploadError) => {
+    if (uploadError) {
+      const tooLarge = uploadError.code === 'LIMIT_FILE_SIZE';
+      return res.status(tooLarge ? 413 : 400).json({
+        error: tooLarge ? 'The selected file exceeds the 1 GB upload limit.' : uploadError.message,
+      });
+    }
+    const files = collectedUploads(req);
+    try {
+      if (!files.length) return res.status(400).json({ error: 'No file uploaded' });
+      const result = await modManager.addFilesToMod(req.params.id, files, req.body);
+      res.json(result);
+    } catch (err) {
+      unlinkUploads(files);
+      res.status(err.status || 400).json({ error: err.message });
+    }
+  });
+});
+
+router.delete('/:id/files', async (req, res) => {
+  try {
+    const uninstallFromServers = req.query.uninstallFromAll === '1' || req.query.uninstallFromAll === 'true'
+      || req.body?.uninstallFromServers === true || req.body?.uninstallFromAll === true;
+    const result = await modManager.deleteModFile(req.params.id, {
+      sha256: req.body?.sha256 || req.query.sha256,
+      name: req.body?.name || req.query.name,
+      uninstallFromServers,
+    });
+    res.json(result || { success: true });
+  } catch (err) {
+    const status = err.status || 400;
+    res.status(status).json({
+      error: err.message,
+      code: err.code,
+      servers: err.servers || [],
+    });
+  }
+});
+
 router.get('/:id/thumbnail', async (req, res) => {
   try {
     const filePath = modManager.getThumbnailFilePath(req.params.id);
@@ -206,7 +249,10 @@ router.get('/installed/:serverId', async (req, res) => {
 // Install mod to server
 router.post('/:modId/install/:serverId', async (req, res) => {
   try {
-    await modManager.installModToServer(req.params.serverId, req.params.modId);
+    await modManager.installModToServer(req.params.serverId, req.params.modId, {
+      fileSha256: req.body?.fileSha256,
+      override: false,
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: err.message });

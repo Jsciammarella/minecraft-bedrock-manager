@@ -120,25 +120,59 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
       detail: { sha256: jarMeta.sha256 || primary.sha256 },
     });
 
-    const extraFiles = stored.slice(1).map((file) => ({
-      path: file.path,
+    const javaModFiles = require('./javaModFiles');
+    const records = stored.map((file) => javaModFiles.inspectPath(file.path, {
       name: file.name,
       size: file.size,
-      kind: packFiles.typeFromExt(file.name || file.path, 'mod'),
+      sha256: file.sha256,
+      loader: resolvedCatalogLoader({
+        fileLoader: file.loader,
+        requestedLoader,
+      }),
+      minecraftVersions: file.minecraftVersions,
+      environment: file.environment,
+      curseforgeFileId: file.fileId || file.id,
+      version: file.displayName || file.version,
     }));
-    const extraJson = extraFiles.length ? require('./modArchives').serializeExtraFiles(extraFiles) : null;
-    const fileSize = stored.reduce((sum, file) => sum + (file.size || 0), 0);
+    const existing = javaModFiles.findExistingLibraryMod(project);
+    if (existing) {
+      if (!existing.curseforge_id && project.curseforgeId != null && project.curseforgeId !== '') {
+        try {
+          db.prepare('UPDATE mods SET curseforge_id = ? WHERE id = ?').run(String(project.curseforgeId), existing.id);
+        } catch {
+          /* unique conflict is fine; the row already matches */
+        }
+      }
+      const { added } = javaModFiles.appendFiles(existing, records);
+      pluginAudit.record('catalog.library.merge', {
+        targetType: 'mod',
+        targetId: String(existing.id),
+        detail: {
+          slug: existing.slug,
+          added: added.map((file) => file.name),
+          providerId: providerId || project.providerId,
+        },
+      });
+      logger.info(`Added ${added.length} file(s) to library mod ${existing.slug}`);
+      return {
+        success: true,
+        merged: true,
+        modId: existing.id,
+        name: existing.name,
+        files: stored.map((file) => file.name),
+        added: added.map((file) => file.name),
+      };
+    }
+
+    const primaryRecord = records[0];
     const loader = resolvedCatalogLoader({
       jarLoader: jarMeta.loader,
       fileLoader: primary.loader,
       requestedLoader,
-    });
-    const environment = primary.environment && primary.environment !== 'unknown'
-      ? primary.environment
+    }) || primaryRecord.loader;
+    const environment = primaryRecord.environment && primaryRecord.environment !== 'unknown'
+      ? primaryRecord.environment
       : (jarMeta.environment || 'unknown');
-    const minecraftVersions = (primary.minecraftVersions && primary.minecraftVersions.length)
-      ? primary.minecraftVersions
-      : (jarMeta.minecraftVersions || []);
     const warning = [
       jarMeta.warning || 'Java mods are executable code. Only install mods you trust.',
       environment === 'client' ? 'This file is marked client-only and may not load on a dedicated server.' : '',
@@ -166,14 +200,14 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
       project.author || 'Unknown',
       project.thumbnail || '',
       primary.path,
-      fileSize,
-      extraJson,
+      primary.size || 0,
+      null,
       project.curseforgeId != null ? String(project.curseforgeId) : '',
       project.source || 'curseforge',
       project.edition || 'java',
       project.artifactType || 'mod',
       loader,
-      JSON.stringify(minecraftVersions),
+      JSON.stringify(primaryRecord.minecraftVersions || []),
       environment,
       json(jarMeta.dependencies || []),
       project.websiteUrl || '',
@@ -182,6 +216,7 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
       JSON.stringify(metadata),
       warning
     );
+    javaModFiles.persistFiles(result.lastInsertRowid, records);
     pluginAudit.record('catalog.library.insert', {
       targetType: 'mod',
       targetId: String(result.lastInsertRowid),
@@ -201,6 +236,35 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
       files: stored.map((file) => file.name),
     };
   } catch (err) {
+    const unique = /UNIQUE constraint failed/i.test(String(err.message || ''));
+    if (unique) {
+      const javaModFiles = require('./javaModFiles');
+      const existing = javaModFiles.findExistingLibraryMod(plan?.project || {});
+      if (existing) {
+        try {
+          const records = stored.map((file) => javaModFiles.inspectPath(file.path, {
+            name: file.name,
+            size: file.size,
+            sha256: file.sha256,
+            loader: file.loader,
+            minecraftVersions: file.minecraftVersions,
+            environment: file.environment,
+            curseforgeFileId: file.fileId || file.id,
+            version: file.displayName || file.version,
+          }));
+          javaModFiles.appendFiles(existing, records);
+          return {
+            success: true,
+            merged: true,
+            modId: existing.id,
+            name: existing.name,
+            files: stored.map((file) => file.name),
+          };
+        } catch {
+          /* fall through to cleanup */
+        }
+      }
+    }
     for (const file of stored) {
       try { if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path); } catch { /* ignore */ }
     }

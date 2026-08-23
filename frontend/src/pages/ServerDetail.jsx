@@ -106,6 +106,9 @@ function ServerDetail() {
   const [selectedDepIds, setSelectedDepIds] = useState([]);
   const [resolvingDeps, setResolvingDeps] = useState(false);
   const [depMessage, setDepMessage] = useState('');
+  const [depOverrides, setDepOverrides] = useState({});
+  const [depMismatches, setDepMismatches] = useState({});
+  const [reevaluatingDeps, setReevaluatingDeps] = useState(false);
   const depsRef = useRef(null);
   const terminalRef = useRef(null);
   const terminalOutput = (serverOutputs[String(id)] || []).slice(-200);
@@ -144,6 +147,11 @@ function ServerDetail() {
     setSelectedDepIds(required.map((item) => item.id));
     setDepMessage(missingModDependenciesOf(server)?.message || '');
   }, [id, missingDepKey]);
+
+  useEffect(() => {
+    setDepMismatches({});
+    setDepOverrides({});
+  }, [id]);
 
   useEffect(() => {
     if (location.hash === '#dependencies' && depsRef.current) {
@@ -336,7 +344,14 @@ function ServerDetail() {
     setDepMessage('');
     setError('');
     try {
-      const res = await serverApi.resolveJavaDependencies(id, selectedDepIds);
+      const res = await serverApi.resolveJavaDependencies(id, selectedDepIds, depOverrides);
+      const mismatches = {};
+      for (const item of res.data?.results || []) {
+        if (item.status === 'mismatch' && item.files?.length) {
+          mismatches[item.id] = item;
+        }
+      }
+      setDepMismatches(mismatches);
       setDepMessage(res.data?.message || (res.data?.unresolved?.length
         ? `Could not install: ${res.data.unresolved.join(', ')}`
         : 'Dependencies installed. Start the server again.'));
@@ -346,6 +361,23 @@ function ServerDetail() {
       setError(err.response?.data?.error || err.message || 'Could not resolve dependencies');
     } finally {
       setResolvingDeps(false);
+    }
+  };
+
+  const handleReevaluateDependencies = async () => {
+    if (reevaluatingDeps) return;
+    setReevaluatingDeps(true);
+    setDepMessage('');
+    setError('');
+    try {
+      await serverApi.reevaluateJavaDependencies(id);
+      setDepMessage('Re-evaluating dependencies. The server is starting.');
+      await loadServer();
+      await refresh();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Could not re-evaluate dependencies');
+    } finally {
+      setReevaluatingDeps(false);
     }
   };
 
@@ -1072,40 +1104,91 @@ function ServerDetail() {
               <div className={`space-y-2 ${missingDepItems.length > 10 ? 'max-h-[22rem] overflow-y-auto pr-1' : ''}`}>
                 {missingDepItems.map((dep) => {
                   const checked = selectedDepIds.includes(dep.id);
+                  const mismatch = depMismatches[dep.id];
+                  const override = depOverrides[dep.id];
                   return (
-                    <label key={`${dep.optional ? 'opt' : 'req'}-${dep.id}`} className="flex items-start gap-3 p-2 rounded-lg bg-mc-darker">
-                      <input
-                        type="checkbox"
-                        className="mt-1"
-                        checked={checked}
-                        onChange={() => {
-                          setSelectedDepIds((current) => (
-                            current.includes(dep.id)
-                              ? current.filter((item) => item !== dep.id)
-                              : [...current, dep.id]
-                          ));
-                        }}
-                      />
-                      <span>
-                        <span className="text-sm text-white">{dep.displayName || dep.id}</span>
-                        <span className="block text-xs text-mc-textMuted">
-                          {dep.optional ? 'Optional' : 'Required'}
-                          {dep.version && dep.version !== '*' ? ` • ${dep.version}` : ''}
+                    <div key={`${dep.optional ? 'opt' : 'req'}-${dep.id}`} className="p-2 rounded-lg bg-mc-darker space-y-2">
+                      <label className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={checked}
+                          onChange={() => {
+                            setSelectedDepIds((current) => (
+                              current.includes(dep.id)
+                                ? current.filter((item) => item !== dep.id)
+                                : [...current, dep.id]
+                            ));
+                          }}
+                        />
+                        <span>
+                          <span className="text-sm text-white">{dep.displayName || dep.id}</span>
+                          <span className="block text-xs text-mc-textMuted">
+                            {dep.optional ? 'Optional' : 'Required'}
+                            {dep.version && dep.version !== '*' ? ` • ${dep.version}` : ''}
+                          </span>
                         </span>
-                      </span>
-                    </label>
+                      </label>
+                      {mismatch?.files?.length > 0 && (
+                        <div className="ml-7 space-y-2">
+                          <p className="text-xs text-yellow-300">
+                            {mismatch.warning || 'No matching version/launcher file was found. Installing one anyway may not work.'}
+                          </p>
+                          <select
+                            className="input text-sm"
+                            value={override?.sha256 || override?.fileId || override?.id || ''}
+                            onChange={(e) => {
+                              const chosen = mismatch.files.find((file) => (
+                                String(file.sha256 || file.fileId || file.id) === e.target.value
+                              ));
+                              setDepOverrides((current) => ({
+                                ...current,
+                                [dep.id]: chosen ? {
+                                  ...chosen,
+                                  source: mismatch.source,
+                                  modId: mismatch.modId,
+                                  project: mismatch.project,
+                                  fileId: chosen.fileId || chosen.id,
+                                  allowMismatch: true,
+                                } : undefined,
+                              }));
+                            }}
+                          >
+                            <option value="">Select a file to install anyway</option>
+                            {mismatch.files.map((file) => (
+                              <option key={file.sha256 || file.fileId || file.id || file.name} value={file.sha256 || file.fileId || file.id}>
+                                {file.name}
+                                {file.loader ? ` • ${file.loader}` : ''}
+                                {(file.minecraftVersions || []).length ? ` • ${(file.minecraftVersions || []).join(', ')}` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>
-              <button
-                type="button"
-                onClick={handleResolveDependencies}
-                disabled={resolvingDeps || selectedDepIds.length === 0}
-                className="btn btn-warning mt-4"
-              >
-                {resolvingDeps ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                {resolvingDeps ? 'Resolving...' : 'Resolve dependencies'}
-              </button>
+              <div className="flex flex-wrap items-center gap-3 mt-4">
+                <button
+                  type="button"
+                  onClick={handleResolveDependencies}
+                  disabled={resolvingDeps || selectedDepIds.length === 0}
+                  className="btn btn-warning"
+                >
+                  {resolvingDeps ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                  {resolvingDeps ? 'Resolving...' : 'Resolve dependencies'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleReevaluateDependencies}
+                  disabled={reevaluatingDeps || resolvingDeps || server.status === 'creating'}
+                  className="btn btn-secondary"
+                >
+                  {reevaluatingDeps ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
+                  {reevaluatingDeps ? 'Re-evaluating...' : 'Re-evaluate'}
+                </button>
+              </div>
             </div>
           )}
 
@@ -1301,8 +1384,9 @@ function ServerDetail() {
                 ) : (
                   server.installedMods.map(mod => {
                     const thumb = modThumbnailSrc(mod);
+                    const overridden = Boolean(mod.compatibilityOverride || mod.compatibility_override);
                     return (
-                    <div key={mod.id} className="flex items-center gap-3 p-2 bg-mc-darker rounded-lg">
+                    <div key={mod.id} className={`flex items-center gap-3 p-2 rounded-lg ${overridden ? 'bg-yellow-500/15 border border-yellow-500/40' : 'bg-mc-darker'}`}>
                       <div className="w-8 h-8 bg-mc-surfaceLight rounded flex items-center justify-center flex-shrink-0 overflow-hidden">
                         {thumb ? (
                           <img src={thumb} alt="" className="mod-thumbnail-img" />
@@ -1312,7 +1396,9 @@ function ServerDetail() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-white truncate">{mod.name}</p>
-                        <p className="text-xs text-mc-textMuted capitalize">{mod.type}</p>
+                        <p className={`text-xs capitalize ${overridden ? 'text-yellow-300' : 'text-mc-textMuted'}`}>
+                          {overridden ? 'Wrong version / launcher' : (mod.type || '').replace('_', ' ')}
+                        </p>
                       </div>
                       <button
                         onClick={() => handleRemoveMod(mod)}

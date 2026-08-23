@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { modApi, serverApi } from '../services/api';
+import { modApi } from '../services/api';
 import ModTileTags from '../components/ModTileTags';
 import CatalogVersionFilter from '../components/CatalogVersionFilter';
-import { loaderDisplayName } from '../utils/modCompatibility';
+import { loaderDisplayName, modLoaderIds, modVersionTags } from '../utils/modCompatibility';
 import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
 import { useApi } from '../context/ApiContext';
 import {
@@ -146,8 +146,6 @@ function ModCatalog() {
   const [downloadModal, setDownloadModal] = useState(null);
   const [filePicker, setFilePicker] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
-  const [selectedLoader, setSelectedLoader] = useState('');
-  const [javaProviders, setJavaProviders] = useState([]);
   const [multiFileMode, setMultiFileMode] = useState('manual');
   const [downloading, setDownloading] = useState(false);
   const [expandedMod, setExpandedMod] = useState(null);
@@ -165,17 +163,11 @@ function ModCatalog() {
   useEffect(() => {
     loadMultiFileMode();
     refreshProviders({ search: true });
-    serverApi.javaProviders()
-      .then((res) => setJavaProviders(res.data?.providers || []))
-      .catch(() => setJavaProviders([]));
   }, []);
 
   useEffect(() => {
     const onPluginsChanged = () => {
       refreshProviders({ search: true });
-      serverApi.javaProviders()
-        .then((res) => setJavaProviders(res.data?.providers || []))
-        .catch(() => setJavaProviders([]));
     };
     window.addEventListener('mbm-plugins-changed', onPluginsChanged);
     return () => window.removeEventListener('mbm-plugins-changed', onPluginsChanged);
@@ -361,23 +353,15 @@ function ModCatalog() {
       setError('Select at least one file to download');
       return;
     }
-    const javaPicker = Boolean(filePicker && isJavaCatalogMod(filePicker.mod));
-    if (javaPicker && (!selectedLoader || !javaProviders.some((item) => item.id === selectedLoader))) {
-      setError(javaProviders.length ? 'Select a Java launcher before downloading' : 'No Java launcher plugins are enabled');
-      return;
-    }
     setDownloading(true);
     setError('');
     try {
-      const res = await modApi.catalogDownload(mod, undefined, files, {
-        loader: javaPicker ? selectedLoader : undefined,
-      });
+      const res = await modApi.catalogDownload(mod, undefined, files, {});
       if (res.data?.downloadState === 'blocked' && res.data?.blockedReason === 'client-only') {
         applyAvailability(mod, res.data);
         setDownloadModal(null);
         setFilePicker(null);
         setSelectedFiles([]);
-        setSelectedLoader('');
         setWarning('All available Java files are marked client-only and cannot run on a dedicated server.');
         return;
       }
@@ -394,22 +378,21 @@ function ModCatalog() {
           setDownloadModal(null);
           setFilePicker(null);
           setSelectedFiles([]);
-          setSelectedLoader('');
           setWarning('All available Java files are marked client-only and cannot run on a dedicated server.');
           return;
         }
         applyAvailability(mod, res.data);
         setFilePicker({ mod, files: choices, warning: res.data.warning });
         setSelectedFiles(defaultSelectedCatalogFileIds(choices));
-        setSelectedLoader('');
         setDownloadModal(null);
         return;
       }
-      setSuccess(`"${mod.name}" downloaded to mod library!`);
+      setSuccess(res.data?.merged
+        ? `"${mod.name}" files were added to the existing library mod.`
+        : `"${mod.name}" downloaded to mod library!`);
       setDownloadModal(null);
       setFilePicker(null);
       setSelectedFiles([]);
-      setSelectedLoader('');
       setExpandedMod(null);
       setTimeout(() => setSuccess(''), 4000);
     } catch (err) {
@@ -773,7 +756,6 @@ function ModCatalog() {
             if (!downloading) {
               setFilePicker(null);
               setSelectedFiles([]);
-              setSelectedLoader('');
             }
           }}
         >
@@ -833,33 +815,12 @@ function ModCatalog() {
                 );
               })}
             </div>
-            {isJavaCatalogMod(filePicker.mod) && (
-              <div
-                className={`grid gap-2 mb-4 ${
-                  javaProviders.length <= 1 ? 'grid-cols-1' : javaProviders.length === 2 ? 'grid-cols-2' : 'grid-cols-3'
-                }`}
-              >
-                {javaProviders.length === 0 ? (
-                  <p className="text-xs text-amber-300">No Java launcher plugins are enabled.</p>
-                ) : javaProviders.map((provider) => (
-                  <button
-                    key={provider.id}
-                    type="button"
-                    onClick={() => setSelectedLoader(provider.id)}
-                    className={`btn w-full ${selectedLoader === provider.id ? 'btn-primary' : 'btn-secondary'}`}
-                  >
-                    {provider.name}
-                  </button>
-                ))}
-              </div>
-            )}
             <div className="flex items-center gap-3">
               <button
                 onClick={() => handleDownload(selectableCatalogFiles(filePicker.files).filter((file) => selectedFiles.includes(file.id)).map((file) => file.id))}
                 disabled={
                   downloading
                   || selectableCatalogFiles(filePicker.files).filter((file) => selectedFiles.includes(file.id)).length < 1
-                  || (isJavaCatalogMod(filePicker.mod) && (!selectedLoader || javaProviders.length === 0))
                 }
                 className="btn btn-primary flex-1"
               >
@@ -879,7 +840,6 @@ function ModCatalog() {
                 onClick={() => {
                   setFilePicker(null);
                   setSelectedFiles([]);
-                  setSelectedLoader('');
                 }}
                 className="btn btn-secondary"
                 disabled={downloading}
@@ -1009,11 +969,14 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
       </div>
       <ModTileTags>
         {getTypeBadge(mod.type)}
-        {getSourceBadge(mod.source, mod.fileKind)}
+        {getSourceBadge(mod.source, mod.fileKind, mod)}
         {mod.edition === 'java' && <span className="badge badge-warning">Java</span>}
-        {mod.edition === 'java' && loaderDisplayName(mod.loader) && (
-          <span className="badge badge-info">{loaderDisplayName(mod.loader)}</span>
-        )}
+        {modLoaderIds(mod).map((id) => (
+          loaderDisplayName(id) ? <span key={id} className="badge badge-info">{loaderDisplayName(id)}</span> : null
+        ))}
+        {modVersionTags(mod).slice(0, 4).map((version) => (
+          <span key={version} className="badge badge-success">{version}</span>
+        ))}
       </ModTileTags>
 
       <h3

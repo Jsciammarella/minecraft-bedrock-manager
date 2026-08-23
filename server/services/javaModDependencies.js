@@ -439,26 +439,46 @@ async function catalogIsReachable() {
   }
 }
 
-function libraryMatch(dep, server) {
+function libraryCandidates(dep) {
   const id = depKey(dep);
   const rows = db.prepare('SELECT * FROM mods WHERE edition = ?').all('java');
-  const matches = rows.filter((row) => {
+  return rows.filter((row) => {
     const meta = parseJson(row.metadata_json, {});
     const names = [row.name, row.slug, meta.modId, meta.id].map((item) => String(item || '').toLowerCase());
     return names.includes(id) || names.some((name) => name.includes(id));
   });
-  return matches.find((row) => {
-    let loader = row.loader;
-    try {
-      if (row.file_path && fs.existsSync(row.file_path)) {
-        const info = javaModMetadata.inspectJar(row.file_path);
-        if (info.loader && info.loader !== 'any' && info.loader !== 'unknown') loader = info.loader;
-      }
-    } catch {
-      /* keep declared loader */
-    }
-    return modCompatibility.compatibleWithServer({ ...row, loader }, server);
-  }) || null;
+}
+
+function libraryMatch(dep, server) {
+  const javaModFiles = require('./javaModFiles');
+  for (const row of libraryCandidates(dep)) {
+    const file = javaModFiles.bestFileForServer(row, server);
+    if (file) return { mod: row, file };
+  }
+  return null;
+}
+
+function libraryMismatch(dep) {
+  const javaModFiles = require('./javaModFiles');
+  const candidates = libraryCandidates(dep);
+  if (!candidates.length) return null;
+  const mod = candidates[0];
+  return {
+    mod,
+    files: javaModFiles.listFiles(mod).filter((file) => file.environment !== 'client'),
+  };
+}
+
+function publicMismatchFile(file) {
+  return {
+    name: file.name || file.fileName,
+    sha256: file.sha256 || '',
+    loader: file.loader || 'unknown',
+    minecraftVersions: file.minecraftVersions || [],
+    environment: file.environment || 'unknown',
+    id: file.id || file.fileId || file.sha256 || file.name,
+    fileId: file.fileId || file.id,
+  };
 }
 
 function removeIncompatibleJars(server, dep) {
@@ -500,7 +520,7 @@ function removeIncompatibleJars(server, dep) {
     } catch {
       /* keep declared loader */
     }
-    const dest = path.join(modsDir, path.basename(mod.filePath || ''));
+    const dest = path.join(modsDir, javaModInstall.destName({ file_path: mod.filePath }, { installed_file: item.installedFile }));
     const destMissing = Boolean(mod.filePath) && !fs.existsSync(dest);
     if (!destMissing && modCompatibility.loadersCompatible(loader, server.loader_provider_id, { allowUnknown: false })) {
       continue;
@@ -523,9 +543,9 @@ async function searchCatalog(dep, server, { loader } = {}) {
   return [...(result.results || [])].sort((a, b) => scoreProject(b, dep, server) - scoreProject(a, dep, server));
 }
 
-async function installCatalogFile(server, project, file) {
+async function installCatalogFile(server, project, file, { override = false } = {}) {
   const catalogService = require('./catalogService');
-  const loader = catalogModMeta.normalizeLoader(server.loader_provider_id, 'java');
+  const loader = catalogModMeta.normalizeLoader(file.loader || server.loader_provider_id, 'java');
   const downloaded = await catalogService.downloadMod(project.slug || String(project.id), {
     provider: project.providerId,
     source: project.source,
@@ -536,23 +556,63 @@ async function installCatalogFile(server, project, file) {
   });
   if (!downloaded?.modId) return { status: 'missing', error: 'Catalog download did not return a library mod' };
   const row = db.prepare('SELECT * FROM mods WHERE id = ?').get(downloaded.modId);
-  const check = javaModInstall.validate(server, row);
+  const javaModFiles = require('./javaModFiles');
+  const chosen = javaModFiles.bestFileForServer(row, server, {
+    sha256: file.sha256,
+    allowMismatch: override,
+  });
+  const check = javaModInstall.validate(server, row, { file: chosen, override });
   if (!check.ok) return { status: 'missing', error: check.error, modId: downloaded.modId };
   const already = db.prepare('SELECT id FROM server_mods WHERE server_id = ? AND mod_id = ?')
     .get(server.id, downloaded.modId);
-  if (!already) javaModInstall.install(server, downloaded.modId);
+  if (!already) javaModInstall.install(server, downloaded.modId, { fileSha256: chosen?.sha256, override });
   return { status: 'installed', name: downloaded.name, modId: downloaded.modId };
 }
 
-async function resolveOne(server, dep) {
+async function resolveOne(server, dep, overrides = {}) {
   removeIncompatibleJars(server, dep);
+  const override = overrides[depKey(dep)] || null;
+  if (override?.modId && (override.sha256 || override.name || override.allowMismatch)) {
+    const row = db.prepare('SELECT * FROM mods WHERE id = ?').get(override.modId);
+    if (row) {
+      const already = db.prepare('SELECT id FROM server_mods WHERE server_id = ? AND mod_id = ?')
+        .get(server.id, row.id);
+      if (!already) {
+        javaModInstall.install(server, row.id, { fileSha256: override.sha256 || override.name, override: true });
+      }
+      return { id: dep.id, status: 'installed', name: row.name, override: true };
+    }
+  }
+  if (override?.source === 'catalog' && override.project && (override.fileId || override.id)) {
+    const installed = await installCatalogFile(server, override.project, {
+      id: override.fileId || override.id,
+      fileId: override.fileId || override.id,
+      loader: override.loader,
+      sha256: override.sha256,
+    }, { override: true });
+    if (installed.status === 'installed') return { id: dep.id, ...installed, override: true };
+  }
+
   const existing = libraryMatch(dep, server);
   if (existing) {
     const already = db.prepare('SELECT id FROM server_mods WHERE server_id = ? AND mod_id = ?')
-      .get(server.id, existing.id);
-    if (already) return { id: dep.id, status: 'installed', name: existing.name };
-    javaModInstall.install(server, existing.id);
-    return { id: dep.id, status: 'installed', name: existing.name };
+      .get(server.id, existing.mod.id);
+    if (already) return { id: dep.id, status: 'installed', name: existing.mod.name };
+    javaModInstall.install(server, existing.mod.id, { fileSha256: existing.file?.sha256 });
+    return { id: dep.id, status: 'installed', name: existing.mod.name };
+  }
+
+  const mismatch = libraryMismatch(dep);
+  if (mismatch?.files?.length) {
+    return {
+      id: dep.id,
+      status: 'mismatch',
+      name: mismatch.mod.name,
+      source: 'library',
+      modId: mismatch.mod.id,
+      warning: 'None of the downloaded files match this server Minecraft version or launcher. Installing one anyway may not work.',
+      files: mismatch.files.map(publicMismatchFile),
+    };
   }
 
   const catalogService = require('./catalogService');
@@ -578,17 +638,38 @@ async function resolveOne(server, dep) {
         .filter((file) => fileMatchesServer(file, server, { allowUnknown: true }))
         .sort((a, b) => scoreFile(b, server) - scoreFile(a, server));
     }
-    if (!selectable.length) continue;
-    const installed = await installCatalogFile(server, project, selectable[0]);
-    if (installed.status === 'installed') {
-      removeIncompatibleJars(server, dep);
-      return { id: dep.id, ...installed };
+    if (selectable.length) {
+      const installed = await installCatalogFile(server, project, selectable[0]);
+      if (installed.status === 'installed') {
+        removeIncompatibleJars(server, dep);
+        return { id: dep.id, ...installed };
+      }
+      continue;
+    }
+    const overrideFiles = listed.filter((file) => file.environment !== 'client');
+    if (overrideFiles.length) {
+      return {
+        id: dep.id,
+        status: 'mismatch',
+        name: project.name,
+        source: 'catalog',
+        project: {
+          slug: project.slug,
+          id: project.id,
+          providerId: project.providerId,
+          source: project.source,
+          curseforgeId: project.curseforgeId || project.id,
+          name: project.name,
+        },
+        warning: 'A catalog match was found, but none of its files match this server Minecraft version or launcher. Installing one anyway may not work.',
+        files: overrideFiles.map(publicMismatchFile),
+      };
     }
   }
   return { id: dep.id, status: 'missing', error: `No ${server.loader_provider_id || 'compatible'} catalog file` };
 }
 
-async function resolve(server, selectedIds) {
+async function resolve(server, selectedIds, overrides = {}) {
   const stored = readStored(server);
   const catalogAvailable = await catalogIsReachable();
   const wantedIds = new Set((selectedIds || []).map((id) => String(id).toLowerCase()));
@@ -597,7 +678,12 @@ async function resolve(server, selectedIds) {
   if (!selected.length) {
     throw Object.assign(new Error('Select at least one dependency to resolve'), { status: 400 });
   }
-  if (!catalogAvailable) {
+  const overrideMap = {};
+  for (const [key, value] of Object.entries(overrides || {})) {
+    overrideMap[String(key).toLowerCase()] = value;
+  }
+  const hasOverrides = Object.keys(overrideMap).length > 0;
+  if (!catalogAvailable && !hasOverrides && !selected.some((dep) => libraryMatch(dep, server) || libraryMismatch(dep))) {
     const next = {
       ...stored,
       catalogAvailable: false,
@@ -611,7 +697,7 @@ async function resolve(server, selectedIds) {
   const results = [];
   for (const dep of selected) {
     try {
-      results.push(await resolveOne(server, dep));
+      results.push(await resolveOne(server, dep, overrideMap));
     } catch (err) {
       logger.warn(`Could not resolve ${dep.id} for server ${server.id}: ${err.message}`);
       results.push({ id: dep.id, status: 'missing', error: err.message });
@@ -622,13 +708,16 @@ async function resolve(server, selectedIds) {
   const required = stored.required.filter((dep) => !installedIds.has(depKey(dep)));
   const optional = stored.optional.filter((dep) => !installedIds.has(depKey(dep)));
   const unresolved = results.filter((item) => item.status !== 'installed');
+  const mismatches = results.filter((item) => item.status === 'mismatch');
   const next = {
     required,
     optional,
-    catalogAvailable: true,
-    message: unresolved.length
-      ? `Could not automatically install: ${unresolved.map((item) => item.id).join(', ')}. Download them into the library if they are not in the catalog.`
-      : (required.length ? 'There are missing dependencies.' : ''),
+    catalogAvailable,
+    message: mismatches.length
+      ? `A matching file was not found for: ${mismatches.map((item) => item.id).join(', ')}. You can pick a downloaded file anyway; it may not work.`
+      : unresolved.length
+        ? `Could not automatically install: ${unresolved.map((item) => item.id).join(', ')}. Download them into the library if they are not in the catalog.`
+        : (required.length ? 'There are missing dependencies.' : ''),
     unresolved: unresolved.map((item) => item.id),
   };
   save(server.id, required.length || optional.length ? next : null);
@@ -641,6 +730,19 @@ async function resolve(server, selectedIds) {
     ...next,
     results,
   };
+}
+
+function pruneResolved(server) {
+  const stored = readStored(server);
+  if (!stored.required.length && !stored.optional.length) return null;
+  const installed = installedIdentities(server);
+  const required = stored.required.filter((dep) => !installed.has(depKey(dep)) && !isForeignForLoader(dep.id, server.loader_provider_id));
+  const optional = stored.optional.filter((dep) => !installed.has(depKey(dep)) && !isForeignForLoader(dep.id, server.loader_provider_id));
+  const next = required.length || optional.length
+    ? { ...stored, required, optional, unresolved: required.map((item) => item.id) }
+    : null;
+  save(server.id, next);
+  return next;
 }
 
 module.exports = {
@@ -658,5 +760,6 @@ module.exports = {
   readStored,
   recordFromCrash,
   resolve,
+  pruneResolved,
   fileMatchesServer,
 };

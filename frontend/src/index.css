@@ -55,14 +55,13 @@
     @apply w-full h-full object-contain object-center;
   }
 
-  /* One reserved line under pack art; tags read left to right and only
-     ellipsize when the full labels would wrap. */
+  /* Two reserved lines under pack art; empty second row keeps tiles the same height. */
   .mod-tile-tags {
-    @apply flex justify-start w-full overflow-hidden h-6 mb-2;
+    @apply flex flex-col justify-start w-full overflow-hidden h-12 mb-2;
   }
 
   .mod-tile-tags-row {
-    @apply flex flex-nowrap items-center gap-1 min-w-0 max-w-full;
+    @apply flex flex-nowrap items-center gap-1 min-w-0 max-w-full h-6;
   }
 
   .mod-tile-tags-row .badge {

@@ -30,7 +30,8 @@ export const serverApi = {
   installJavaMod: (id, modId) => api.post(`/servers/${id}/java/mods`, { modId }),
   removeJavaMod: (id, installationId) => api.delete(`/servers/${id}/java/mods/${installationId}`),
   pendingJavaMods: (id) => api.get(`/servers/${id}/java/mods/pending`),
-  resolveJavaDependencies: (id, ids) => api.post(`/servers/${id}/java/dependencies/resolve`, { ids }, { timeout: 10 * 60 * 1000 }),
+  resolveJavaDependencies: (id, ids, overrides) => api.post(`/servers/${id}/java/dependencies/resolve`, { ids, overrides }, { timeout: 10 * 60 * 1000 }),
+  reevaluateJavaDependencies: (id) => api.post(`/servers/${id}/java/dependencies/reevaluate`, undefined, { timeout: 10 * 60 * 1000 }),
   previewBedrockConnect: () => api.get('/servers/bedrock-connect/preview'),
   createBedrockConnect: (data) => api.post('/servers/bedrock-connect', data, { timeout: 120000 }),
   bedrockConnectVersions: () => api.get('/servers/bedrock-connect/versions'),
@@ -58,7 +59,12 @@ export const modApi = {
     } else {
       list.forEach((file) => formData.append('files', file));
     }
-    if (metadata) Object.entries(metadata).forEach(([k, v]) => formData.append(k, v));
+    if (metadata) {
+      Object.entries(metadata).forEach(([k, v]) => {
+        if (v == null || v === '') return;
+        formData.append(k, typeof v === 'object' ? JSON.stringify(v) : v);
+      });
+    }
     return api.post('/mods/upload', formData, {
       timeout: 10 * 60 * 1000,
       onUploadProgress: (event) => {
@@ -79,6 +85,37 @@ export const modApi = {
   }),
   delete: (id, { uninstallFromAll } = {}) => api.delete(`/mods/${id}`, {
     params: uninstallFromAll ? { uninstallFromAll: '1' } : undefined,
+    timeout: 10 * 60 * 1000,
+  }),
+  addFiles: (id, files, metadata, onProgress) => {
+    const list = (Array.isArray(files) ? files : [files]).filter(Boolean);
+    const formData = new FormData();
+    list.forEach((file) => formData.append('files', file));
+    if (metadata) {
+      Object.entries(metadata).forEach(([k, v]) => {
+        if (v == null || v === '') return;
+        formData.append(k, typeof v === 'object' ? JSON.stringify(v) : v);
+      });
+    }
+    return api.post(`/mods/${id}/files`, formData, {
+      timeout: 10 * 60 * 1000,
+      onUploadProgress: (event) => {
+        if (typeof onProgress !== 'function') return;
+        if (!event.total) {
+          onProgress(null);
+          return;
+        }
+        onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      },
+    });
+  },
+  deleteFile: (id, { sha256, name, uninstallFromAll } = {}) => api.delete(`/mods/${id}/files`, {
+    params: {
+      sha256: sha256 || undefined,
+      name: name || undefined,
+      uninstallFromAll: uninstallFromAll ? '1' : undefined,
+    },
+    data: { sha256, name, uninstallFromServers: Boolean(uninstallFromAll) },
     timeout: 10 * 60 * 1000,
   }),
   update: (id, { description, thumbnailFile, clearThumbnail, loader }) => {
