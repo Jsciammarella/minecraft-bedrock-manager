@@ -202,7 +202,7 @@ function persistFiles(modId, files) {
   const stats = aggregate(list);
   db.prepare(`
     UPDATE mods
-    SET file_path = ?, file_size = ?, extra_files = ?, loader = ?, minecraft_versions = ?, sha256 = ?, updated_at = CURRENT_TIMESTAMP
+    SET file_path = ?, file_size = ?, extra_files = ?, loader = ?, minecraft_versions = ?, sha256 = ?
     WHERE id = ?
   `).run(
     primary.path,
