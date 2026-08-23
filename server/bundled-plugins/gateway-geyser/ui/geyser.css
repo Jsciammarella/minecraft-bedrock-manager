@@ -134,5 +134,10 @@ label { display: block; font-size: 0.85rem; margin-top: 0.75rem; }
   color: var(--muted);
 }
 
+.notice {
+  color: var(--warning);
+  font-size: 0.85rem;
+  margin-top: 0.35rem;
+}
 .hidden { display: none; }
 .form-actions { display: flex; gap: 0.5rem; margin-top: 1rem; }

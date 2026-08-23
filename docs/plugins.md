@@ -35,10 +35,12 @@ the `gateway-geyser` plugin registers the provider and sidebar entry. Creating a
 Java server does not download Geyser, open a Bedrock UDP port, or start a
 gateway. A gateway must be created and started from the plugin page. The core
 owns ports, downloads, processes, secrets, and audit logging; the plugin owns
-Geyser-specific UI and configuration. Disablement is refused while a Geyser
-gateway is running. Stopped gateway records, files, and keys are preserved.
-Offline authentication is insecure. Floodgate needs extra Java-server setup.
-No Geyser binaries are shipped with the manager.
+Geyser-specific UI and configuration. Disabling the plugin safely stops running
+Geyser processes, keeps gateway records, and leaves a read-only dashboard tile
+labeled Plugin disabled. Bedrock Connect advertisements are removed until the
+plugin is enabled again. Offline authentication is insecure. Floodgate needs
+extra Java-server setup. No Geyser, ViaProxy, or ViaVersion binaries are shipped
+with the manager.
 
 ## Install
 

@@ -1,10 +1,11 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { serverApi } from '../services/api';
+import { serverApi, dashboardApi } from '../services/api';
 
 const ApiContext = createContext(null);
 
 export function ApiProvider({ children }) {
   const [servers, setServers] = useState([]);
+  const [gateways, setGateways] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   // Debounce ref to avoid too many rapid refreshes from real-time events
@@ -12,8 +13,12 @@ export function ApiProvider({ children }) {
 
   const fetchServers = useCallback(async () => {
     try {
-      const res = await serverApi.getAll();
+      const [res, dash] = await Promise.all([
+        serverApi.getAll(),
+        dashboardApi.list().catch(() => ({ data: { gateways: [] } })),
+      ]);
       setServers(res.data);
+      setGateways(Array.isArray(dash.data?.gateways) ? dash.data.gateways : []);
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -72,7 +77,7 @@ export function ApiProvider({ children }) {
   }, [fetchServers]);
 
   return (
-    <ApiContext.Provider value={{ servers, loading, error, refresh, setServers }}>
+    <ApiContext.Provider value={{ servers, gateways, loading, error, refresh, setServers }}>
       {children}
     </ApiContext.Provider>
   );

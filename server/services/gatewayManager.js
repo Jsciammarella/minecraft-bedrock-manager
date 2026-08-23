@@ -10,9 +10,11 @@ const javaRuntime = require('./javaRuntime');
 const portRanges = require('./portRanges');
 const { sanitizedChildEnv } = require('./childEnv');
 const controlledFs = require('./controlledFs');
+const pluginEvents = require('./pluginEvents');
 
 const BASE_DIR = path.join(__dirname, '../../data/gateways');
 const ptySessions = new Map();
+const COMPAT_MODES = new Set(['direct', 'viaproxy']);
 
 function publicRecord(row) {
   if (!row) return null;
@@ -21,8 +23,19 @@ function publicRecord(row) {
     ? entry.provider.sanitizePublicRecord(row)
     : { ...row, floodgate_key_path: undefined };
   delete sanitized.floodgate_key_path;
+  delete sanitized.viaproxy_bind_port;
   return {
     ...sanitized,
+    compatibilityMode: row.compatibility_mode === 'viaproxy' ? 'viaproxy' : 'direct',
+    advertiseInBedrockConnect: Number(row.advertise_in_bedrock_connect) !== 0,
+    health: row.health_status || row.status,
+    viaproxyVersion: row.viaproxy_version || null,
+    geyserViaProxyVersion: row.geyser_viaproxy_version || null,
+    targetMinecraftVersion: row.target_minecraft_version || null,
+    lastCompatibilityResult: row.last_compatibility_result || null,
+    lastError: row.last_error || null,
+    dashboardId: `gateway:${row.id}`,
+    typeLabel: 'Geyser Server',
     notices: entry ? (gatewayRegistry.publicMetadata(entry).notices || []) : [],
   };
 }
@@ -77,6 +90,189 @@ function unregisterGatewayPort(gatewayId) {
   db.prepare('DELETE FROM port_usage WHERE gateway_id = ?').run(gatewayId);
 }
 
+function compatibilityModeOf(value) {
+  return String(value || 'direct').toLowerCase() === 'viaproxy' ? 'viaproxy' : 'direct';
+}
+
+function allocateLoopbackTcpPort(preferred) {
+  const taken = takenPorts();
+  for (const row of db.prepare('SELECT viaproxy_bind_port, target_tcp_port FROM gateways').all()) {
+    taken.add(Number(row.viaproxy_bind_port));
+    taken.add(Number(row.target_tcp_port));
+  }
+  const want = Number(preferred);
+  if (want >= 1024 && want <= 65535 && !taken.has(want) && want !== 25565) return want;
+  for (let port = 25566; port <= 25700; port += 1) {
+    if (!taken.has(port)) return port;
+  }
+  throw Object.assign(new Error('No free loopback TCP port is available for ViaProxy'), { status: 400 });
+}
+
+function persistGatewayExtras(id, fields) {
+  const row = get(id);
+  if (!row) return;
+  db.prepare(`
+    UPDATE gateways
+    SET compatibility_mode = ?, advertise_in_bedrock_connect = ?, viaproxy_version = ?,
+      geyser_viaproxy_version = ?, viaproxy_bind_port = ?, target_minecraft_version = ?,
+      last_compatibility_check = ?, last_compatibility_result = ?, last_error = ?,
+      health_status = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(
+    compatibilityModeOf(fields.compatibility_mode ?? row.compatibility_mode),
+    fields.advertise_in_bedrock_connect != null ? (fields.advertise_in_bedrock_connect ? 1 : 0) : (row.advertise_in_bedrock_connect ?? 1),
+    fields.viaproxy_version !== undefined ? fields.viaproxy_version : row.viaproxy_version,
+    fields.geyser_viaproxy_version !== undefined ? fields.geyser_viaproxy_version : row.geyser_viaproxy_version,
+    fields.viaproxy_bind_port !== undefined ? fields.viaproxy_bind_port : row.viaproxy_bind_port,
+    fields.target_minecraft_version !== undefined ? fields.target_minecraft_version : row.target_minecraft_version,
+    fields.last_compatibility_check !== undefined ? fields.last_compatibility_check : row.last_compatibility_check,
+    fields.last_compatibility_result !== undefined ? fields.last_compatibility_result : row.last_compatibility_result,
+    fields.last_error !== undefined ? fields.last_error : row.last_error,
+    fields.health_status || row.health_status || row.status,
+    id
+  );
+}
+
+function writeRuntimeFiles(row, provider) {
+  const dest = writeConfig(row, provider);
+  if (typeof provider.getRuntimeFiles === 'function') {
+    const files = provider.getRuntimeFiles(row) || [];
+    for (const file of files) {
+      const relative = controlledFs.assertRelative(file.destination);
+      const full = path.join(row.data_path, relative);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, String(file.contents || ''), { encoding: 'utf8' });
+    }
+  }
+  if (typeof provider.prepareRuntime === 'function') provider.prepareRuntime(row);
+  return dest;
+}
+
+function localTargetVersion(row) {
+  if (row.target_type !== 'local-server' || !row.target_server_id) return row.target_minecraft_version || null;
+  const server = db.prepare('SELECT minecraft_version, version FROM servers WHERE id = ?').get(row.target_server_id);
+  return server?.minecraft_version || server?.version || row.target_minecraft_version || null;
+}
+
+function checkCompatibility(id) {
+  const row = get(id);
+  if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
+  const entry = gatewayRegistry.get(row.provider_id);
+  const version = localTargetVersion(row);
+  row.target_minecraft_version = version;
+  let result = {
+    compatible: true,
+    recommendedMode: 'direct',
+    targetVersion: version,
+    message: 'Direct Geyser can target this Java version.',
+  };
+  if (entry?.provider && typeof entry.provider.checkCompatibility === 'function') {
+    result = { ...result, ...entry.provider.checkCompatibility(row, { minecraftVersion: version }) };
+  }
+  persistGatewayExtras(id, {
+    target_minecraft_version: version,
+    last_compatibility_check: new Date().toISOString(),
+    last_compatibility_result: result.recommendedMode === 'viaproxy' ? 'viaproxy-recommended' : 'direct-ok',
+  });
+  pluginAudit.record('gateway.compatibility.check', {
+    targetType: 'gateway',
+    targetId: String(id),
+    detail: { recommendedMode: result.recommendedMode, targetVersion: version },
+  });
+  return { ...result, gateway: publicRecord(get(id)) };
+}
+
+async function installCompatibility(id, { confirmViaProxy = false, confirmModeSwitch = false } = {}) {
+  const row = get(id);
+  if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
+  if (!confirmViaProxy) {
+    throw Object.assign(new Error('ViaProxy compatibility components are not installed unless you confirm that choice'), { status: 400 });
+  }
+  if ((row.status === 'running' || row.status === 'starting') && !confirmModeSwitch) {
+    throw Object.assign(new Error('Stop the gateway or confirm the mode switch before installing ViaProxy'), { status: 400 });
+  }
+  const entry = gatewayRegistry.requireGateway(row.provider_id);
+  const wasRunning = row.status === 'running' || ptySessions.has(String(id));
+  if (wasRunning) stop(id);
+  if (typeof entry.provider.planCompatibilityInstallation !== 'function') {
+    throw Object.assign(new Error('This gateway provider does not support ViaProxy compatibility'), { status: 400 });
+  }
+  const bindPort = allocateLoopbackTcpPort(row.viaproxy_bind_port);
+  persistGatewayExtras(id, { compatibility_mode: 'viaproxy', viaproxy_bind_port: bindPort });
+  const next = get(id);
+  const backups = [];
+  try {
+    const plan = await entry.provider.planCompatibilityInstallation({ ...next, confirmViaProxy: true });
+    const jarNames = (plan.downloads || []).map((item) => path.join(next.data_path, item.destination));
+    for (const jar of jarNames) {
+      if (fs.existsSync(jar)) {
+        const backup = `${jar}.bak`;
+        fs.copyFileSync(jar, backup);
+        backups.push({ jar, backup });
+      }
+    }
+    await javaLoaderHost.executeInstallPlan(plan, {
+      serverDir: next.data_path,
+      allowHosts: entry.downloadHosts,
+      ownerId: id,
+    });
+    persistGatewayExtras(id, {
+      compatibility_mode: 'viaproxy',
+      viaproxy_bind_port: bindPort,
+      viaproxy_version: plan.result?.viaproxyVersion || 'latest',
+      geyser_viaproxy_version: plan.result?.geyserViaProxyVersion || plan.result?.geyserVersion || 'latest',
+    });
+    writeRuntimeFiles(get(id), entry.provider);
+    pluginAudit.record('gateway.viaproxy.install', {
+      targetType: 'gateway',
+      targetId: String(id),
+      detail: { viaproxyVersion: plan.result?.viaproxyVersion || 'latest' },
+    });
+    pluginEvents.emit('gateway.updated', { gatewayId: id });
+    if (wasRunning) await start(id);
+    return publicRecord(get(id));
+  } catch (err) {
+    for (const item of backups) {
+      try { fs.copyFileSync(item.backup, item.jar); } catch { /* ignore */ }
+    }
+    persistGatewayExtras(id, { last_error: err.message, health_status: 'failed' });
+    pluginAudit.record('gateway.viaproxy.rollback', {
+      targetType: 'gateway',
+      targetId: String(id),
+      detail: { error: err.message },
+    });
+    if (wasRunning) {
+      persistGatewayExtras(id, { compatibility_mode: row.compatibility_mode || 'direct' });
+      try { await start(id); } catch { /* keep failed */ }
+    }
+    throw err;
+  }
+}
+
+async function removeCompatibility(id, { confirm = false } = {}) {
+  const row = get(id);
+  if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
+  if (!confirm) throw Object.assign(new Error('Removing ViaProxy requires confirmation'), { status: 400 });
+  if (row.status === 'running' || row.status === 'starting') {
+    throw Object.assign(new Error('Stop the gateway before removing ViaProxy components'), { status: 400 });
+  }
+  const entry = gatewayRegistry.requireGateway(row.provider_id);
+  for (const relative of ['ViaProxy.jar', path.join('plugins', 'Geyser-ViaProxy.jar')]) {
+    const full = path.join(row.data_path, relative);
+    try { if (fs.existsSync(full)) fs.unlinkSync(full); } catch { /* ignore */ }
+  }
+  persistGatewayExtras(id, {
+    compatibility_mode: 'direct',
+    viaproxy_version: null,
+    geyser_viaproxy_version: null,
+    viaproxy_bind_port: null,
+  });
+  writeRuntimeFiles(get(id), entry.provider);
+  pluginAudit.record('gateway.viaproxy.remove', { targetType: 'gateway', targetId: String(id) });
+  pluginEvents.emit('gateway.updated', { gatewayId: id });
+  return publicRecord(get(id));
+}
+
 function assertAuth(config) {
   const auth = String(config.authentication || 'online').toLowerCase();
   if (!['online', 'floodgate', 'offline'].includes(auth)) {
@@ -122,11 +318,80 @@ function resolveTarget(config) {
   };
 }
 
+const FLOODGATE_KEY_BYTES = 16;
+
 function writeFloodgateKey(dir) {
+  fs.mkdirSync(dir, { recursive: true });
   const keyPath = path.join(dir, 'key.pem');
-  const key = crypto.randomBytes(16).toString('base64');
-  fs.writeFileSync(keyPath, `${key}\n`, { mode: 0o600 });
+  // Floodgate reads key.pem as raw AES-128 bytes. Base64 or a trailing newline
+  // produces InvalidKeyException: Invalid AES key length (for example 25 bytes).
+  fs.writeFileSync(keyPath, crypto.randomBytes(FLOODGATE_KEY_BYTES), { mode: 0o600 });
   try { fs.chmodSync(keyPath, 0o600); } catch { /* ignore */ }
+  return keyPath;
+}
+
+function floodgateKeyIsValid(keyPath) {
+  try {
+    return fs.existsSync(keyPath) && fs.readFileSync(keyPath).length === FLOODGATE_KEY_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+function ensureFloodgateKey(dir) {
+  const keyPath = path.join(dir, 'key.pem');
+  if (floodgateKeyIsValid(keyPath)) return keyPath;
+  if (fs.existsSync(keyPath)) {
+    logger.warn('Floodgate key.pem is not a 16-byte AES key; regenerating');
+  }
+  return writeFloodgateKey(dir);
+}
+
+function listFloodgateJarKinds(serverDir) {
+  const kinds = [];
+  for (const rel of ['mods', 'plugins']) {
+    const folder = path.join(serverDir, rel);
+    let names;
+    try { names = fs.readdirSync(folder); } catch { continue; }
+    if (names.some((name) => /floodgate/i.test(name) && /\.jar$/i.test(name))) kinds.push(rel);
+  }
+  return kinds;
+}
+
+function floodgateKeyDestinations(serverDir) {
+  const dests = new Set();
+  const pluginDir = path.join(serverDir, 'plugins', 'floodgate');
+  const configDir = path.join(serverDir, 'config', 'floodgate');
+  const jarKinds = listFloodgateJarKinds(serverDir);
+  if (jarKinds.includes('plugins') || fs.existsSync(pluginDir)) dests.add(pluginDir);
+  if (jarKinds.includes('mods') || fs.existsSync(configDir)) dests.add(configDir);
+  return [...dests];
+}
+
+function copyFloodgateKeyToLocalServer(keyPath, server) {
+  if (!server?.data_path || !floodgateKeyIsValid(keyPath)) return [];
+  const bytes = fs.readFileSync(keyPath);
+  const copied = [];
+  for (const destDir of floodgateKeyDestinations(server.data_path)) {
+    fs.mkdirSync(destDir, { recursive: true });
+    const dest = path.join(destDir, 'key.pem');
+    fs.writeFileSync(dest, bytes, { mode: 0o600 });
+    try { fs.chmodSync(dest, 0o600); } catch { /* ignore */ }
+    copied.push(dest);
+  }
+  if (copied.length) {
+    logger.info(`Copied Floodgate key onto Java server ${server.id}; restart that server if it is already running`);
+  }
+  return copied;
+}
+
+function syncFloodgateKey(row) {
+  if (!row || row.authentication !== 'floodgate') return row?.floodgate_key_path || null;
+  const keyPath = ensureFloodgateKey(row.data_path);
+  if (row.target_type === 'local-server' && row.target_server_id) {
+    const server = db.prepare('SELECT * FROM servers WHERE id = ? AND kind = ?').get(row.target_server_id, 'java');
+    copyFloodgateKeyToLocalServer(keyPath, server);
+  }
   return keyPath;
 }
 
@@ -151,14 +416,13 @@ async function create(config) {
   const auth = assertAuth(config);
   const target = resolveTarget(config);
   const port = allocateUdpPort(config.bedrockUdpPort);
-  const dataPath = path.join(BASE_DIR, name.replace(/[^a-zA-Z0-9._-]/g, '_'));
-  fs.mkdirSync(dataPath, { recursive: true });
+  fs.mkdirSync(BASE_DIR, { recursive: true });
   const result = db.prepare(`
     INSERT INTO gateways (
       provider_id, name, bedrock_listen_address, bedrock_udp_port, target_type,
       target_server_id, target_host, target_tcp_port, authentication, status, data_path,
-      offline_confirmed, floodgate_confirmed, java_major
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', ?, ?, ?, 21)
+      offline_confirmed, floodgate_confirmed, java_major, compatibility_mode, advertise_in_bedrock_connect
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', ?, ?, ?, 21, ?, ?)
   `).run(
     providerId,
     name,
@@ -169,11 +433,16 @@ async function create(config) {
     target.target_host,
     target.target_tcp_port,
     auth,
-    dataPath,
+    path.join(BASE_DIR, '_pending'),
     auth === 'offline' ? 1 : 0,
-    auth === 'floodgate' ? 1 : 0
+    auth === 'floodgate' ? 1 : 0,
+    'direct',
+    config.advertiseInBedrockConnect === false ? 0 : 1
   );
   const id = result.lastInsertRowid;
+  const dataPath = path.join(BASE_DIR, String(id));
+  fs.mkdirSync(dataPath, { recursive: true });
+  db.prepare('UPDATE gateways SET data_path = ? WHERE id = ?').run(dataPath, id);
   registerGatewayPort(id, port);
   try {
     const plan = await entry.provider.planInstallation({ geyserVersion: config.geyserVersion || 'latest' });
@@ -183,18 +452,26 @@ async function create(config) {
       ownerId: id,
     });
     let floodgateKeyPath = null;
-    if (auth === 'floodgate') floodgateKeyPath = writeFloodgateKey(dataPath);
+    if (auth === 'floodgate') {
+      floodgateKeyPath = writeFloodgateKey(dataPath);
+      if (target.targetType === 'local-server') {
+        const server = db.prepare('SELECT * FROM servers WHERE id = ? AND kind = ?').get(target.target_server_id, 'java');
+        copyFloodgateKeyToLocalServer(floodgateKeyPath, server);
+      }
+    }
     const row = get(id);
-    const configurationPath = writeConfig({ ...row, floodgate_key_path: floodgateKeyPath }, entry.provider);
+    const configurationPath = writeRuntimeFiles({ ...row, floodgate_key_path: floodgateKeyPath }, entry.provider);
     db.prepare(`
-      UPDATE gateways SET status = 'stopped', configuration_path = ?, floodgate_key_path = ?, geyser_version = ?, updated_at = CURRENT_TIMESTAMP
+      UPDATE gateways SET status = 'stopped', configuration_path = ?, floodgate_key_path = ?, geyser_version = ?, health_status = 'stopped', updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(configurationPath, floodgateKeyPath, plan.result?.geyserVersion || 'latest', id);
     pluginAudit.record('gateway.create', {
       targetType: 'gateway',
       targetId: String(id),
-      detail: { name, providerId, targetType: target.targetType, authentication: auth, port },
+      detail: { name, providerId, targetType: target.targetType, authentication: auth, port, compatibilityMode: 'direct' },
     });
+    pluginEvents.emit('gateway.created', { gatewayId: id });
+    require('./pluginDashboard').snapshotAllGateways();
     return publicRecord(get(id));
   } catch (err) {
     unregisterGatewayPort(id);
@@ -225,8 +502,12 @@ function patch(id, config) {
     port = allocateUdpPort(config.bedrockUdpPort);
     registerGatewayPort(id, port);
   }
-  if (auth === 'floodgate' && !row.floodgate_key_path) {
-    row.floodgate_key_path = writeFloodgateKey(row.data_path);
+  if (auth === 'floodgate') {
+    row.floodgate_key_path = ensureFloodgateKey(row.data_path);
+    if (target.targetType === 'local-server' && target.target_server_id) {
+      const server = db.prepare('SELECT * FROM servers WHERE id = ? AND kind = ?').get(target.target_server_id, 'java');
+      copyFloodgateKeyToLocalServer(row.floodgate_key_path, server);
+    }
   }
   db.prepare(`
     UPDATE gateways
@@ -248,8 +529,16 @@ function patch(id, config) {
     id
   );
   const next = get(id);
-  writeConfig(next, entry.provider);
+  if (config.advertiseInBedrockConnect != null) {
+    persistGatewayExtras(id, { advertise_in_bedrock_connect: config.advertiseInBedrockConnect ? 1 : 0 });
+  }
+  if (config.compatibilityMode === 'viaproxy' && compatibilityModeOf(row.compatibility_mode) !== 'viaproxy') {
+    throw Object.assign(new Error('ViaProxy must be installed explicitly from the Geyser plugin before it can be used'), { status: 400 });
+  }
+  writeRuntimeFiles(get(id), entry.provider);
   pluginAudit.record('gateway.update', { targetType: 'gateway', targetId: String(id), detail: { authentication: auth } });
+  pluginEvents.emit('gateway.updated', { gatewayId: id });
+  require('./pluginDashboard').snapshotAllGateways();
   return publicRecord(get(id));
 }
 
@@ -275,7 +564,25 @@ async function start(id) {
       throw Object.assign(new Error('The associated Java server no longer exists. Choose a new target before starting this gateway.'), { status: 400 });
     }
   }
-  const spec = entry.provider.getLaunchSpecification(row);
+  if (row.authentication === 'floodgate') {
+    row.floodgate_key_path = syncFloodgateKey(row);
+    db.prepare(`UPDATE gateways SET floodgate_key_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(row.floodgate_key_path, id);
+  }
+  if (typeof entry.provider.validateLaunch === 'function') {
+    entry.provider.validateLaunch(get(id));
+  }
+  writeRuntimeFiles(get(id), entry.provider);
+  const spec = entry.provider.getLaunchSpecification(get(id));
+  if (Array.isArray(spec.jvmArguments) && spec.jvmArguments.length) {
+    throw Object.assign(new Error('Gateway providers cannot supply extra JVM arguments'), { status: 400 });
+  }
+  if (compatibilityModeOf(row.compatibility_mode) === 'viaproxy') {
+    const jar = path.join(row.data_path, 'ViaProxy.jar');
+    if (!fs.existsSync(jar)) {
+      throw Object.assign(new Error('ViaProxy is not installed for this gateway. Install compatibility mode from the Geyser plugin first.'), { status: 400 });
+    }
+  }
   if (spec.javaBin || spec.executable || spec.bin || spec.command || spec.shell) {
     throw Object.assign(new Error('Gateway providers cannot choose an executable path or shell command'), { status: 400 });
   }
@@ -305,8 +612,9 @@ async function start(id) {
     db.prepare(`UPDATE gateways SET status = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
     if (global.io) global.io.emit('gateway-status', { gatewayId: id, status: 'stopped' });
   });
-  db.prepare(`UPDATE gateways SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
-  pluginAudit.record('gateway.start', { targetType: 'gateway', targetId: String(id) });
+  db.prepare(`UPDATE gateways SET status = 'running', health_status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+  pluginAudit.record('gateway.start', { targetType: 'gateway', targetId: String(id), detail: { compatibilityMode: compatibilityModeOf(row.compatibility_mode) } });
+  pluginEvents.emit('gateway.started', { gatewayId: id });
   return { success: true, message: 'Gateway starting...' };
 }
 
@@ -316,8 +624,9 @@ function stop(id) {
     try { session.pty.kill(); } catch { /* ignore */ }
     ptySessions.delete(String(id));
   }
-  db.prepare(`UPDATE gateways SET status = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+  db.prepare(`UPDATE gateways SET status = 'stopped', health_status = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
   pluginAudit.record('gateway.stop', { targetType: 'gateway', targetId: String(id) });
+  pluginEvents.emit('gateway.stopped', { gatewayId: id });
   return { success: true };
 }
 
@@ -332,7 +641,9 @@ function remove(id) {
   stop(id);
   unregisterGatewayPort(id);
   db.prepare('DELETE FROM gateways WHERE id = ?').run(id);
+  db.prepare('DELETE FROM plugin_dashboard_snapshots WHERE entity_id = ?').run(`gateway:${id}`);
   pluginAudit.record('gateway.delete', { targetType: 'gateway', targetId: String(id), detail: { name: row.name } });
+  pluginEvents.emit('gateway.deleted', { gatewayId: id });
   return { success: true };
 }
 
@@ -443,16 +754,21 @@ async function restoreRunning() {
 
 module.exports = {
   allocateUdpPort,
+  checkCompatibility,
+  copyFloodgateKeyToLocalServer,
   create,
   detachServer,
+  ensureFloodgateKey,
   forServer,
   get,
+  installCompatibility,
   integrationsForServer,
   list,
   logs,
   patch,
   publicRecord,
   remove,
+  removeCompatibility,
   restart,
   restoreRunning,
   runningForPlugin,
@@ -462,4 +778,5 @@ module.exports = {
   stopAll,
   syncLocalTargetPort,
   takenPorts,
+  writeFloodgateKey,
 };

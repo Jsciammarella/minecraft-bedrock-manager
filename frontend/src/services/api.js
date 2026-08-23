@@ -206,6 +206,12 @@ export const gatewayApi = {
   logs: (id) => api.get(`/gateways/${id}/logs`),
 };
 
+export const dashboardApi = {
+  list: () => api.get('/dashboard'),
+  gateways: () => api.get('/dashboard/gateways'),
+  gateway: (id) => api.get(`/dashboard/gateways/${encodeURIComponent(id)}`),
+};
+
 export const pluginApi = {
   list: () => api.get('/plugins'),
   meta: (id) => api.get(`/plugins/${encodeURIComponent(id)}/meta`),

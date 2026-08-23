@@ -37,11 +37,50 @@ or a remote Java hostname and TCP port.
 The plugin calls only `/api/plugins/gateway-geyser/...`. Core validates Java
 executables, working directories, JAR paths, argument lists, download hosts,
 UDP ports, and authentication confirmations. Offline authentication is insecure
-and requires an explicit confirmation. Floodgate requires additional
-configuration on the Java server and never returns private-key contents.
+and requires an explicit confirmation. Floodgate requires the same raw 16-byte
+`key.pem` on Geyser and the Java Floodgate plugin. The manager writes that key
+as binary AES-128 bytes (not Base64) and copies it onto local Java Floodgate
+folders when they exist. Remote servers still need a manual copy. Private-key
+contents are never returned in API responses.
 
 Providers return structured JSON (download lists, installer argument arrays,
 launch argument arrays). Shell command strings are rejected.
+
+## Direct Geyser vs ViaProxy
+
+Current Geyser Standalone understands a limited Java protocol range. If the
+target Java server is newer or otherwise outside that range, Bedrock players
+cannot join through a direct Geyser process.
+
+ViaProxy compatibility is optional and is never downloaded unless an
+administrator confirms it:
+
+```text
+Bedrock client
+    │ Bedrock UDP (public)
+    ▼
+ViaProxy process
+    └── Geyser-ViaProxy plugin
+            │ translated Java protocol
+            ▼
+Target Java server
+```
+
+Direct mode keeps the existing Geyser Standalone layout. ViaProxy mode runs
+ViaProxy with the official Geyser-ViaProxy plugin inside the same per-gateway
+data directory (`data/gateways/<id>/`). The internal ViaProxy Java listener binds
+to loopback only and is never advertised. Bedrock Connect lists the Geyser
+Bedrock UDP host and port.
+
+ViaProxy is GPL-3.0; Geyser is MIT. Runtime download does not relicense this
+manager. If authentication is Java online-mode, ViaProxy CLI mode requires
+Floodgate (or an explicit insecure offline confirmation). The manager never
+silently changes a Java server to offline mode, installs Floodgate, or copies
+keys except the existing local Floodgate approval flow.
+
+Geyser gateways appear on the main dashboard as **Geyser Server** tiles with
+ids `gateway:<id>`. Those tiles open a read-only page; start/stop/delete and
+other server actions stay disabled. Management stays on the Geyser plugin page.
 
 ## Existing servers
 
@@ -61,6 +100,19 @@ Users remain responsible for licenses of uploaded or catalog-downloaded mods.
 Java mods are executable code; install only mods you trust until each server
 runs in its own isolated process or container.
 
+## Troubleshooting
+
+- **Protocol incompatible:** Direct Geyser only speaks a native Java version
+  range. Enable ViaProxy from the Geyser plugin, or update the Java server.
+- **Authentication misconfigured:** ViaProxy CLI mode cannot join an online-mode
+  Java target without Floodgate. Use Floodgate with an explicit key copy, or
+  confirm insecure offline mode. The manager will not change server auth itself.
+- **Port conflict:** The Bedrock UDP port must be unique. The internal ViaProxy
+  TCP port is loopback-only and is not listed to players.
+- **Plugin disabled:** Gateway files remain. The dashboard tile stays read-only
+  and Bedrock Connect stops advertising that UDP endpoint until the plugin is
+  enabled again.
+
 ## APIs
 
 - `GET /api/java/providers`
@@ -70,7 +122,9 @@ runs in its own isolated process or container.
 - `GET|POST|DELETE /api/servers/:id/java/mods`
 - `GET /api/gateways/providers`
 - `GET|POST /api/gateways` and start/stop/restart/logs (core administrative API)
+- `GET /api/dashboard` and `GET /api/dashboard/gateways/:id` (read-only Geyser tiles)
 - `GET|POST /api/plugins/gateway-geyser/gateways` (plugin iframe API)
+- `POST /api/plugins/gateway-geyser/gateways/:id/viaproxy/install` (explicit ViaProxy install)
 
 Plugin iframe pages do not receive `/api/gateways` through `MBM.get`. The Geyser
 UI must use the plugin’s own backend.

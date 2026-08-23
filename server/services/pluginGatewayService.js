@@ -90,6 +90,18 @@ function scopedGatewayService(plugin) {
       assertOwn(id);
       return gatewayManager.status(id);
     },
+    checkCompatibilityOwn(id) {
+      assertOwn(id);
+      return gatewayManager.checkCompatibility(id);
+    },
+    installCompatibilityOwn(id, body = {}) {
+      assertOwn(id);
+      return gatewayManager.installCompatibility(id, body);
+    },
+    removeCompatibilityOwn(id, body = {}) {
+      assertOwn(id);
+      return gatewayManager.removeCompatibility(id, body);
+    },
     listJavaTargets() {
       return db.prepare(`
         SELECT id, name, port, status

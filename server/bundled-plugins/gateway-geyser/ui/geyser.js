@@ -48,9 +48,11 @@
     var auth = $('authentication').value;
     var remote = $('targetType').value === 'remote-address';
     $('offlineWarn').classList.toggle('hidden', auth !== 'offline');
+    $('floodgateHint').classList.toggle('hidden', auth !== 'floodgate');
     $('floodgateWarn').classList.toggle('hidden', !(auth === 'floodgate' && remote));
     $('localFields').classList.toggle('hidden', remote);
     $('remoteFields').classList.toggle('hidden', !remote);
+    $('viaproxyWarn').classList.toggle('hidden', $('compatibilityMode').value !== 'viaproxy');
   }
 
   async function loadTargets() {
@@ -89,7 +91,15 @@
     meta.textContent = 'Bedrock UDP ' + gateway.bedrock_udp_port
       + ' → ' + gateway.target_host + ':' + gateway.target_tcp_port
       + ' (' + gateway.authentication + ')'
-      + (gateway.geyser_version ? ' · Geyser ' + gateway.geyser_version : '');
+      + ' · ' + (gateway.compatibilityMode === 'viaproxy' ? 'ViaProxy' : 'Direct Geyser')
+      + (gateway.geyser_version ? ' · Geyser ' + gateway.geyser_version : '')
+      + (gateway.viaproxyVersion ? ' · ViaProxy ' + gateway.viaproxyVersion : '');
+    if (gateway.lastCompatibilityResult || gateway.lastError) {
+      var notice = document.createElement('p');
+      notice.className = 'notice';
+      notice.textContent = gateway.lastError || gateway.lastCompatibilityResult;
+      info.appendChild(notice);
+    }
     info.appendChild(title);
     info.appendChild(meta);
     var actions = document.createElement('div');
@@ -107,6 +117,16 @@
     else addBtn('Start', '', function () { act(gateway.id, 'start'); });
     addBtn('Restart', 'secondary', function () { act(gateway.id, 'restart'); });
     addBtn('Logs', 'secondary', function () { toggleLogs(gateway.id); });
+    addBtn('Check compatibility', 'secondary', function () { checkCompat(gateway.id); });
+    if (gateway.compatibilityMode === 'viaproxy') {
+      addBtn('Upgrade ViaProxy', 'secondary', function () { installVia(gateway.id, running); });
+      addBtn('Remove ViaProxy', 'secondary', function () { removeVia(gateway.id); });
+    } else {
+      addBtn('Install ViaProxy', 'secondary', function () { installVia(gateway.id, running); });
+    }
+    addBtn(gateway.advertiseInBedrockConnect === false ? 'Advertise' : 'Hide from Bedrock Connect', 'secondary', function () {
+      toggleAdvertise(gateway);
+    });
     addBtn('Remove', 'secondary', function () { act(gateway.id, 'remove'); });
     top.appendChild(info);
     top.appendChild(actions);
@@ -183,6 +203,64 @@
     }
   }
 
+  async function checkCompat(id) {
+    showError('');
+    try {
+      var result = await MBM.get(API + '/gateways/' + encodeURIComponent(id) + '/compatibility');
+      showError(result.message || result.recommendedMode || 'Compatibility checked');
+      await loadGateways();
+    } catch (err) {
+      showError(err.message || 'Compatibility check failed');
+    }
+  }
+
+  async function installVia(id, running) {
+    if (running && !window.confirm('This gateway is running. Stop it, install ViaProxy, then start it again?')) return;
+    if (!window.confirm('Download ViaProxy and Geyser-ViaProxy from official sources into this gateway folder?')) return;
+    busy = String(id);
+    showError('');
+    try {
+      await MBM.post(API + '/gateways/' + encodeURIComponent(id) + '/viaproxy/install', {
+        confirmViaProxy: true,
+        confirmModeSwitch: true,
+      });
+      await loadGateways();
+    } catch (err) {
+      showError(err.message || 'ViaProxy install failed');
+    } finally {
+      busy = '';
+    }
+  }
+
+  async function removeVia(id) {
+    if (!window.confirm('Remove ViaProxy from this gateway and return to direct Geyser?')) return;
+    busy = String(id);
+    showError('');
+    try {
+      await MBM.post(API + '/gateways/' + encodeURIComponent(id) + '/viaproxy/remove', { confirm: true });
+      await loadGateways();
+    } catch (err) {
+      showError(err.message || 'ViaProxy remove failed');
+    } finally {
+      busy = '';
+    }
+  }
+
+  async function toggleAdvertise(gateway) {
+    busy = String(gateway.id);
+    showError('');
+    try {
+      await MBM.patch(API + '/gateways/' + encodeURIComponent(gateway.id), {
+        advertiseInBedrockConnect: gateway.advertiseInBedrockConnect === false,
+      });
+      await loadGateways();
+    } catch (err) {
+      showError(err.message || 'Could not update advertisement');
+    } finally {
+      busy = '';
+    }
+  }
+
   async function createGateway(event) {
     event.preventDefault();
     showError('');
@@ -195,6 +273,7 @@
       authentication: auth,
       confirmOffline: $('confirmOffline').checked,
       confirmFloodgate: $('confirmFloodgate').checked,
+      advertiseInBedrockConnect: $('advertiseInBedrockConnect').checked,
     };
     if (targetType === 'local-server') {
       body.targetServerId = Number($('targetServerId').value);
@@ -203,9 +282,20 @@
       body.targetTcpPort = Number($('targetTcpPort').value);
     }
     if ($('bedrockUdpPort').value) body.bedrockUdpPort = Number($('bedrockUdpPort').value);
+    var wantVia = $('compatibilityMode').value === 'viaproxy';
+    if (wantVia && !$('confirmViaProxy').checked) {
+      showError('ViaProxy is not installed unless you confirm that choice.');
+      return;
+    }
     $('createBtn').disabled = true;
     try {
-      await MBM.post(API + '/gateways', body);
+      var created = await MBM.post(API + '/gateways', body);
+      if (wantVia && created && created.id) {
+        await MBM.post(API + '/gateways/' + encodeURIComponent(created.id) + '/viaproxy/install', {
+          confirmViaProxy: true,
+          confirmModeSwitch: true,
+        });
+      }
       $('create').classList.add('hidden');
       $('create').reset();
       toggleAuthHints();
@@ -227,6 +317,7 @@
     });
     $('targetType').addEventListener('change', toggleAuthHints);
     $('authentication').addEventListener('change', toggleAuthHints);
+    $('compatibilityMode').addEventListener('change', toggleAuthHints);
     $('create').addEventListener('submit', createGateway);
     toggleAuthHints();
     try {

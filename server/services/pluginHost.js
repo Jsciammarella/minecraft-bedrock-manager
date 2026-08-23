@@ -530,20 +530,17 @@ function setPluginEnabled(id, enabled) {
     throw err;
   }
   if (!enabled && (plugin.capabilities || []).includes('provider:gateway')) {
-    const running = require('./gatewayManager').runningForPlugin(plugin.id);
-    if (running.length) {
-      const names = running.map((row) => row.name).join(', ');
-      const err = new Error(`Stop these gateways before disabling ${plugin.name}: ${names}`);
-      err.status = 400;
-      err.code = 'GATEWAY_RUNNING';
-      err.gateways = running.map((row) => ({ id: row.id, name: row.name }));
-      throw err;
+    const gatewayManager = require('./gatewayManager');
+    try { require('./pluginDashboard').snapshotPlugin(plugin.id); } catch { /* ignore */ }
+    for (const row of gatewayManager.runningForPlugin(plugin.id)) {
+      try { gatewayManager.stop(row.id); } catch { /* ignore */ }
     }
   }
   const state = readPluginState();
   state.enabled[id] = Boolean(enabled);
   writePluginState(state);
   pluginAudit.record('plugin.enabled', { targetType: 'plugin', targetId: id, detail: { enabled: Boolean(enabled) } });
+  try { require('./pluginEvents').emit(enabled ? 'plugin.enabled' : 'plugin.disabled', { pluginId: id }); } catch { /* ignore */ }
   reloadPlugins();
   return publicPlugin(getPlugin(id));
 }

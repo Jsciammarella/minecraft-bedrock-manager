@@ -26,11 +26,24 @@ function gameServers() {
 
 function buildEntries() {
   const address = connectHost.resolve();
-  return gameServers().map((server) => ({
+  const entries = gameServers().map((server) => ({
     name: String(server.name || 'Bedrock Server'),
     address,
     port: Number(server.port),
   }));
+  const seen = new Set(entries.map((item) => `${String(item.address).toLowerCase()}:${item.port}`));
+  try {
+    const extra = require('./pluginAdvertisements').list();
+    for (const endpoint of extra) {
+      const key = `${String(endpoint.address).toLowerCase()}:${endpoint.port}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push(endpoint);
+    }
+  } catch (err) {
+    logger.warn(`Plugin Bedrock Connect advertisements skipped: ${err.message}`);
+  }
+  return entries;
 }
 
 function serialize(entries) {

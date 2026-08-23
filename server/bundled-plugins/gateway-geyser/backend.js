@@ -1,6 +1,19 @@
 const DOWNLOAD = 'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/standalone';
 const FABRIC_DOWNLOAD = 'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/fabric';
 const NEOFORGE_DOWNLOAD = 'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/neoforge';
+const GEYSER_VIAPROXY_DOWNLOAD = 'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/viaproxy';
+const VIAPROXY_VERSION = '3.4.6';
+const VIAPROXY_DOWNLOAD = `https://github.com/ViaVersion/ViaProxy/releases/download/v${VIAPROXY_VERSION}/ViaProxy-${VIAPROXY_VERSION}.jar`;
+const GEYSER_NATIVE_JAVA_VERSIONS = ['1.21.8', '1.21.7', '1.21.6', '1.21.5', '1.21.4'];
+const DOWNLOAD_HOSTS = [
+  'download.geysermc.org',
+  'repo.opencollab.dev',
+  'github.com',
+  'api.github.com',
+  'objects.githubusercontent.com',
+  'github-releases.githubusercontent.com',
+  'release-assets.githubusercontent.com',
+];
 
 function yamlEscape(value) {
   return String(value ?? '').replace(/"/g, '\\"');
@@ -20,13 +33,14 @@ function createProvider() {
         targetKinds: ['java'],
         supportsCreateForTarget: true,
         managementPage: 'home',
-        downloadHosts: ['download.geysermc.org', 'repo.opencollab.dev'],
+        downloadHosts: DOWNLOAD_HOSTS,
         notices: [
           'Powered by Geyser. Not affiliated with or endorsed by GeyserMC, Mojang, or Microsoft.',
-          'Standalone is recommended for remote Java servers and older Minecraft versions.',
-          'Geyser-Fabric and Geyser-NeoForge support fewer Minecraft versions than Standalone.',
+          'Standalone is recommended when the Java server matches Geyser\'s native protocol.',
+          'ViaProxy compatibility is optional and is never installed unless you choose it.',
           'Offline authentication is insecure and must not be used on a public network.',
-          'Floodgate requires additional configuration on the Java server.',
+          'Floodgate requires the same raw 16-byte key.pem on Geyser and the Java Floodgate plugin.',
+          'ViaProxy is GPL-3.0; Geyser is MIT. Binaries are downloaded at runtime and are not bundled.',
         ],
       };
     },
@@ -71,6 +85,17 @@ function createProvider() {
       };
     },
     getLaunchSpecification(record) {
+      if (String(record.compatibility_mode || 'direct') === 'viaproxy') {
+        return {
+          runtime: 'java',
+          javaMajor: Number(record.java_major || 21),
+          workingDirectory: '.',
+          jar: 'ViaProxy.jar',
+          arguments: ['start'],
+          memory: { minimum: '512M', maximum: '1G' },
+          environment: {},
+        };
+      }
       return {
         runtime: 'java',
         javaMajor: Number(record.java_major || 21),
@@ -79,6 +104,139 @@ function createProvider() {
         arguments: ['--nogui'],
         memory: { minimum: '512M', maximum: '1G' },
         environment: {},
+      };
+    },
+    checkCompatibility(record, extra = {}) {
+      const version = String(extra.minecraftVersion || record.target_minecraft_version || '').trim();
+      if (!version) {
+        return {
+          compatible: true,
+          recommendedMode: 'direct',
+          targetVersion: null,
+          nativeVersions: GEYSER_NATIVE_JAVA_VERSIONS,
+          message: 'Could not determine the Java protocol. Direct Geyser works only if the server matches Geyser\'s native version.',
+        };
+      }
+      const compatible = GEYSER_NATIVE_JAVA_VERSIONS.some((native) => version === native || version.startsWith(`${native}.`) || native.startsWith(version));
+      if (compatible) {
+        return {
+          compatible: true,
+          recommendedMode: 'direct',
+          targetVersion: version,
+          nativeVersions: GEYSER_NATIVE_JAVA_VERSIONS,
+          message: 'Direct Geyser can target this Java version.',
+        };
+      }
+      return {
+        compatible: false,
+        recommendedMode: 'viaproxy',
+        targetVersion: version,
+        nativeVersions: GEYSER_NATIVE_JAVA_VERSIONS,
+        message: 'This Java server does not support the protocol required by the current Geyser release. Enable ViaProxy compatibility mode or update the Java server.',
+        action: 'Use ViaProxy Compatibility Mode',
+      };
+    },
+    async planCompatibilityInstallation(request) {
+      if (!request?.confirmViaProxy) {
+        throw Object.assign(new Error('ViaProxy is not installed unless you confirm that choice'), { status: 400 });
+      }
+      return {
+        downloads: [
+          {
+            url: VIAPROXY_DOWNLOAD,
+            destination: 'ViaProxy.jar',
+            maximumBytes: 80000000,
+            project: 'ViaProxy',
+            version: VIAPROXY_VERSION,
+            license: 'GPL-3.0',
+          },
+          {
+            url: GEYSER_VIAPROXY_DOWNLOAD,
+            destination: 'plugins/Geyser-ViaProxy.jar',
+            maximumBytes: 40000000,
+            project: 'Geyser-ViaProxy',
+            version: request.geyserVersion || 'latest',
+            license: 'MIT',
+          },
+        ],
+        result: {
+          provider: 'geyser',
+          compatibilityMode: 'viaproxy',
+          viaproxyVersion: VIAPROXY_VERSION,
+          geyserViaProxyVersion: request.geyserVersion || 'latest',
+          javaMajor: 21,
+        },
+      };
+    },
+    validateLaunch(record) {
+      if (String(record.compatibility_mode || 'direct') === 'viaproxy' && record.authentication === 'online') {
+        throw Object.assign(new Error('ViaProxy CLI mode cannot join an online-mode Java server without Floodgate. Enable Floodgate on the Java server or use offline authentication (insecure).'), { status: 400, code: 'AUTH_INCOMPATIBLE' });
+      }
+    },
+    getRuntimeFiles(record) {
+      if (String(record.compatibility_mode || 'direct') !== 'viaproxy') return [];
+      const bindPort = Number(record.viaproxy_bind_port || 25568);
+      const auth = record.authentication === 'floodgate' ? 'floodgate'
+        : record.authentication === 'offline' ? 'offline' : 'online';
+      const geyserConfig = [
+        'bedrock:',
+        `  address: "${yamlEscape(record.bedrock_listen_address || '0.0.0.0')}"`,
+        `  port: ${Number(record.bedrock_udp_port)}`,
+        '  motd1: "Geyser"',
+        `  motd2: "${yamlEscape(record.name)}"`,
+        'remote:',
+        '  address: "127.0.0.1"',
+        `  port: ${bindPort}`,
+        `  auth-type: ${auth}`,
+        'passthrough-motd: true',
+        'passthrough-protocol-name: false',
+        'passthrough-player-counts: true',
+        `floodgate-key-file: "${yamlEscape(record.floodgate_key_file || 'key.pem')}"`,
+        '',
+      ].join('\n');
+      const viaConfig = [
+        'bind-address: 127.0.0.1',
+        `bind-port: ${bindPort}`,
+        `target-address: "${yamlEscape(record.target_host || '127.0.0.1')}"`,
+        `target-port: ${Number(record.target_tcp_port || 25565)}`,
+        'proxy-online-mode: false',
+        'auth-method: NONE',
+        'wildcard-domain-handling: NONE',
+        '',
+      ].join('\n');
+      return [
+        { destination: 'viaproxy.yml', contents: viaConfig },
+        { destination: 'plugins/Geyser/config.yml', contents: geyserConfig },
+      ];
+    },
+    prepareRuntime(record) {
+      if (String(record.compatibility_mode || 'direct') !== 'viaproxy') return;
+      const fs = require('fs');
+      const path = require('path');
+      const src = path.join(record.data_path, 'key.pem');
+      const dest = path.join(record.data_path, 'plugins', 'Geyser', 'key.pem');
+      if (record.authentication === 'floodgate' && fs.existsSync(src)) {
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(src, dest);
+        try { fs.chmodSync(dest, 0o600); } catch { /* ignore */ }
+      }
+    },
+    getDashboardEntity(record) {
+      return {
+        gatewayId: record.id,
+        kind: 'geyser_gateway',
+        name: record.name,
+        compatibilityMode: record.compatibility_mode === 'viaproxy' ? 'viaproxy' : 'direct',
+        geyserVersion: record.geyser_version,
+        viaproxyVersion: record.viaproxy_version,
+        authentication: record.authentication,
+      };
+    },
+    getAdvertisedEndpoint(record) {
+      return {
+        name: `${record.name} — Geyser`,
+        port: Number(record.bedrock_udp_port),
+        internal: false,
       };
     },
     getDefaultConfig(record) {
@@ -204,9 +362,53 @@ function registerRoutes(router, gateways) {
       sendError(res, err);
     }
   });
+
+  router.get('/gateways/:id/compatibility', (req, res) => {
+    try {
+      res.json(gateways.checkCompatibilityOwn(req.params.id));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.post('/gateways/:id/viaproxy/install', async (req, res) => {
+    try {
+      res.json(await gateways.installCompatibilityOwn(req.params.id, req.body || {}));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.post('/gateways/:id/viaproxy/remove', async (req, res) => {
+    try {
+      res.json(await gateways.removeCompatibilityOwn(req.params.id, req.body || {}));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.post('/gateways/:id/viaproxy/upgrade', async (req, res) => {
+    try {
+      res.json(await gateways.installCompatibilityOwn(req.params.id, { ...(req.body || {}), confirmViaProxy: true }));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.post('/gateways/:id/viaproxy/repair', async (req, res) => {
+    try {
+      res.json(await gateways.installCompatibilityOwn(req.params.id, { ...(req.body || {}), confirmViaProxy: true }));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
 }
 
 module.exports = {
+  GEYSER_NATIVE_JAVA_VERSIONS,
+  VIAPROXY_DOWNLOAD,
+  VIAPROXY_VERSION,
+  DOWNLOAD_HOSTS,
   createProvider,
   registerRoutes,
   register({ registerGateway, router, services }) {

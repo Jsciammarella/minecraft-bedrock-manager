@@ -454,6 +454,7 @@ versionRange="[13.0.8,)"
 
   const geyserUi = fs.readFileSync(path.join(__dirname, '../server/bundled-plugins/gateway-geyser/ui/geyser.js'), 'utf8');
   assert.match(geyserUi, /\/api\/plugins\/gateway-geyser/);
+  assert.match(geyserUi, /floodgateHint/);
   assert.doesNotMatch(geyserUi, /\/api\/gateways/);
   assert.equal(pluginHost.isAllowedPluginApiPath('hello-world', '/api/plugins/gateway-geyser/gateways'), false);
   assert.equal(pluginHost.isAllowedPluginApiPath('gateway-geyser', '/api/gateways'), false);
@@ -504,7 +505,37 @@ versionRange="[13.0.8,)"
   const detailUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/ServerDetail.jsx'), 'utf8');
   assert.match(detailUi, /Re-evaluate/);
   assert.match(detailUi, /Wrong version \/ launcher/);
-  try { db.prepare("DELETE FROM gateways WHERE name IN ('Isolated Geyser', 'Missing provider', 'Offline no confirm', 'Remote floodgate', 'While disabled', 'Escape')").run(); } catch { /* ignore */ }
+  const fgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fg-key-'));
+  const fgServerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fg-java-'));
+  const fgEmptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fg-none-'));
+  try {
+    const keyPath = gatewayManager.writeFloodgateKey(fgDir);
+    assert.equal(fs.readFileSync(keyPath).length, 16);
+    const kept = fs.readFileSync(keyPath);
+    assert.equal(gatewayManager.ensureFloodgateKey(fgDir), keyPath);
+    assert.ok(fs.readFileSync(keyPath).equals(kept));
+    fs.writeFileSync(keyPath, Buffer.concat([
+      Buffer.from(crypto.randomBytes(16).toString('base64')),
+      Buffer.from('\n'),
+    ]));
+    assert.equal(fs.readFileSync(keyPath).length, 25);
+    gatewayManager.ensureFloodgateKey(fgDir);
+    assert.equal(fs.readFileSync(keyPath).length, 16);
+
+    fs.mkdirSync(path.join(fgServerDir, 'plugins'));
+    fs.writeFileSync(path.join(fgServerDir, 'plugins', 'Floodgate-Spigot.jar'), Buffer.alloc(0));
+    const copied = gatewayManager.copyFloodgateKeyToLocalServer(keyPath, { id: 1, data_path: fgServerDir });
+    assert.equal(copied.length, 1);
+    assert.ok(copied[0].endsWith(path.join('plugins', 'floodgate', 'key.pem')));
+    assert.ok(fs.readFileSync(copied[0]).equals(fs.readFileSync(keyPath)));
+    assert.deepEqual(gatewayManager.copyFloodgateKeyToLocalServer(keyPath, { id: 2, data_path: fgEmptyDir }), []);
+  } finally {
+    fs.rmSync(fgDir, { recursive: true, force: true });
+    fs.rmSync(fgServerDir, { recursive: true, force: true });
+    fs.rmSync(fgEmptyDir, { recursive: true, force: true });
+  }
+
+  try { db.prepare("DELETE FROM gateways WHERE name IN ('Isolated Geyser', 'Missing provider', 'Offline no confirm', 'Remote floodgate', 'Floodgate Key', 'While disabled', 'Escape')").run(); } catch { /* ignore */ }
   assert.ok(gatewayRegistry.get('geyser'), 'bundled Geyser plugin should register');
   const geyserMeta = gatewayRegistry.list().find((item) => item.id === 'geyser');
   assert.deepEqual(geyserMeta.targetKinds, ['java']);
@@ -531,6 +562,7 @@ versionRange="[13.0.8,)"
     assert.ok(uiRes.ok, 'Geyser plugin UI should be served as HTML');
     assert.match(String(uiRes.headers.get('content-type') || ''), /text\/html/i);
     assert.match(uiHtml, /Add gateway/);
+    assert.match(uiHtml, /16-byte key\.pem/);
     assert.match(uiHtml, /mc-manager-plugin-sdk/);
     assert.match(uiHtml, /\.hidden\s*\{/);
     assert.match(uiHtml, /function applyTheme/);
@@ -589,6 +621,19 @@ versionRange="[13.0.8,)"
       }),
       /Floodgate/
     );
+    const floodgateGw = await gatewayManager.create({
+      name: 'Floodgate Key',
+      providerId: 'geyser',
+      targetType: 'remote-address',
+      targetHost: '192.168.1.23',
+      targetTcpPort: 25565,
+      authentication: 'floodgate',
+      confirmFloodgate: true,
+    });
+    assert.equal(floodgateGw.floodgate_key_path, undefined);
+    const storedKey = db.prepare('SELECT floodgate_key_path FROM gateways WHERE id = ?').get(floodgateGw.id);
+    assert.equal(fs.readFileSync(storedKey.floodgate_key_path).length, 16);
+    try { gatewayManager.remove(floodgateGw.id); } catch { /* ignore */ }
   } finally {
     javaLoaderHost.executeInstallPlan = originalInstall;
   }
@@ -600,14 +645,149 @@ versionRange="[13.0.8,)"
   assert.match(geyserLink.href, /targetServerId=99999/);
   assert.equal(gatewayManager.integrationsForServer({ id: 1, kind: 'bedrock' }).length, 0);
 
-  db.prepare(`
-    UPDATE gateways SET status = 'running' WHERE id = ?
-  `).run(created.id);
-  assert.throws(
-    () => pluginHost.setPluginEnabled('gateway-geyser', false),
-    /Stop these gateways/
+  const pluginDashboard = require('../server/services/pluginDashboard');
+  const pluginAdvertisements = require('../server/services/pluginAdvertisements');
+  const pluginEvents = require('../server/services/pluginEvents');
+  const bedrockConnectList = require('../server/services/bedrockConnectList');
+
+  const storedDirect = db.prepare('SELECT * FROM gateways WHERE id = ?').get(created.id);
+  assert.equal(storedDirect.compatibility_mode, 'direct');
+  assert.equal(Number(storedDirect.advertise_in_bedrock_connect), 1);
+  const publicDirect = gatewayManager.publicRecord(storedDirect);
+  assert.equal(publicDirect.compatibilityMode, 'direct');
+  assert.equal(publicDirect.viaproxy_bind_port, undefined);
+  assert.equal(JSON.stringify(publicDirect).includes('key.pem') && publicDirect.floodgate_key_path, undefined);
+
+  const oldProtocol = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '1.20.1' });
+  assert.equal(oldProtocol.recommendedMode, 'viaproxy');
+  assert.match(oldProtocol.message, /does not support the protocol required by the current Geyser release/);
+  const nativeProtocol = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '1.21.8' });
+  assert.equal(nativeProtocol.recommendedMode, 'direct');
+
+  await assert.rejects(
+    () => gatewayManager.installCompatibility(created.id, {}),
+    /not installed unless you confirm/
   );
-  db.prepare(`UPDATE gateways SET status = 'stopped' WHERE id = ?`).run(created.id);
+  assert.equal(db.prepare('SELECT compatibility_mode FROM gateways WHERE id = ?').get(created.id).compatibility_mode, 'direct');
+  assert.equal(fs.existsSync(path.join(storedDirect.data_path, 'ViaProxy.jar')), false);
+
+  const viaPlan = await geyserProvider.planCompatibilityInstallation({ confirmViaProxy: true });
+  javaLoaderHost.validatePlan(viaPlan);
+  for (const item of viaPlan.downloads) {
+    assert.ok(geyser.DOWNLOAD_HOSTS.includes(new URL(item.url).hostname));
+    assert.doesNotMatch(item.url, /^http:/);
+  }
+  javaLoaderHost.executeInstallPlan = async (plan, { serverDir }) => {
+    for (const item of plan.downloads || []) {
+      const dest = path.join(serverDir, item.destination);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, 'jar');
+    }
+    return {};
+  };
+  const installed = await gatewayManager.installCompatibility(created.id, { confirmViaProxy: true });
+  assert.equal(installed.compatibilityMode, 'viaproxy');
+  const storedVia = db.prepare('SELECT * FROM gateways WHERE id = ?').get(created.id);
+  assert.equal(storedVia.compatibility_mode, 'viaproxy');
+  assert.ok(fs.existsSync(path.join(storedVia.data_path, 'ViaProxy.jar')));
+  assert.ok(fs.existsSync(path.join(storedVia.data_path, 'plugins', 'Geyser-ViaProxy.jar')));
+  const publicVia = gatewayManager.publicRecord(storedVia);
+  assert.equal(publicVia.viaproxy_bind_port, undefined);
+  assert.ok(!JSON.stringify(publicVia).includes(String(storedVia.viaproxy_bind_port)));
+  const launchVia = geyserProvider.getLaunchSpecification(storedVia);
+  assert.equal(launchVia.jar, 'ViaProxy.jar');
+  assert.deepEqual(launchVia.arguments, ['start']);
+  assert.equal(launchVia.shell, undefined);
+  assert.equal(launchVia.command, undefined);
+  controlledProcess.assertArgArray(launchVia.arguments, 'Launch');
+  javaLoaderHost.validateLaunchSpec(launchVia, storedVia.data_path);
+  assert.throws(() => controlledFs.assertRelative('../secret.jar'), /traversal|not allowed|relative/i);
+
+  await assert.rejects(
+    () => gatewayManager.start(created.id),
+    /Floodgate|online-mode|AUTH|cannot join an online-mode/i
+  );
+
+  javaLoaderHost.executeInstallPlan = async () => {
+    throw new Error('download failed');
+  };
+  await assert.rejects(
+    () => gatewayManager.installCompatibility(created.id, { confirmViaProxy: true }),
+    /download failed/
+  );
+  assert.ok(fs.existsSync(path.join(storedVia.data_path, 'ViaProxy.jar')));
+  assert.equal(fs.readFileSync(path.join(storedVia.data_path, 'ViaProxy.jar'), 'utf8'), 'jar');
+
+  const dashTiles = pluginDashboard.list();
+  const tile = dashTiles.find((item) => item.id === `gateway:${created.id}`);
+  assert.ok(tile);
+  assert.equal(tile.typeLabel, 'Geyser Server');
+  assert.equal(tile.readOnly, true);
+  assert.equal(pluginDashboard.collisionsWithServers().length, 0);
+  assert.match(tile.managementUrl, /gateway-geyser/);
+  assert.match(tile.managementUrl, new RegExp(`gatewayId=${created.id}`));
+
+  const ads = pluginAdvertisements.list();
+  const ad = ads.find((item) => item.port === storedVia.bedrock_udp_port);
+  assert.ok(ad);
+  assert.match(ad.name, /Geyser/);
+  assert.notEqual(ad.port, storedVia.viaproxy_bind_port);
+  assert.notEqual(ad.port, storedVia.target_tcp_port);
+  assert.equal(pluginAdvertisements.isUnadvertisableHost('127.0.0.1'), true);
+  assert.equal(pluginAdvertisements.isUnadvertisableHost('localhost'), true);
+
+  let syncs = 0;
+  const originalSync = bedrockConnectList.scheduleSync;
+  bedrockConnectList.scheduleSync = () => { syncs += 1; };
+  pluginEvents.emit('gateway.updated', { gatewayId: created.id });
+  bedrockConnectList.scheduleSync = originalSync;
+  assert.ok(syncs >= 1);
+
+  const dashApp = require('express')();
+  dashApp.use('/api/dashboard', require('../server/routes/dashboard'));
+  dashApp.use('/api/servers', require('../server/routes/servers'));
+  const dashServer = dashApp.listen(0);
+  try {
+    const origin = `http://127.0.0.1:${dashServer.address().port}`;
+    const dashRes = await fetch(`${origin}/api/dashboard`);
+    const dashBody = await dashRes.json();
+    assert.ok(dashBody.gateways.some((item) => item.id === `gateway:${created.id}` && item.typeLabel === 'Geyser Server'));
+    const startRes = await fetch(`${origin}/api/servers/gateway:${created.id}/start`, { method: 'POST' });
+    assert.equal(startRes.status, 400);
+    const startBody = await startRes.json();
+    assert.match(startBody.error, /Geyser plugin/);
+  } finally {
+    await new Promise((resolve) => dashServer.close(resolve));
+  }
+
+  const dashUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/Dashboard.jsx'), 'utf8');
+  assert.match(dashUi, /Geyser Server/);
+  const gatewayDetailUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/GatewayDetail.jsx'), 'utf8');
+  assert.match(gatewayDetailUi, /This Geyser server is managed by the Geyser plugin/);
+  assert.match(gatewayDetailUi, /Manage in Geyser Plugin/);
+  const geyserUiSrc = fs.readFileSync(path.join(__dirname, '../server/bundled-plugins/gateway-geyser/ui/geyser.js'), 'utf8');
+  assert.match(geyserUiSrc, /confirmViaProxy/);
+  assert.match(geyserUiSrc, /Install ViaProxy/);
+
+  const audits = db.prepare('SELECT action FROM audit_log WHERE target_id = ?').all(String(created.id)).map((row) => row.action);
+  assert.ok(audits.includes('gateway.create'));
+  assert.ok(audits.includes('gateway.viaproxy.install'));
+  assert.ok(audits.includes('gateway.viaproxy.rollback'));
+
+  javaLoaderHost.executeInstallPlan = async () => ({});
+  await gatewayManager.removeCompatibility(created.id, { confirm: true });
+  assert.equal(db.prepare('SELECT compatibility_mode FROM gateways WHERE id = ?').get(created.id).compatibility_mode, 'direct');
+
+  db.prepare(`UPDATE gateways SET status = 'running' WHERE id = ?`).run(created.id);
+  pluginHost.setPluginEnabled('gateway-geyser', false);
+  const stoppedRunning = db.prepare('SELECT status FROM gateways WHERE id = ?').get(created.id);
+  assert.equal(stoppedRunning.status, 'stopped');
+  const disabledTile = pluginDashboard.list().find((item) => item.id === `gateway:${created.id}`);
+  assert.ok(disabledTile);
+  assert.equal(disabledTile.status, 'plugin_disabled');
+  assert.equal(disabledTile.typeLabel, 'Geyser Server');
+  assert.equal(disabledTile.managementUrl, '/plugins');
+  assert.equal(pluginAdvertisements.list().some((item) => item.port === storedVia.bedrock_udp_port), false);
   pluginHost.setPluginEnabled('gateway-geyser', false);
   assert.equal(gatewayRegistry.get('geyser'), null);
   assert.equal(pluginHost.getMenuItems().some((item) => item.pluginId === 'gateway-geyser'), false);

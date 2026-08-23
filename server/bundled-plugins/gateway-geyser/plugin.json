@@ -23,11 +23,17 @@
     "filesystem:plugin-data",
     "runtime:java",
     "network:outbound-target",
-    "ports:udp"
+    "ports:udp",
+    "ports:tcp"
   ],
   "downloadHosts": [
     "download.geysermc.org",
-    "repo.opencollab.dev"
+    "repo.opencollab.dev",
+    "github.com",
+    "api.github.com",
+    "objects.githubusercontent.com",
+    "github-releases.githubusercontent.com",
+    "release-assets.githubusercontent.com"
   ],
   "providers": [
     {

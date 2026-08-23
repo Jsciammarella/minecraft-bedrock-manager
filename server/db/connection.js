@@ -354,6 +354,43 @@ if (!portUsageColumns.has('gateway_id')) {
   db.exec('ALTER TABLE port_usage ADD COLUMN gateway_id INTEGER');
 }
 
+const gatewayColumns = new Set(db.prepare('PRAGMA table_info(gateways)').all().map((column) => column.name));
+function ensureGatewayColumn(name, definition) {
+  if (!gatewayColumns.has(name)) {
+    db.exec(`ALTER TABLE gateways ADD COLUMN ${name} ${definition}`);
+    gatewayColumns.add(name);
+  }
+}
+ensureGatewayColumn('compatibility_mode', "TEXT NOT NULL DEFAULT 'direct'");
+ensureGatewayColumn('advertise_in_bedrock_connect', 'INTEGER NOT NULL DEFAULT 1');
+ensureGatewayColumn('viaproxy_version', 'TEXT');
+ensureGatewayColumn('geyser_viaproxy_version', 'TEXT');
+ensureGatewayColumn('viaproxy_bind_port', 'INTEGER');
+ensureGatewayColumn('target_minecraft_version', 'TEXT');
+ensureGatewayColumn('last_compatibility_check', 'TEXT');
+ensureGatewayColumn('last_compatibility_result', 'TEXT');
+ensureGatewayColumn('last_error', 'TEXT');
+ensureGatewayColumn('health_status', "TEXT NOT NULL DEFAULT 'stopped'");
+db.exec(`
+  UPDATE gateways
+  SET compatibility_mode = 'direct'
+  WHERE compatibility_mode IS NULL OR compatibility_mode = ''
+`);
+db.exec(`
+  UPDATE gateways
+  SET advertise_in_bedrock_connect = 1
+  WHERE advertise_in_bedrock_connect IS NULL
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS plugin_dashboard_snapshots (
+    entity_id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
 db.exec(`CREATE INDEX IF NOT EXISTS idx_gateways_status ON gateways(status)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action)`);
 

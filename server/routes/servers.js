@@ -5,6 +5,15 @@ const modManager = require('../services/modManager');
 const autoUpdateScheduler = require('../services/autoUpdateScheduler');
 const connectHost = require('../services/connectHost');
 
+router.param('id', (req, res, next, id) => {
+  if (String(id).startsWith('gateway:')) {
+    return res.status(400).json({
+      error: 'Gateway identifiers cannot be used with server endpoints. Manage this Geyser server from the Geyser plugin.',
+    });
+  }
+  next();
+});
+
 // ========== SERVER CRUD ==========
 
 // Get all servers with stats

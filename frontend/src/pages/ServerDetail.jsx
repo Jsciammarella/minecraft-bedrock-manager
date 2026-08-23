@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { serverApi, modApi, playerApi } from '../services/api';
+import GatewayDetail from './GatewayDetail';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
 import { isModCompatibleWithServer, loaderDisplayName, missingModDependenciesOf, serverLoaderId } from '../utils/modCompatibility';
@@ -63,6 +64,14 @@ function PlayerCombobox({ value, onChange, options, disabled, placeholder, onEnt
 }
 
 function ServerDetail() {
+  const { id } = useParams();
+  if (String(id || '').startsWith('gateway:')) {
+    return <GatewayDetail />;
+  }
+  return <ManagedServerDetail />;
+}
+
+function ManagedServerDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();

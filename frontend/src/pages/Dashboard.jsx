@@ -9,6 +9,10 @@ import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
 import { loaderDisplayName, missingModDependenciesOf, serverLoaderId } from '../utils/modCompatibility';
 
+function isGeyserGateway(server) {
+  return server?.kind === 'geyser_gateway' || String(server?.id || '').startsWith('gateway:');
+}
+
 function isBedrockConnect(server) {
   return server?.kind === 'bedrock_connect';
 }
@@ -22,7 +26,7 @@ function isJava(server) {
 }
 
 function isBedrockEdition(server) {
-  return !isJava(server);
+  return !isJava(server) && !isGeyserGateway(server);
 }
 
 function getRemoteReachableBadge(server) {
@@ -49,7 +53,15 @@ const STATUS_ORDER = { running: 0, starting: 1, creating: 2, stopped: 3 };
 
 function serverMatchesSearch(server, search) {
   if (!search) return true;
-  return String(server.name || '').toLowerCase().includes(search.toLowerCase());
+  const q = search.toLowerCase();
+  return [
+    server.name,
+    server.typeLabel,
+    server.targetSummary,
+    server.compatibilityMode,
+    server.connectAddress,
+    server.port,
+  ].some((value) => String(value || '').toLowerCase().includes(q));
 }
 
 function compareServers(a, b, sortBy) {
@@ -62,9 +74,10 @@ function compareServers(a, b, sortBy) {
   } else if (sortBy === 'type') {
     const typeRank = (server) => {
       if (isBedrockConnect(server)) return 0;
-      if (isJava(server)) return 1;
-      if (isRemote(server)) return 3;
-      return 2;
+      if (isGeyserGateway(server)) return 1;
+      if (isJava(server)) return 2;
+      if (isRemote(server)) return 4;
+      return 3;
     };
     const delta = typeRank(a) - typeRank(b);
     if (delta) return delta;
@@ -76,7 +89,7 @@ function compareServers(a, b, sortBy) {
 
 function Dashboard() {
   const navigate = useNavigate();
-  const { servers, loading, refresh } = useApi();
+  const { servers, gateways, loading, refresh } = useApi();
   const { connected } = useSocket();
   const [actions, setActions] = useState({});
   const [bcPreview, setBcPreview] = useState(null);
@@ -273,12 +286,20 @@ function Dashboard() {
         return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Building</span>;
       case 'stopped':
         return <span className="badge badge-danger"><span className="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5" />Offline</span>;
+      case 'plugin_disabled':
+        return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-amber-400 rounded-full mr-1.5" />Plugin disabled</span>;
+      case 'failed':
+      case 'auth_misconfigured':
+      case 'protocol_incompatible':
+      case 'target_unreachable':
+      case 'port_conflict':
+        return <span className="badge badge-danger"><span className="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5" />{status.replace(/_/g, ' ')}</span>;
       default:
         return <span className="badge badge-info">{status}</span>;
     }
   };
 
-  if (loading && servers.length === 0) {
+  if (loading && servers.length === 0 && (!gateways || gateways.length === 0)) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="flex flex-col items-center gap-3">
@@ -291,17 +312,27 @@ function Dashboard() {
 
   const activeCount = servers.filter(s => s.status === 'running').length;
   const totalPlayers = servers.reduce((sum, s) => sum + (s.stats?.onlinePlayers || 0), 0);
+  const gatewayTiles = (gateways || []).map((gateway) => ({
+    ...gateway,
+    kind: 'geyser_gateway',
+    port: gateway.port,
+    connectAddress: gateway.connectAddress
+      ? `${gateway.connectAddress}:${gateway.port}`
+      : `UDP ${gateway.port}`,
+    stats: {},
+  }));
   const bcExists = Boolean(bcPreview?.exists || servers.some(isBedrockConnect));
   const bcPending = Boolean(bcPreview?.pending);
   const bcDisabled = bcExists || bcPending || bcBusy;
   const bcRunning = servers.some(server => isBedrockConnect(server) && (server.status === 'running' || server.status === 'starting'));
   const buildingServers = servers.filter((server) => server.status === 'creating');
-  const visibleServers = [...servers]
+  const visibleServers = [...servers, ...gatewayTiles]
     .filter((server) => {
       if (filterType === 'remote') return isRemote(server);
       if (filterType === 'local') return !isRemote(server);
-      if (filterType === 'java') return isJava(server);
+      if (filterType === 'java') return isJava(server) && !isGeyserGateway(server);
       if (filterType === 'bedrock') return isBedrockEdition(server);
+      if (filterType === 'geyser') return isGeyserGateway(server);
       return true;
     })
     .filter((server) => serverMatchesSearch(server, search))
@@ -400,6 +431,9 @@ function Dashboard() {
             <div>
               <p className="text-sm text-mc-textMuted">Total Servers</p>
               <p className="text-2xl font-bold text-white mt-1">{servers.length}</p>
+              {gatewayTiles.length > 0 && (
+                <p className="text-xs text-mc-textMuted mt-1">{gatewayTiles.length} Geyser {gatewayTiles.length === 1 ? 'gateway' : 'gateways'} shown separately</p>
+              )}
             </div>
             <div className="w-10 h-10 bg-blue-500/20 rounded-lg flex items-center justify-center">
               <Server className="w-5 h-5 text-blue-400" />
@@ -446,7 +480,7 @@ function Dashboard() {
       </div>
 
       {/* Server List */}
-      {servers.length === 0 ? (
+      {servers.length === 0 && gatewayTiles.length === 0 ? (
         <div className="card text-center py-16">
           <Server className="w-16 h-16 text-mc-textMuted mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">No servers yet</h3>
@@ -493,6 +527,7 @@ function Dashboard() {
               <option value="remote">Remote</option>
               <option value="java">Java</option>
               <option value="bedrock">Bedrock</option>
+              <option value="geyser">Geyser</option>
             </select>
             <select
               value={sortBy}
@@ -515,11 +550,12 @@ function Dashboard() {
         ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {visibleServers.map((server) => {
-            const lan = lanOf(server);
+            const geyser = isGeyserGateway(server);
+            const lan = geyser ? { native: false, enabled: false, error: '' } : lanOf(server);
             const lanOn = Boolean(lan.native || lan.enabled);
             const isBuilding = server.status === 'creating';
             const createFailed = String(server.pending_restart_reason || '').startsWith('Create failed');
-            const lanLocked = isBedrockConnect(server) || isJava(server) || lan.native || bcRunning || isBuilding;
+            const lanLocked = geyser || isBedrockConnect(server) || isJava(server) || lan.native || bcRunning || isBuilding;
             const lanTitle = isBedrockConnect(server)
               ? 'Bedrock Connect is a featured-server list, not a LAN game'
               : isJava(server)
@@ -556,17 +592,25 @@ function Dashboard() {
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-semibold text-white">{server.name}</h3>
-                      {isBedrockConnect(server) && (
+                      {geyser ? (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                          Geyser Server
+                        </span>
+                      ) : isBedrockConnect(server) ? (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">
                           Console list
                         </span>
-                      )}
+                      ) : null}
                       {isRemote(server) && (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30">
                           Remote
                         </span>
                       )}
-                      {isJava(server) ? (
+                      {geyser ? (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                          {server.compatibilityMode === 'viaproxy' ? 'ViaProxy' : 'Direct'}
+                        </span>
+                      ) : isJava(server) ? (
                         <>
                           <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
                             JAVA
@@ -594,7 +638,10 @@ function Dashboard() {
                       )}
                     </div>
                     <p className="text-xs text-mc-textMuted" title={connectLabel}>
-                      {isRemote(server) ? 'remote' : `v${server.version}`} • <span className={connectLabel === 'Phantom Proxy' ? 'text-sky-300' : 'font-mono text-mc-text'}>{connectLabel}</span>
+                      {geyser
+                        ? `${server.targetSummary || 'Java target'} • ${connectLabel}`
+                        : isRemote(server) ? 'remote' : `v${server.version}`}
+                      {!geyser && <> • <span className={connectLabel === 'Phantom Proxy' ? 'text-sky-300' : 'font-mono text-mc-text'}>{connectLabel}</span></>}
                     </p>
                   </div>
                 </div>
@@ -669,6 +716,28 @@ function Dashboard() {
 
               {/* Actions */}
               <div className="page-actions flex items-center gap-2">
+                {geyser ? (
+                  <>
+                    <button
+                      disabled
+                      title="This Geyser server is managed by the Geyser plugin."
+                      className="btn btn-secondary flex-1 text-sm opacity-50 cursor-not-allowed"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      Managed by plugin
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(server.managementUrl || `/plugins/gateway-geyser?gatewayId=${String(server.id).replace(/^gateway:/, '')}`);
+                      }}
+                      className="btn btn-primary text-sm"
+                    >
+                      Manage
+                    </button>
+                  </>
+                ) : (
+                <>
                 {server.status === 'creating' && (
                   <button disabled className="btn btn-secondary flex-1 text-sm">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -755,6 +824,8 @@ function Dashboard() {
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
+                </>
+                )}
               </div>
             </div>
             );

@@ -61,6 +61,10 @@ export function SocketProvider({ children }) {
       window.dispatchEvent(new CustomEvent('server-status-change', { detail: data }));
     });
 
+    socket.on('dashboard-refresh', () => {
+      window.dispatchEvent(new CustomEvent('server-status-change', { detail: { source: 'dashboard' } }));
+    });
+
     return () => {
       socket.close();
     };
