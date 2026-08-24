@@ -870,7 +870,7 @@ versionRange="[13.0.8,)"
   const dashTiles = pluginDashboard.list();
   const tile = dashTiles.find((item) => item.id === `gateway:${created.id}`);
   assert.ok(tile);
-  assert.equal(tile.typeLabel, 'Geyser Server');
+  assert.equal(tile.typeLabel, 'Remote Java — Geyser');
   assert.equal(tile.readOnly, true);
   assert.equal(pluginDashboard.collisionsWithServers().length, 0);
   assert.match(tile.managementUrl, /gateway-geyser/);
@@ -900,7 +900,7 @@ versionRange="[13.0.8,)"
     const origin = `http://127.0.0.1:${dashServer.address().port}`;
     const dashRes = await fetch(`${origin}/api/dashboard`);
     const dashBody = await dashRes.json();
-    assert.ok(dashBody.gateways.some((item) => item.id === `gateway:${created.id}` && item.typeLabel === 'Geyser Server'));
+    assert.ok(dashBody.gateways.some((item) => item.id === `gateway:${created.id}` && item.typeLabel === 'Remote Java — Geyser'));
     const startRes = await fetch(`${origin}/api/servers/gateway:${created.id}/start`, { method: 'POST' });
     assert.equal(startRes.status, 400);
     const startBody = await startRes.json();
@@ -909,11 +909,139 @@ versionRange="[13.0.8,)"
     await new Promise((resolve) => dashServer.close(resolve));
   }
 
+  javaLoaderHost.executeInstallPlan = async () => ({});
+  const pluginContributions = require('../server/services/pluginContributions');
+  const pluginActions = require('../server/services/pluginActions');
+  const serverPluginAttachments = require('../server/services/serverPluginAttachments');
+  const javaDir = path.join(testRoot, 'attached-java');
+  fs.mkdirSync(javaDir, { recursive: true });
+  const javaRow = db.prepare(`
+    INSERT INTO servers (name, version, port, data_path, kind, status)
+    VALUES (?, '1.21.8', ?, ?, 'java', 'stopped')
+  `).run('Attached Java', 25580, javaDir);
+  const javaId = javaRow.lastInsertRowid;
+  const localGw = await gatewayManager.create({
+    name: 'Local Geyser',
+    providerId: 'geyser',
+    targetType: 'local-server',
+    targetServerId: javaId,
+    authentication: 'online',
+  });
+  const firstMigrate = serverPluginAttachments.migrateGateways();
+  const secondMigrate = serverPluginAttachments.migrateGateways();
+  assert.equal(firstMigrate.attached >= 1, true);
+  assert.equal(secondMigrate.attached, firstMigrate.attached);
+  const att = serverPluginAttachments.findByResource('gateway-geyser', 'gateway', String(localGw.id));
+  assert.ok(att);
+  assert.equal(Number(att.server_id), Number(javaId));
+  assert.equal(Number(att.primary_attachment), 1);
+  const projected = pluginDashboard.list();
+  assert.equal(projected.some((item) => item.id === `gateway:${localGw.id}`), false);
+  assert.ok(projected.some((item) => item.id === `gateway:${created.id}`));
+  const contribs = pluginContributions.listForServer({ id: javaId, status: 'stopped' });
+  assert.equal(contribs.length, 1);
+  assert.ok(contribs[0].tags.some((tag) => tag.label === 'Geyser'));
+  assert.equal(contribs[0].tags.some((tag) => /ViaProxy/.test(tag.label)), false);
+  assert.ok(contribs[0].indicators.some((item) => item.id === 'geyser-status' && item.state === 'offline'));
+  const startAction = contribs[0].actions.find((item) => item.id === 'toggle-gateway');
+  assert.equal(startAction.state, 'disabled');
+  assert.match(startAction.disabledReason, /Start the Java server before starting Geyser/);
+  await assert.rejects(
+    () => gatewayManager.start(localGw.id),
+    /Start the Java server before starting Geyser/
+  );
+  await assert.rejects(
+    () => pluginActions.invoke({
+      pluginId: 'gateway-geyser',
+      actionId: 'toggle-gateway',
+      serverId: javaId,
+      attachmentId: att.id,
+    }),
+    /Start the Java server before starting Geyser|already in progress|Unknown/
+  );
+  await assert.rejects(
+    () => pluginActions.invoke({
+      pluginId: 'gateway-geyser',
+      actionId: 'https://evil.example/start',
+      serverId: javaId,
+      attachmentId: att.id,
+    }),
+    /Unknown plugin action/
+  );
+  await assert.rejects(
+    () => pluginActions.invoke({
+      pluginId: 'gateway-geyser',
+      actionId: 'toggle-gateway',
+      serverId: javaId,
+      resourceId: String(created.id),
+      url: 'https://evil.example',
+    }),
+    /cannot supply URLs|does not belong|not owned|cannot target|Plugin actions cannot supply URLs/
+  );
+  pluginActions.setPermissionResolver(() => false);
+  await assert.rejects(
+    () => pluginActions.invoke({
+      pluginId: 'gateway-geyser',
+      actionId: 'toggle-gateway',
+      serverId: javaId,
+      attachmentId: att.id,
+    }),
+    /permission/
+  );
+  pluginActions.resetPermissionResolver();
+  db.prepare(`UPDATE gateways SET status = 'running', health_status = 'running' WHERE id = ?`).run(localGw.id);
+  const runningContrib = pluginContributions.listForServer({ id: javaId, status: 'stopped' })[0];
+  const stopAction = runningContrib.actions.find((item) => item.id === 'toggle-gateway');
+  assert.equal(stopAction.state, 'enabled');
+  assert.match(stopAction.label, /Stop Geyser/);
+  db.prepare(`UPDATE gateways SET status = 'stopped', health_status = 'stopped' WHERE id = ?`).run(localGw.id);
+
+  const secondGw = await gatewayManager.create({
+    name: 'Second Local Geyser',
+    providerId: 'geyser',
+    targetType: 'local-server',
+    targetServerId: javaId,
+    authentication: 'online',
+  });
+  const secondAtt = serverPluginAttachments.findByResource('gateway-geyser', 'gateway', String(secondGw.id));
+  assert.equal(Number(secondAtt.primary_attachment), 0);
+  const afterSecond = pluginContributions.listForServer({ id: javaId, status: 'stopped' });
+  assert.equal(afterSecond.length, 1);
+  assert.equal(afterSecond[0].attachmentId, `gateway:${localGw.id}`);
+
+  const deleteApp = require('express')();
+  deleteApp.use(require('express').json());
+  deleteApp.use('/api/servers', require('../server/routes/servers'));
+  const deleteServer = deleteApp.listen(0);
+  try {
+    const origin = `http://127.0.0.1:${deleteServer.address().port}`;
+    const blocked = await fetch(`${origin}/api/servers/${javaId}`, { method: 'DELETE' });
+    assert.equal(blocked.status, 409);
+    const blockedBody = await blocked.json();
+    assert.equal(blockedBody.code, 'PLUGIN_ATTACHMENT');
+    assert.ok(db.prepare('SELECT id FROM servers WHERE id = ?').get(javaId));
+    assert.ok(db.prepare('SELECT id FROM gateways WHERE id = ?').get(localGw.id));
+  } finally {
+    await new Promise((resolve) => deleteServer.close(resolve));
+  }
+
+  const viaGw = await gatewayManager.installCompatibility(localGw.id, { confirmViaProxy: true });
+  db.prepare(`UPDATE gateways SET authentication = 'floodgate' WHERE id = ?`).run(localGw.id);
+  const tagged = pluginContributions.listForServer({ id: javaId, status: 'running' })[0];
+  assert.ok(tagged.tags.some((tag) => /ViaProxy/.test(tag.label)));
+  assert.equal(tagged.tags.some((tag) => tag.label === 'Geyser'), false);
+  assert.ok(tagged.tags.some((tag) => tag.label === 'Floodgate'));
+  assert.ok(tagged.indicators.every((item) => item.id !== 'geyser-mode'));
+
+  const auditsAttach = db.prepare('SELECT action FROM audit_log WHERE target_id IN (?, ?)').all(String(localGw.id), String(att.id)).map((row) => row.action);
+  assert.ok(auditsAttach.includes('plugin.attachment.create') || db.prepare("SELECT action FROM audit_log WHERE action LIKE 'plugin.attachment%'").all().length);
+
   const dashUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/Dashboard.jsx'), 'utf8');
-  assert.match(dashUi, /Geyser Server/);
+  assert.match(dashUi, /pluginContributions/);
+  assert.match(dashUi, /primary-split/);
   const gatewayDetailUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/GatewayDetail.jsx'), 'utf8');
-  assert.match(gatewayDetailUi, /This Geyser server is managed by the Geyser plugin/);
-  assert.match(gatewayDetailUi, /Manage in Geyser Plugin/);
+  assert.match(gatewayDetailUi, /remote Java server/);
+  assert.match(gatewayDetailUi, /PluginPrimaryActions/);
   const geyserUiSrc = fs.readFileSync(path.join(__dirname, '../server/bundled-plugins/gateway-geyser/ui/geyser.js'), 'utf8');
   assert.match(geyserUiSrc, /confirmViaProxy/);
   assert.match(geyserUiSrc, /Install ViaProxy/);
@@ -934,7 +1062,7 @@ versionRange="[13.0.8,)"
   const disabledTile = pluginDashboard.list().find((item) => item.id === `gateway:${created.id}`);
   assert.ok(disabledTile);
   assert.equal(disabledTile.status, 'plugin_disabled');
-  assert.equal(disabledTile.typeLabel, 'Geyser Server');
+  assert.equal(disabledTile.typeLabel, 'Remote Java — Geyser');
   assert.equal(disabledTile.managementUrl, '/plugins');
   assert.equal(pluginAdvertisements.list().some((item) => item.port === storedVia.bedrock_udp_port), false);
   pluginHost.setPluginEnabled('gateway-geyser', false);

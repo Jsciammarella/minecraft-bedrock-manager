@@ -8,6 +8,15 @@ import { serverApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
 import { loaderDisplayName, missingModDependenciesOf, serverLoaderId } from '../utils/modCompatibility';
+import {
+  CONTROL_DISABLED_REASONS,
+  PluginIndicators,
+  PluginPrimaryActions,
+  PluginTags,
+  pluginContributionsOf,
+  primarySplitActions,
+  runPluginAction,
+} from '../components/PluginAugmentations';
 
 function isGeyserGateway(server) {
   return server?.kind === 'geyser_gateway' || String(server?.id || '').startsWith('gateway:');
@@ -154,7 +163,36 @@ function Dashboard() {
       refresh();
       loadBcPreview();
     } catch (err) {
+      if (err.response?.data?.code === 'PLUGIN_ATTACHMENT') {
+        if (!confirm(`${err.response.data.error}\n\nOK detaches the attached gateway and deletes the server. Cancel keeps both.`)) return;
+        const alsoDelete = confirm('Also delete the attached gateway? Cancel keeps the gateway (target marked unresolved).');
+        try {
+          await serverApi.delete(serverId, {
+            detachAttachedPlugins: !alsoDelete,
+            deleteAttachedGateways: alsoDelete,
+          });
+          refresh();
+          loadBcPreview();
+        } catch (retryErr) {
+          console.error('Failed to delete server:', retryErr);
+        }
+        return;
+      }
       console.error('Failed to delete server:', err);
+    }
+  };
+
+  const handlePluginAction = async (server, action) => {
+    const key = `${server.id}-${action.pluginId}-${action.id}`;
+    setActions((prev) => ({ ...prev, [key]: true }));
+    setActionError('');
+    try {
+      await runPluginAction({ server, action });
+    } catch (err) {
+      setActionError(err.response?.data?.error || err.message || 'Plugin action failed');
+    } finally {
+      setActions((prev) => ({ ...prev, [key]: false }));
+      refresh();
     }
   };
 
@@ -332,7 +370,9 @@ function Dashboard() {
       if (filterType === 'local') return !isRemote(server);
       if (filterType === 'java') return isJava(server) && !isGeyserGateway(server);
       if (filterType === 'bedrock') return isBedrockEdition(server);
-      if (filterType === 'geyser') return isGeyserGateway(server);
+      if (filterType === 'geyser') {
+        return isGeyserGateway(server) || pluginContributionsOf(server).length > 0;
+      }
       return true;
     })
     .filter((server) => serverMatchesSearch(server, search))
@@ -551,6 +591,10 @@ function Dashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {visibleServers.map((server) => {
             const geyser = isGeyserGateway(server);
+            const contributions = pluginContributionsOf(server);
+            const splitActions = primarySplitActions(server);
+            const javaControlsLocked = geyser || server.controlPolicy === 'remote-plugin-lifecycle' || server.coreActionsDisabled;
+            const javaLockReason = CONTROL_DISABLED_REASONS[server.disabledReasonId] || CONTROL_DISABLED_REASONS['remote-java'];
             const lan = geyser ? { native: false, enabled: false, error: '' } : lanOf(server);
             const lanOn = Boolean(lan.native || lan.enabled);
             const isBuilding = server.status === 'creating';
@@ -594,7 +638,7 @@ function Dashboard() {
                       <h3 className="font-semibold text-white">{server.name}</h3>
                       {geyser ? (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
-                          Geyser Server
+                          {server.typeLabel || 'Remote Java — Geyser'}
                         </span>
                       ) : isBedrockConnect(server) ? (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">
@@ -606,11 +650,7 @@ function Dashboard() {
                           Remote
                         </span>
                       )}
-                      {geyser ? (
-                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
-                          {server.compatibilityMode === 'viaproxy' ? 'ViaProxy' : 'Direct'}
-                        </span>
-                      ) : isJava(server) ? (
+                      {geyser ? null : isJava(server) ? (
                         <>
                           <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
                             JAVA
@@ -636,6 +676,7 @@ function Dashboard() {
                           LAN native
                         </span>
                       )}
+                      <PluginTags server={server} />
                     </div>
                     <p className="text-xs text-mc-textMuted" title={connectLabel}>
                       {geyser
@@ -646,7 +687,11 @@ function Dashboard() {
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                  {contributions.length > 0 && !geyser && (
+                    <span className="text-[10px] uppercase tracking-wide text-mc-textMuted">Java</span>
+                  )}
                   {getStatusBadge(server.status)}
+                  <PluginIndicators server={server} />
                   {getRemoteReachableBadge(server)}
                 </div>
               </div>
@@ -716,41 +761,58 @@ function Dashboard() {
 
               {/* Actions */}
               <div className="page-actions flex items-center gap-2">
-                {geyser ? (
-                  <>
-                    <button
-                      disabled
-                      title="This Geyser server is managed by the Geyser plugin."
-                      className="btn btn-secondary flex-1 text-sm opacity-50 cursor-not-allowed"
-                    >
-                      <Play className="w-3.5 h-3.5" />
-                      Managed by plugin
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        navigate(server.managementUrl || `/plugins/gateway-geyser?gatewayId=${String(server.id).replace(/^gateway:/, '')}`);
-                      }}
-                      className="btn btn-primary text-sm"
-                    >
-                      Manage
-                    </button>
-                  </>
-                ) : (
-                <>
-                {server.status === 'creating' && (
+                {(geyser || splitActions.length > 0) ? (
+                  <div className="primary-split">
+                    {geyser || javaControlsLocked ? (
+                      <button
+                        disabled
+                        title={javaLockReason}
+                        className="btn btn-secondary flex-1 text-sm opacity-50 cursor-not-allowed"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        Start Java Server
+                      </button>
+                    ) : server.status === 'creating' || server.status === 'starting' ? (
+                      <button disabled className="btn btn-secondary flex-1 text-sm">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        {server.status === 'creating' ? 'Building...' : 'Starting...'}
+                      </button>
+                    ) : server.status !== 'running' ? (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'start'); }}
+                        disabled={actions[`${server.id}-start`]}
+                        className="btn btn-primary flex-1 text-sm"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        {actions[`${server.id}-start`] ? 'Starting...' : 'Start Java Server'}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'stop'); }}
+                        disabled={actions[`${server.id}-stop`]}
+                        className="btn btn-danger flex-1 text-sm"
+                      >
+                        <Square className="w-3.5 h-3.5" />
+                        {actions[`${server.id}-stop`] ? 'Stopping...' : 'Stop Java Server'}
+                      </button>
+                    )}
+                    <PluginPrimaryActions
+                      server={server}
+                      pending={actions}
+                      onAction={(action) => handlePluginAction(server, action)}
+                    />
+                  </div>
+                ) : server.status === 'creating' ? (
                   <button disabled className="btn btn-secondary flex-1 text-sm">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     Building...
                   </button>
-                )}
-                {server.status === 'starting' && (
+                ) : server.status === 'starting' ? (
                   <button disabled className="btn btn-primary flex-1 text-sm">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     Starting...
                   </button>
-                )}
-                {server.status !== 'running' && server.status !== 'creating' && server.status !== 'starting' && (
+                ) : server.status !== 'running' ? (
                   isJava(server) && (missingModDependenciesOf(server)?.required || []).length > 0 ? (
                     <button
                       onClick={(e) => { e.stopPropagation(); navigate(`/servers/${server.id}#dependencies`); }}
@@ -768,8 +830,7 @@ function Dashboard() {
                     {actions[`${server.id}-start`] ? 'Starting...' : 'Start'}
                   </button>
                   )
-                )}
-                {server.status === 'running' && (
+                ) : (
                   <>
                     <button
                       onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'stop'); }}
@@ -788,43 +849,65 @@ function Dashboard() {
                     </button>
                   </>
                 )}
+                {!(geyser || javaControlsLocked) && server.status === 'running' && splitActions.length > 0 && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'restart'); }}
+                    disabled={actions[`${server.id}-restart`]}
+                    className="btn btn-secondary text-sm"
+                    title="Restart Java server"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+                )}
                 <button
                   onClick={(e) => { e.stopPropagation(); navigate(`/servers/${server.id}`); }}
-                  className="btn btn-secondary text-sm"
-                  title="View Details"
+                  disabled={javaControlsLocked}
+                  title={javaControlsLocked ? javaLockReason : 'View Details'}
+                  className={`btn btn-secondary text-sm ${javaControlsLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <Terminal className="w-3.5 h-3.5" />
                 </button>
                 <button
-                  onClick={(e) => { e.stopPropagation(); navigate(`/servers/${server.id}/properties`); }}
-                  className="btn btn-secondary text-sm"
-                  title="Properties"
+                  onClick={(e) => { e.stopPropagation(); if (!javaControlsLocked) navigate(`/servers/${server.id}/properties`); }}
+                  disabled={javaControlsLocked}
+                  title={javaControlsLocked ? javaLockReason : 'Properties'}
+                  className={`btn btn-secondary text-sm ${javaControlsLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <Settings className="w-3.5 h-3.5" />
                 </button>
                 <button
-                  onClick={(e) => beginLanToggle(server, e)}
-                  disabled={lanLocked || lanBusy[server.id]}
+                  onClick={(e) => { if (javaControlsLocked) { e.stopPropagation(); return; } beginLanToggle(server, e); }}
+                  disabled={lanLocked || lanBusy[server.id] || javaControlsLocked}
                   className={`btn text-sm ${
-                    lanLocked
+                    lanLocked || javaControlsLocked
                       ? 'bg-mc-surfaceLight text-mc-textMuted'
                       : lanOn
                         ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 hover:bg-sky-500/30'
                         : 'btn-secondary'
                   }`}
-                  title={lanTitle}
+                  title={javaControlsLocked ? javaLockReason : lanTitle}
                 >
                   <Radio className="w-3.5 h-3.5" />
                   {lanBusy[server.id] ? '...' : 'LAN'}
                 </button>
                 <button
-                  onClick={(e) => { e.stopPropagation(); handleDelete(server.id, server.name); }}
-                  className="btn btn-secondary text-sm text-mc-danger hover:bg-red-500/20"
-                  title="Delete Server"
+                  onClick={(e) => { e.stopPropagation(); if (!javaControlsLocked) handleDelete(server.id, server.name); }}
+                  disabled={javaControlsLocked}
+                  className={`btn btn-secondary text-sm text-mc-danger hover:bg-red-500/20 ${javaControlsLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  title={javaControlsLocked ? javaLockReason : 'Delete Server'}
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
-                </>
+                {geyser && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(server.managementUrl || `/plugins/gateway-geyser?gatewayId=${String(server.id).replace(/^gateway:/, '')}`);
+                    }}
+                    className="btn btn-secondary text-sm"
+                  >
+                    Manage
+                  </button>
                 )}
               </div>
             </div>

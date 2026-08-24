@@ -18,6 +18,30 @@ const ptySessions = new Map();
 const startInflight = new Map();
 const COMPAT_MODES = new Set(['direct', 'viaproxy']);
 
+function consoleLogFile(dataPath) {
+  return path.join(dataPath, 'console.log');
+}
+
+function persistGatewayLogs(dataPath, text) {
+  if (!dataPath) return;
+  try {
+    fs.writeFileSync(consoleLogFile(dataPath), String(text || '').slice(-80000));
+  } catch { /* ignore */ }
+}
+
+function readPersistedLogs(dataPath) {
+  try {
+    return fs.readFileSync(consoleLogFile(dataPath), 'utf8').slice(-80000);
+  } catch {
+    return '';
+  }
+}
+
+function logSnippet(text, fallback) {
+  const lines = String(text || '').trim().split(/\r?\n/).filter(Boolean);
+  return (lines.slice(-12).join('\n') || fallback || '').slice(0, 1000);
+}
+
 function killJavaInDirectory(dir) {
   if (process.platform === 'win32' || !dir) return;
   const root = path.resolve(dir);
@@ -61,6 +85,17 @@ function publicRecord(row) {
     : { ...row, floodgate_key_path: undefined };
   delete sanitized.floodgate_key_path;
   delete sanitized.viaproxy_bind_port;
+  let dashboardAttachment = null;
+  try {
+    const attachments = require('./serverPluginAttachments');
+    const pluginId = attachments.pluginIdForProvider(row.provider_id) || 'gateway-geyser';
+    const att = attachments.findByResource(pluginId, 'gateway', String(row.id));
+    dashboardAttachment = att ? {
+      id: att.id,
+      serverId: att.server_id,
+      primary: Boolean(att.primary_attachment),
+    } : null;
+  } catch { /* ignore */ }
   return {
     ...sanitized,
     compatibilityMode: row.compatibility_mode === 'viaproxy' ? 'viaproxy' : 'direct',
@@ -72,7 +107,12 @@ function publicRecord(row) {
     lastCompatibilityResult: row.last_compatibility_result || null,
     lastError: row.last_error || null,
     dashboardId: `gateway:${row.id}`,
-    typeLabel: 'Geyser Server',
+    typeLabel: row.target_type === 'local-server' && row.target_server_id && Number(row.unresolved_target) !== 1
+      ? 'Geyser'
+      : 'Remote Java — Geyser',
+    unresolvedTarget: Number(row.unresolved_target) === 1,
+    unresolvedReason: row.unresolved_reason || null,
+    dashboardAttachment,
     notices: entry ? (gatewayRegistry.publicMetadata(entry).notices || []) : [],
   };
 }
@@ -192,11 +232,18 @@ function localTargetVersion(row) {
   return server?.minecraft_version || server?.version || row.target_minecraft_version || null;
 }
 
+function localTargetLoader(row) {
+  if (row.target_type !== 'local-server' || !row.target_server_id) return null;
+  const server = db.prepare('SELECT loader_provider_id FROM servers WHERE id = ?').get(row.target_server_id);
+  return server?.loader_provider_id || null;
+}
+
 function checkCompatibility(id) {
   const row = get(id);
   if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
   const entry = gatewayRegistry.get(row.provider_id);
   const version = localTargetVersion(row);
+  const loaderProviderId = localTargetLoader(row);
   row.target_minecraft_version = version;
   let result = {
     compatible: true,
@@ -205,7 +252,10 @@ function checkCompatibility(id) {
     message: 'Direct Geyser can target this Java version.',
   };
   if (entry?.provider && typeof entry.provider.checkCompatibility === 'function') {
-    result = { ...result, ...entry.provider.checkCompatibility(row, { minecraftVersion: version }) };
+    result = {
+      ...result,
+      ...entry.provider.checkCompatibility(row, { minecraftVersion: version, loaderProviderId }),
+    };
   }
   persistGatewayExtras(id, {
     target_minecraft_version: version,
@@ -438,6 +488,63 @@ function syncFloodgateKey(row) {
   return keyPath;
 }
 
+function floodgatePresentOnServer(serverDir) {
+  return listFloodgateJarKinds(serverDir).length > 0;
+}
+
+async function ensureFloodgateOnLocalServer(row, { restartJava = true } = {}) {
+  if (!row || row.authentication !== 'floodgate' || row.target_type !== 'local-server' || !row.target_server_id) {
+    return { installed: false, restarted: false };
+  }
+  const server = db.prepare('SELECT * FROM servers WHERE id = ? AND kind = ?').get(row.target_server_id, 'java');
+  if (!server?.data_path) {
+    throw Object.assign(new Error('The associated Java server no longer exists. Choose a new target before using Floodgate.'), { status: 400 });
+  }
+  const already = floodgatePresentOnServer(server.data_path);
+  if (already) {
+    copyFloodgateKeyToLocalServer(ensureFloodgateKey(row.data_path), server);
+    return { installed: false, restarted: false, alreadyPresent: true };
+  }
+  const entry = gatewayRegistry.requireGateway(row.provider_id);
+  if (typeof entry.provider.planFloodgateInstallation !== 'function') {
+    throw Object.assign(new Error('This gateway provider cannot install Floodgate onto the Java server'), { status: 400 });
+  }
+  const plan = entry.provider.planFloodgateInstallation(server);
+  await javaLoaderHost.executeInstallPlan(plan, {
+    serverDir: server.data_path,
+    allowHosts: entry.downloadHosts,
+    ownerId: server.id,
+  });
+  copyFloodgateKeyToLocalServer(ensureFloodgateKey(row.data_path), server);
+  const running = server.status === 'running' || server.status === 'starting';
+  let restarted = false;
+  if (restartJava && running) {
+    const serverManager = require('./serverManager');
+    await serverManager.restartServer(server.id);
+    restarted = true;
+  }
+  pluginAudit.record('gateway.floodgate.install', {
+    targetType: 'gateway',
+    targetId: String(row.id),
+    detail: { serverId: server.id, restarted },
+  });
+  pluginEvents.emit('gateway.updated', { gatewayId: row.id });
+  return { installed: true, restarted, alreadyPresent: false };
+}
+
+async function installFloodgate(id, { confirm = false } = {}) {
+  if (!confirm) {
+    throw Object.assign(new Error('Floodgate is not installed onto the Java server unless you confirm that choice'), { status: 400 });
+  }
+  const row = get(id);
+  if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
+  if (row.authentication !== 'floodgate') {
+    throw Object.assign(new Error('Switch this gateway to Floodgate authentication before installing Floodgate on the Java server'), { status: 400 });
+  }
+  const result = await ensureFloodgateOnLocalServer(row, { restartJava: true });
+  return { ...publicRecord(get(id)), floodgateInstall: result };
+}
+
 function writeConfig(row, provider) {
   const text = provider.getDefaultConfig({
     ...row,
@@ -513,6 +620,7 @@ async function create(config) {
       targetId: String(id),
       detail: { name, providerId, targetType: target.targetType, authentication: auth, port, compatibilityMode: 'direct' },
     });
+    try { require('./serverPluginAttachments').syncForGateway(get(id), { actor: 'system' }); } catch { /* ignore */ }
     pluginEvents.emit('gateway.created', { gatewayId: id });
     require('./pluginDashboard').snapshotAllGateways();
     return publicRecord(get(id));
@@ -579,7 +687,23 @@ function patch(id, config) {
     throw Object.assign(new Error('ViaProxy must be installed explicitly from the Geyser plugin before it can be used'), { status: 400 });
   }
   writeRuntimeFiles(get(id), entry.provider);
+  const updated = get(id);
+  const targetChanged = row.target_type !== updated.target_type
+    || Number(row.target_server_id || 0) !== Number(updated.target_server_id || 0);
+  try { require('./serverPluginAttachments').syncForGateway(updated, { actor: 'system' }); } catch { /* ignore */ }
   pluginAudit.record('gateway.update', { targetType: 'gateway', targetId: String(id), detail: { authentication: auth } });
+  if (targetChanged) {
+    pluginAudit.record('gateway.target.reassign', {
+      targetType: 'gateway',
+      targetId: String(id),
+      detail: {
+        fromType: row.target_type,
+        toType: updated.target_type,
+        fromServerId: row.target_server_id || null,
+        toServerId: updated.target_server_id || null,
+      },
+    });
+  }
   pluginEvents.emit('gateway.updated', { gatewayId: id });
   require('./pluginDashboard').snapshotAllGateways();
   return publicRecord(get(id));
@@ -614,9 +738,12 @@ async function startNow(id) {
   }
   const entry = gatewayRegistry.requireGateway(row.provider_id);
   if (row.target_type === 'local-server') {
-    const server = db.prepare('SELECT id FROM servers WHERE id = ? AND kind = ?').get(row.target_server_id, 'java');
+    const server = db.prepare('SELECT id, status FROM servers WHERE id = ? AND kind = ?').get(row.target_server_id, 'java');
     if (!server) {
       throw Object.assign(new Error('The associated Java server no longer exists. Choose a new target before starting this gateway.'), { status: 400 });
+    }
+    if (server.status !== 'running') {
+      throw Object.assign(new Error('Start the Java server before starting Geyser.'), { status: 400, code: 'JAVA_PREREQUISITE' });
     }
   }
   db.prepare(`UPDATE gateways SET status = 'starting', health_status = 'starting', last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
@@ -624,7 +751,10 @@ async function startNow(id) {
   pluginEvents.emit('gateway.updated', { gatewayId: id });
   try {
     if (row.authentication === 'floodgate') {
-      row.floodgate_key_path = syncFloodgateKey(row);
+      if (row.target_type === 'local-server') {
+        await ensureFloodgateOnLocalServer(get(id), { restartJava: true });
+      }
+      row.floodgate_key_path = syncFloodgateKey(get(id));
       db.prepare(`UPDATE gateways SET floodgate_key_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
         .run(row.floodgate_key_path, id);
     }
@@ -679,25 +809,51 @@ async function startNow(id) {
         JAVA_HOME: javaRuntime.javaHomeFromBin(javaBin),
       }),
     });
-    ptySessions.set(String(id), { pty, logs: '' });
+    persistGatewayLogs(latest.data_path, '');
+    ptySessions.set(String(id), { pty, logs: '', stopping: false });
     pty.onData((chunk) => {
       const session = ptySessions.get(String(id));
       if (!session) return;
       const text = playerPresence.stripAnsi(chunk);
       session.logs = `${session.logs}${text}`.slice(-80000);
+      persistGatewayLogs(latest.data_path, session.logs);
       if (global.io) global.io.to(`gateway-${id}`).emit('gateway-output', { gatewayId: id, data: text });
     });
-    pty.onExit(() => {
-      ptySessions.delete(String(id));
-      killJavaInDirectory(latest.data_path);
-      db.prepare(`UPDATE gateways SET status = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
-      if (global.io) global.io.emit('gateway-status', { gatewayId: id, status: 'stopped' });
-      pluginEvents.emit('gateway.stopped', { gatewayId: id });
+    const exitSeen = new Promise((resolve) => {
+      pty.onExit((info) => {
+        const session = ptySessions.get(String(id));
+        const stopping = Boolean(session?.stopping);
+        const logText = session?.logs || readPersistedLogs(latest.data_path);
+        persistGatewayLogs(latest.data_path, logText);
+        ptySessions.delete(String(id));
+        killJavaInDirectory(latest.data_path);
+        if (stopping) {
+          db.prepare(`UPDATE gateways SET status = 'stopped', health_status = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+        } else {
+          const message = logSnippet(logText, `Gateway process exited (code ${info?.exitCode ?? 'unknown'})`);
+          db.prepare(`UPDATE gateways SET status = 'stopped', health_status = 'failed', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+            .run(message, id);
+        }
+        if (global.io) global.io.emit('gateway-status', { gatewayId: id, status: 'stopped' });
+        pluginEvents.emit('gateway.stopped', { gatewayId: id });
+        resolve(info || {});
+      });
     });
     db.prepare(`UPDATE gateways SET status = 'running', health_status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
     pluginAudit.record('gateway.start', { targetType: 'gateway', targetId: String(id), detail: { compatibilityMode: compatibilityModeOf(latest.compatibility_mode) } });
     pluginEvents.emit('gateway.started', { gatewayId: id });
     if (global.io) global.io.emit('gateway-status', { gatewayId: id, status: 'running' });
+    const earlyExit = await Promise.race([
+      exitSeen,
+      new Promise((resolve) => setTimeout(() => resolve(null), 800)),
+    ]);
+    if (earlyExit) {
+      const persisted = readPersistedLogs(latest.data_path);
+      throw Object.assign(
+        new Error(logSnippet(persisted, `Gateway process exited immediately (code ${earlyExit.exitCode ?? 'unknown'})`)),
+        { status: 500 }
+      );
+    }
     return { success: true, message: 'Gateway starting...' };
   } catch (err) {
     db.prepare(`UPDATE gateways SET status = 'stopped', health_status = 'failed', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
@@ -712,8 +868,9 @@ function stop(id) {
   const row = get(id);
   const session = ptySessions.get(String(id));
   if (session) {
+    session.stopping = true;
+    persistGatewayLogs(row?.data_path, session.logs);
     try { session.pty.kill(); } catch { /* ignore */ }
-    ptySessions.delete(String(id));
   }
   if (row?.data_path) killJavaInDirectory(row.data_path);
   db.prepare(`UPDATE gateways SET status = 'stopped', health_status = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
@@ -733,6 +890,11 @@ function remove(id) {
   if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
   stop(id);
   unregisterGatewayPort(id);
+  try {
+    const attachments = require('./serverPluginAttachments');
+    const pluginId = attachments.pluginIdForProvider(row.provider_id) || 'gateway-geyser';
+    attachments.detachResource(pluginId, 'gateway', String(id));
+  } catch { /* ignore */ }
   db.prepare('DELETE FROM gateways WHERE id = ?').run(id);
   db.prepare('DELETE FROM plugin_dashboard_snapshots WHERE entity_id = ?').run(`gateway:${id}`);
   pluginAudit.record('gateway.delete', { targetType: 'gateway', targetId: String(id), detail: { name: row.name } });
@@ -751,7 +913,9 @@ function status(id) {
 
 function logs(id) {
   const session = ptySessions.get(String(id));
-  return { logs: session?.logs || '' };
+  if (session?.logs) return { logs: session.logs };
+  const row = get(id);
+  return { logs: row?.data_path ? readPersistedLogs(row.data_path) : '' };
 }
 
 function forServer(serverId) {
@@ -759,21 +923,25 @@ function forServer(serverId) {
 }
 
 function detachServer(serverId) {
-  const rows = db.prepare(`SELECT * FROM gateways WHERE target_server_id = ?`).all(serverId);
-  for (const row of rows) {
-    try { stop(row.id); } catch { /* ignore */ }
-    db.prepare(`
-      UPDATE gateways
-      SET target_server_id = NULL, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).run(row.id);
-    pluginAudit.record('gateway.target.detached', {
-      targetType: 'gateway',
-      targetId: String(row.id),
-      detail: { serverId },
-    });
+  try {
+    return require('./serverPluginAttachments').detachServer(serverId);
+  } catch {
+    const rows = db.prepare(`SELECT * FROM gateways WHERE target_server_id = ?`).all(serverId);
+    for (const row of rows) {
+      try { stop(row.id); } catch { /* ignore */ }
+      db.prepare(`
+        UPDATE gateways
+        SET target_server_id = NULL, unresolved_target = 1, unresolved_reason = 'server-deleted', updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(row.id);
+      pluginAudit.record('gateway.target.detached', {
+        targetType: 'gateway',
+        targetId: String(row.id),
+        detail: { serverId },
+      });
+    }
+    return rows.length;
   }
-  return rows.length;
 }
 
 function runningForPlugin(pluginId) {
@@ -855,6 +1023,7 @@ module.exports = {
   forServer,
   get,
   installCompatibility,
+  installFloodgate,
   integrationsForServer,
   list,
   logs,

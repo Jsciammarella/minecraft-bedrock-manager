@@ -50,7 +50,7 @@
       <input type="checkbox" id="confirmOffline" />
       I understand offline mode disables Java authentication and must not be used on a public network.
     </label>
-    <p id="floodgateHint" class="hidden">Geyser and Floodgate must share the same 16-byte key.pem. For a local Java server the manager copies that key when Floodgate is installed; restart the Java server afterward. For a remote server, copy the gateway key.pem into Floodgate&apos;s folder.</p>
+    <p id="floodgateHint" class="hidden">Floodgate must be installed on the Java server, and Geyser must share the same 16-byte key.pem. For a local Java server, Start downloads Floodgate into mods/ or plugins/ if it is missing, copies the key, and restarts that Java server. For a remote server, install Floodgate yourself and copy the gateway key.pem into its Floodgate folder.</p>
     <label id="floodgateWarn" class="check hidden">
       <input type="checkbox" id="confirmFloodgate" />
       The remote Java server already has Floodgate installed, and I will copy the gateway key.pem into its Floodgate folder.

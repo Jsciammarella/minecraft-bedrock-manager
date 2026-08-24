@@ -313,21 +313,24 @@ function createProviderServices(plugin) {
   const controlledDownload = require('./controlledDownload');
   const controlledFs = require('./controlledFs');
   const javaRuntime = require('./javaRuntime');
+  const gateways = (plugin.capabilities || []).includes('provider:gateway')
+    ? require('./pluginGatewayService').scopedGatewayService(plugin)
+    : undefined;
   return {
     dataDir,
-    allowHosts: plugin.downloadHosts || [],
+    allowedHosts: plugin.downloadHosts || [],
     http: {
       getJson: (url, opts = {}) => controlledDownload.getJson(url, {
-        allowHosts: plugin.downloadHosts || [],
+        allowedHosts: plugin.downloadHosts || [],
         ...opts,
       }),
       getText: (url, opts = {}) => controlledDownload.getText(url, {
-        allowHosts: plugin.downloadHosts || [],
+        allowedHosts: plugin.downloadHosts || [],
         ...opts,
       }),
     },
     download: (opts) => controlledDownload.downloadToFile({
-      allowHosts: plugin.downloadHosts || [],
+      allowedHosts: plugin.downloadHosts || [],
       ...opts,
     }),
     fs: {
@@ -340,9 +343,8 @@ function createProviderServices(plugin) {
     catalogHttp: (plugin.capabilities || []).includes('provider:catalog-source')
       ? require('./catalogHttp').forPlugin()
       : undefined,
-    gateways: (plugin.capabilities || []).includes('provider:gateway')
-      ? require('./pluginGatewayService').scopedGatewayService(plugin)
-      : undefined,
+    gateways,
+    gateways: gateways,
     audit: pluginAudit,
     logger,
   };
@@ -374,6 +376,7 @@ function loadBackend(plugin) {
     const javaLoaderRegistry = require('./javaLoaderRegistry');
     const gatewayRegistry = require('./gatewayRegistry');
     const catalogProviderRegistry = require('./catalogProviderRegistry');
+    const pluginActions = require('./pluginActions');
     const services = plugin.source === 'bundled' ? createProviderServices(plugin) : { dataDir, logger };
     register({
       id: plugin.id,
@@ -387,6 +390,9 @@ function loadBackend(plugin) {
       registerGateway: (provider) => gatewayRegistry.register(plugin, provider),
       registerCatalogSource: plugin.source === 'bundled'
         ? (provider) => catalogProviderRegistry.register(plugin, provider)
+        : undefined,
+      registerPluginAction: plugin.source === 'bundled'
+        ? (spec) => pluginActions.register(plugin.id, spec)
         : undefined,
     });
     plugin.router = router;
@@ -453,6 +459,7 @@ function loadPlugins(dirs = defaultPluginDirs()) {
   }
   lastDirs = dirs;
   loaded = next;
+  try { require('./serverPluginAttachments').migrateGateways(); } catch { /* ignore until schema is ready */ }
   return getPlugins();
 }
 
@@ -463,6 +470,7 @@ function unloadPlugins() {
   }
   backendModules = [];
   loaded = [];
+  try { require('./pluginActions').clear(); } catch { /* ignore */ }
   try { require('./javaLoaderRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./gatewayRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./catalogProviderRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
@@ -532,6 +540,7 @@ function setPluginEnabled(id, enabled) {
   if (!enabled && (plugin.capabilities || []).includes('provider:gateway')) {
     const gatewayManager = require('./gatewayManager');
     try { require('./pluginDashboard').snapshotPlugin(plugin.id); } catch { /* ignore */ }
+    try { require('./pluginContributions').persistEnabledContributions(plugin.id); } catch { /* ignore */ }
     for (const row of gatewayManager.runningForPlugin(plugin.id)) {
       try { gatewayManager.stop(row.id); } catch { /* ignore */ }
     }

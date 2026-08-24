@@ -4,9 +4,16 @@ import {
   ArrowLeft, Play, Square, RotateCcw, Terminal, Users, Settings, Clock,
   Package, Trash2, Download, Radio, AlertTriangle, ExternalLink,
 } from 'lucide-react';
-import { dashboardApi } from '../services/api';
+import { dashboardApi, serverApi } from '../services/api';
+import {
+  CONTROL_DISABLED_REASONS,
+  PluginIndicators,
+  PluginPrimaryActions,
+  PluginTags,
+  runPluginAction,
+} from '../components/PluginAugmentations';
 
-const DISABLED_REASON = 'This Geyser server is managed by the Geyser plugin.';
+const DISABLED_REASON = CONTROL_DISABLED_REASONS['remote-java'];
 
 const DISABLED_ACTIONS = [
   { key: 'start', label: 'Start', Icon: Play },
@@ -40,6 +47,7 @@ export default function GatewayDetail() {
   const [entity, setEntity] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [pending, setPending] = useState({});
 
   useEffect(() => {
     let cancelled = false;
@@ -110,14 +118,15 @@ export default function GatewayDetail() {
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-2xl font-bold text-white">{entity.name}</h1>
               <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
-                Geyser Server
+                {entity.typeLabel || 'Remote Java — Geyser'}
               </span>
+              <PluginTags server={entity} />
             </div>
-            <p className="text-sm text-mc-textMuted mt-2">Read-only dashboard view. Lifecycle and configuration stay in the Geyser plugin.</p>
+            <p className="text-sm text-mc-textMuted mt-2">Read-only Java controls. Use Start/Stop Geyser below or open the Geyser plugin for configuration.</p>
           </div>
-          <span className={`badge ${pluginDisabled || entity.status === 'stopped' || entity.status === 'failed' ? 'badge-danger' : entity.status === 'running' ? 'badge-success' : 'badge-warning'}`}>
-            {statusLabel(entity.status)}
-          </span>
+          <div className="flex flex-col items-end gap-1">
+            <PluginIndicators server={entity} />
+          </div>
         </div>
 
         {pluginDisabled && (
@@ -146,6 +155,29 @@ export default function GatewayDetail() {
       <div className="card mb-6">
         <h2 className="text-lg font-semibold text-white mb-2">Server actions</h2>
         <p className="text-sm text-mc-textMuted mb-4">{DISABLED_REASON}</p>
+        <div className="primary-split mb-4">
+          <button disabled title={DISABLED_REASON} className="btn btn-secondary flex-1 text-sm opacity-50 cursor-not-allowed">
+            <Play className="w-3.5 h-3.5" />
+            Start Java Server
+          </button>
+          <PluginPrimaryActions
+            server={entity}
+            pending={pending}
+            onAction={async (action) => {
+              const key = `${entity.id}-${action.pluginId}-${action.id}`;
+              setPending((prev) => ({ ...prev, [key]: true }));
+              try {
+                await runPluginAction({ server: entity, action });
+                const res = await dashboardApi.gateway(id);
+                setEntity(res.data);
+              } catch (err) {
+                setError(err.response?.data?.error || err.message || 'Plugin action failed');
+              } finally {
+                setPending((prev) => ({ ...prev, [key]: false }));
+              }
+            }}
+          />
+        </div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
           {DISABLED_ACTIONS.map((action) => (
             <button

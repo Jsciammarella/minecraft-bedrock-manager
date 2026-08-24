@@ -4,6 +4,7 @@ const serverManager = require('../services/serverManager');
 const modManager = require('../services/modManager');
 const autoUpdateScheduler = require('../services/autoUpdateScheduler');
 const connectHost = require('../services/connectHost');
+const pluginContributions = require('../services/pluginContributions');
 
 router.param('id', (req, res, next, id) => {
   if (String(id).startsWith('gateway:')) {
@@ -25,12 +26,14 @@ router.get('/', async (req, res) => {
     const result = await Promise.all(servers.map(async (s) => {
       const stats = await serverManager.getServerStats(s.id);
       return connectHost.attach({
-        ...s,
-        ...serverManager.publicAttachFields(stats),
-        stats,
-        lan: stats.lan,
-        remoteReachable: stats.remoteReachable,
-        installedModIds: installedByServer[String(s.id)] || [],
+        ...pluginContributions.attachToServer({
+          ...s,
+          ...serverManager.publicAttachFields(stats),
+          stats,
+          lan: stats.lan,
+          remoteReachable: stats.remoteReachable,
+          installedModIds: installedByServer[String(s.id)] || [],
+        }),
       }, req);
     }));
     res.json(result);
@@ -118,7 +121,7 @@ router.get('/:id', async (req, res) => {
     const onlinePlayers = await serverManager.getOnlinePlayers(req.params.id);
     const installedMods = await modManager.getInstalledMods(req.params.id);
     
-    res.json(connectHost.attach({
+    res.json(connectHost.attach(pluginContributions.attachToServer({
       ...server,
       ...serverManager.publicAttachFields(stats),
       stats,
@@ -126,7 +129,7 @@ router.get('/:id', async (req, res) => {
       remoteReachable: stats.remoteReachable,
       onlinePlayers,
       installedMods,
-    }, req));
+    }), req));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -155,14 +158,43 @@ router.put('/:id', async (req, res) => {
 // Delete server
 router.delete('/:id', async (req, res) => {
   try {
-    await serverManager.deleteServer(req.params.id);
+    const truthy = (value) => value === true || value === '1' || value === 'true';
+    await serverManager.deleteServer(req.params.id, {
+      detachAttachedPlugins: truthy(req.query.detachAttachedPlugins) || truthy(req.body?.detachAttachedPlugins),
+      deleteAttachedGateways: truthy(req.query.deleteAttachedGateways) || truthy(req.body?.deleteAttachedGateways),
+    });
     res.json({ success: true });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    const status = Number(err.status) || 400;
+    res.status(status).json({
+      error: err.message,
+      code: err.code,
+      attachments: err.attachments,
+    });
   }
 });
 
 // ========== SERVER LIFECYCLE ==========
+
+router.post('/:id/plugin-actions', async (req, res) => {
+  try {
+    const pluginActions = require('../services/pluginActions');
+    const result = await pluginActions.invoke({
+      pluginId: req.body?.pluginId,
+      actionId: req.body?.actionId,
+      attachmentId: req.body?.attachmentId,
+      serverId: req.params.id,
+      resourceId: req.body?.resourceId,
+      url: req.body?.url,
+      href: req.body?.href,
+      command: req.body?.command,
+      actor: 'local',
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(Number(err.status) || 400).json({ error: err.message, code: err.code });
+  }
+});
 
 // Start server
 router.post('/:id/start', async (req, res) => {

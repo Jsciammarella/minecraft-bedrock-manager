@@ -171,6 +171,20 @@
   animation: slide-up 0.3s ease-out;
 }
 
+.primary-split,
+.primary-split {
+  display: flex;
+  flex: 1 1 100%;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.primary-split > .btn,
+.primary-split > .btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
 /* Terminal styles */
 .terminal {
   @apply bg-mc-darker rounded-lg p-4 font-mono text-sm;
@@ -225,6 +239,17 @@
   .page-header-actions .btn,
   .page-actions .btn {
     flex: 1 1 calc(50% - 0.5rem);
+  }
+
+  .primary-split,
+  .primary-split {
+    flex: 1 1 100%;
+  }
+
+  .page-actions .primary-split > .btn,
+  .page-actions .primary-split > .btn {
+    flex: 1 1 calc(50% - 0.25rem);
+    min-width: 0;
   }
 
   .server-card-header {

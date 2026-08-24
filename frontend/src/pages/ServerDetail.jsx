@@ -5,6 +5,7 @@ import GatewayDetail from './GatewayDetail';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
 import { isModCompatibleWithServer, loaderDisplayName, missingModDependenciesOf, serverLoaderId } from '../utils/modCompatibility';
+import { PluginDetailSummary, runPluginAction } from '../components/PluginAugmentations';
 import {
   ArrowLeft, Play, Square, RotateCcw, Terminal, Send, Users,
   Settings, ArrowUpRight, Clock, Package, ChevronDown, ChevronUp,
@@ -317,6 +318,21 @@ function ManagedServerDetail() {
       setLanError(err.response?.data?.error || err.message || 'Failed to update LAN listing');
     } finally {
       setLanBusy(false);
+    }
+  };
+
+  const handlePluginAction = async (action) => {
+    const key = `${id}-${action.pluginId}-${action.id}`;
+    setActions((prev) => ({ ...prev, [key]: true }));
+    setError('');
+    try {
+      await runPluginAction({ server, action });
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Plugin action failed');
+    } finally {
+      setActions((prev) => ({ ...prev, [key]: false }));
+      refresh();
+      await loadServer();
     }
   };
 
@@ -657,6 +673,14 @@ function ManagedServerDetail() {
           </p>
           <p className="mt-1">Bedrock addons and the console LAN proxy stay visible but are disabled. Bedrock clients can join through an optional gateway plugin.</p>
         </div>
+      )}
+      {isJava && (
+        <PluginDetailSummary
+          server={server}
+          pending={actions}
+          onAction={handlePluginAction}
+          onManage={(href) => navigate(href)}
+        />
       )}
       {isJava && (server.optionalIntegrations || []).length > 0 && (
         <div className="mb-4 p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg">

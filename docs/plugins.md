@@ -131,11 +131,16 @@ backend. A plugin cannot call another plugin’s API or load another plugin’s 
 `backend.js` may export `register({ id, router, dataDir, logger, services,
 registerJavaLoader, registerGateway, registerCatalogSource })`. The router
 is mounted only at `/api/plugins/<id>/`. It cannot replace `/api/servers` or any
-other core route. `registerCatalogSource`, `registerJavaLoader`, and
-`registerGateway` are only provided to bundled plugins. Bundled gateway plugins
-also receive `services.gateways`, a provider-scoped wrapper around core gateway
-lifecycle. They can manage only their own records and cannot read Floodgate
-private keys or bind ports directly.
+other core route. `registerCatalogSource`, `registerJavaLoader`,
+`registerGateway`, and `registerPluginAction` are only provided to bundled
+plugins. Bundled gateway plugins also receive `services.gateways`, a
+provider-scoped wrapper around core gateway lifecycle. They can manage only
+their own records and cannot read Floodgate private keys or bind ports directly.
+Trusted plugins may attach a resource to a managed Java server and return
+plain-text tags, indicators, and actions. Core validates and renders those
+contributions. Plugins cannot inject HTML, CSS, JavaScript, URLs, or commands.
+Local Geyser gateways augment the existing Java tile; remote targets stay as
+projected dashboard entries.
 
 ```js
 module.exports = {

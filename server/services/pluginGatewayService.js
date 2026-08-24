@@ -98,6 +98,10 @@ function scopedGatewayService(plugin) {
       assertOwn(id);
       return gatewayManager.installCompatibility(id, body);
     },
+    installFloodgateOwn(id, body = {}) {
+      assertOwn(id);
+      return gatewayManager.installFloodgate(id, body);
+    },
     removeCompatibilityOwn(id, body = {}) {
       assertOwn(id);
       return gatewayManager.removeCompatibility(id, body);
@@ -116,4 +120,5 @@ function scopedGatewayService(plugin) {
 module.exports = {
   ownedProviderIds,
   scopedGatewayService,
+  scopedGatewayService: scopedGatewayService,
 };

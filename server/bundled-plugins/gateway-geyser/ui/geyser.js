@@ -104,7 +104,18 @@
       + ' · ' + (gateway.compatibilityMode === 'viaproxy' ? 'ViaProxy' : 'Direct Geyser')
       + (gateway.geyser_version ? ' · Geyser ' + gateway.geyser_version : '')
       + (gateway.viaproxyVersion ? ' · ViaProxy ' + gateway.viaproxyVersion : '');
-    if (gateway.lastError) {
+    if (gateway.unresolvedTarget) {
+      var unresolved = document.createElement('p');
+      unresolved.className = 'notice';
+      unresolved.textContent = 'This gateway target could not be resolved. Choose a Java server or remote address before starting it. It is not attached to a dashboard server tile.';
+      info.appendChild(unresolved);
+    }
+    if (gateway.dashboardAttachment && gateway.dashboardAttachment.primary === false) {
+      var extra = document.createElement('p');
+      extra.className = 'notice';
+      extra.textContent = 'Another Geyser gateway is shown on this Java server tile. This gateway is managed only from this page.';
+      info.appendChild(extra);
+    }
       var notice = document.createElement('p');
       notice.className = 'notice';
       notice.textContent = gateway.lastError;
@@ -139,10 +150,15 @@
     } else {
       addBtn('Install ViaProxy', 'secondary', function () { installVia(gateway.id, running); });
     }
+    if (gateway.authentication === 'floodgate' && gateway.target_type === 'local-server') {
+      addBtn('Install Floodgate on Java', 'secondary', function () { installFloodgate(gateway.id, running); });
+    }
     addBtn(gateway.advertiseInBedrockConnect === false ? 'Advertise' : 'Hide from Bedrock Connect', 'secondary', function () {
       toggleAdvertise(gateway);
     });
-    addBtn('Remove', 'secondary', function () { act(gateway.id, 'remove'); });
+    if (gateway.dashboardAttachment && gateway.dashboardAttachment.primary === false) {
+      addBtn('Show on dashboard tile', 'secondary', function () { setPrimary(gateway.id); });
+    }
     top.appendChild(info);
     top.appendChild(actions);
     card.appendChild(top);
@@ -201,6 +217,19 @@
     showLogs(id);
   }
 
+  async function setPrimary(id) {
+    busy = String(id);
+    showError('');
+    try {
+      await MBM.post(API + '/gateways/' + encodeURIComponent(id) + '/dashboard-primary');
+    } catch (err) {
+      showError(err.message || 'Could not update the dashboard attachment');
+    } finally {
+      busy = '';
+      await loadGateways();
+    }
+  }
+
   async function act(id, action) {
     busy = String(id);
     showError('');
@@ -217,9 +246,11 @@
       busy = '';
       await loadGateways();
       if (action === 'start' || action === 'restart') {
+        selectedId = String(id);
+        showLogs(id);
         setTimeout(function () {
           loadGateways();
-          if (selectedId) showLogs(selectedId);
+          showLogs(id);
         }, 1500);
       }
     }
@@ -234,6 +265,22 @@
       await loadGateways();
     } catch (err) {
       showError(err.message || 'Compatibility check failed');
+    }
+  }
+
+  async function installFloodgate(id, running) {
+    if (running && !window.confirm('The Java server must restart after Floodgate is installed. Continue?')) return;
+    if (!window.confirm('Download Floodgate from official sources into this Java server\'s mods or plugins folder, copy the Geyser key.pem, and restart the Java server if it is running?')) return;
+    busy = String(id);
+    showError('');
+    await loadGateways();
+    try {
+      await MBM.post(API + '/gateways/' + encodeURIComponent(id) + '/floodgate/install', { confirm: true });
+    } catch (err) {
+      showError(err.message || 'Floodgate install failed');
+    } finally {
+      busy = '';
+      await loadGateways();
     }
   }
 

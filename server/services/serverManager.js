@@ -1873,9 +1873,34 @@ done
     return { success: true, scheduledAt };
   }
 
-  async deleteServer(serverId) {
+  async deleteServer(serverId, { detachAttachedPlugins = false, deleteAttachedGateways = false } = {}) {
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+    const attachments = (() => {
+      try { return require('./serverPluginAttachments').attachmentsBlockingDelete(serverId); } catch { return []; }
+    })();
+    if (attachments.length && !detachAttachedPlugins && !deleteAttachedGateways) {
+      const err = Object.assign(
+        new Error('A Geyser gateway is attached to this server. Confirm detach or delete the gateway before removing the server.'),
+        {
+          status: 409,
+          code: 'PLUGIN_ATTACHMENT',
+          attachments: attachments.map((item) => ({
+            pluginId: item.plugin_id,
+            resourceType: item.resource_type,
+            resourceId: item.resource_id,
+            primary: Boolean(item.primary_attachment),
+          })),
+        }
+      );
+      throw err;
+    }
+    if (attachments.length && deleteAttachedGateways) {
+      require('./serverPluginAttachments').deleteAttachedResources(serverId);
+    } else if (attachments.length && detachAttachedPlugins) {
+      require('./serverPluginAttachments').detachServer(serverId);
+    }
+
     const wasBedrockConnect = this.isBedrockConnect(server);
     require('./lanBroadcast').stop(serverId);
     await require('./udpGateway').stop(serverId);
@@ -1898,10 +1923,12 @@ done
     // Unregister ports
     this.unregisterPorts(serverId);
 
-    try {
-      const gatewayManager = require('./gatewayManager');
-      gatewayManager.detachServer(serverId);
-    } catch { /* ignore */ }
+    if (!attachments.length) {
+      try {
+        const gatewayManager = require('./gatewayManager');
+        gatewayManager.detachServer(serverId);
+      } catch { /* ignore */ }
+    }
 
     const pending = this.getPendingBedrockConnect();
     if (pending && (Number(pending.occupantId) === Number(serverId) || this.isBedrockConnect(server))) {

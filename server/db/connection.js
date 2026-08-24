@@ -397,7 +397,34 @@ db.exec(`
   );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS server_plugin_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plugin_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    server_id INTEGER NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    primary_attachment INTEGER NOT NULL DEFAULT 0,
+    display_json TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE RESTRICT,
+    UNIQUE(plugin_id, provider_id, resource_type, resource_id)
+  );
+`);
+
+ensureGatewayColumn('unresolved_target', 'INTEGER NOT NULL DEFAULT 0');
+ensureGatewayColumn('unresolved_reason', 'TEXT');
+
 db.exec(`CREATE INDEX IF NOT EXISTS idx_gateways_status ON gateways(status)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_attachments_server ON server_plugin_attachments(server_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_attachments_resource ON server_plugin_attachments(plugin_id, resource_type, resource_id)`);
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_primary
+  ON server_plugin_attachments(plugin_id, provider_id, server_id)
+  WHERE primary_attachment = 1
+`);
 
 module.exports = db;

@@ -9,6 +9,7 @@ const STATUSES = new Set([
   'port_conflict', 'failed',
 ]);
 const MODES = new Set(['direct', 'viaproxy']);
+const CONTROL_POLICIES = new Set(['normal', 'remote-plugin-lifecycle', 'plugin-disabled']);
 
 function strip(value, max = 120) {
   return String(value || '')
@@ -16,6 +17,44 @@ function strip(value, max = 120) {
     .replace(/[\u0000-\u001f]/g, '')
     .trim()
     .slice(0, max);
+}
+
+function isLocallyAttached(row) {
+  if (!row || Number(row.unresolved_target) === 1) return false;
+  if (row.target_type !== 'local-server' || !row.target_server_id) return false;
+  try {
+    const att = require('./serverPluginAttachments').findByResource(
+      require('./serverPluginAttachments').pluginIdForProvider(row.provider_id) || 'gateway-geyser',
+      'gateway',
+      String(row.id)
+    );
+    return Boolean(att);
+  } catch {
+    return false;
+  }
+}
+
+function decorateEntity(entity, row, { pluginDisabled = false } = {}) {
+  if (!entity) return null;
+  const unresolved = Number(row?.unresolved_target) === 1;
+  const remote = row?.target_type !== 'local-server' || unresolved || !row?.target_server_id;
+  entity.projected = true;
+  entity.unresolvedTarget = unresolved;
+  entity.typeLabel = remote ? 'Remote Java — Geyser' : strip(entity.typeLabel || 'Geyser Server', 40);
+  entity.controlPolicy = pluginDisabled ? 'plugin-disabled' : 'remote-plugin-lifecycle';
+  entity.disabledReasonId = pluginDisabled ? 'plugin-disabled' : 'remote-java';
+  entity.coreActionsDisabled = true;
+  if (!CONTROL_POLICIES.has(entity.controlPolicy)) entity.controlPolicy = 'remote-plugin-lifecycle';
+  try {
+    const contribution = require('./pluginContributions').projectedContribution(row, entity);
+    entity.pluginContributions = contribution ? [contribution] : [];
+    if (contribution?.management?.href) {
+      entity.managementUrl = pluginDisabled ? '/plugins' : contribution.management.href;
+    }
+  } catch {
+    entity.pluginContributions = entity.pluginContributions || [];
+  }
+  return entity;
 }
 
 function sanitizeEntity(raw, fallback = {}) {
@@ -35,7 +74,7 @@ function sanitizeEntity(raw, fallback = {}) {
     kind,
     gatewayProvider: strip(raw?.gatewayProvider || fallback.gatewayProvider || 'geyser', 40),
     name: strip(raw?.name || fallback.name || 'Geyser Server', 80),
-    typeLabel: 'Geyser Server',
+    typeLabel: 'Remote Java — Geyser',
     status,
     connectAddress,
     port: Number.isInteger(port) && port > 0 && port < 65536 ? port : Number(fallback.port) || 0,
@@ -62,11 +101,13 @@ function sanitizeEntity(raw, fallback = {}) {
 
 function snapshotEntity(pluginId, entity) {
   if (!entity?.id || !pluginId) return;
+  const payload = { ...entity };
+  delete payload.pluginContributions;
   db.prepare(`
     INSERT INTO plugin_dashboard_snapshots (entity_id, plugin_id, payload, updated_at)
     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(entity_id) DO UPDATE SET plugin_id = excluded.plugin_id, payload = excluded.payload, updated_at = CURRENT_TIMESTAMP
-  `).run(entity.id, pluginId, JSON.stringify(entity));
+  `).run(entity.id, pluginId, JSON.stringify(payload));
 }
 
 function snapshotPlugin(pluginId) {
@@ -130,7 +171,34 @@ function listLive(onlyPluginId = null) {
   return out;
 }
 
-function list() {
+function buildEntity(row, { pluginDisabled = false, enabledPlugins = null } = {}) {
+  const pluginHost = require('./pluginHost');
+  const enabled = enabledPlugins || new Set(
+    (pluginHost.getPlugins() || []).filter((plugin) => plugin.enabled).map((plugin) => plugin.id)
+  );
+  const entry = gatewayRegistry.get(row.provider_id);
+  const pluginId = entry?.pluginId;
+  const disabled = pluginDisabled || !pluginId || !enabled.has(pluginId);
+  let entity = entityFromRow(row, { pluginDisabled: disabled });
+  if (disabled) {
+    const snap = db.prepare('SELECT payload FROM plugin_dashboard_snapshots WHERE entity_id = ?').get(`gateway:${row.id}`);
+    if (snap?.payload) {
+      try {
+        entity = sanitizeEntity({ ...JSON.parse(snap.payload), pluginDisabled: true, status: 'plugin_disabled', managementUrl: '/plugins' }, entity);
+      } catch { /* keep live fallback */ }
+    }
+    if (entity) {
+      entity.pluginDisabled = true;
+      entity.status = 'plugin_disabled';
+      entity.managementUrl = '/plugins';
+    }
+  } else if (entity && pluginId) {
+    snapshotEntity(pluginId, entity);
+  }
+  return decorateEntity(entity, row, { pluginDisabled: disabled });
+}
+
+function list({ projectedOnly = true } = {}) {
   const pluginHost = require('./pluginHost');
   const enabledPlugins = new Set(
     (pluginHost.getPlugins() || []).filter((plugin) => plugin.enabled).map((plugin) => plugin.id)
@@ -139,25 +207,8 @@ function list() {
   const seen = new Set();
   const out = [];
   for (const row of rows) {
-    const entry = gatewayRegistry.get(row.provider_id);
-    const pluginId = entry?.pluginId;
-    const pluginDisabled = !pluginId || !enabledPlugins.has(pluginId);
-    let entity = entityFromRow(row, { pluginDisabled });
-    if (pluginDisabled) {
-      const snap = db.prepare('SELECT payload FROM plugin_dashboard_snapshots WHERE entity_id = ?').get(`gateway:${row.id}`);
-      if (snap?.payload) {
-        try {
-          entity = sanitizeEntity({ ...JSON.parse(snap.payload), pluginDisabled: true, status: 'plugin_disabled', managementUrl: '/plugins' }, entity);
-        } catch { /* keep live fallback */ }
-      }
-      if (entity) {
-        entity.pluginDisabled = true;
-        entity.status = 'plugin_disabled';
-        entity.managementUrl = '/plugins';
-      }
-    } else if (entity) {
-      snapshotEntity(pluginId, entity);
-    }
+    if (projectedOnly && isLocallyAttached(row)) continue;
+    const entity = buildEntity(row, { enabledPlugins });
     if (entity && !seen.has(entity.id)) {
       seen.add(entity.id);
       out.push(entity);
@@ -169,18 +220,23 @@ function list() {
 function get(id) {
   const raw = String(id || '');
   const num = raw.startsWith('gateway:') ? Number(raw.slice(8)) : Number(raw);
-  return list().find((item) => item.id === `gateway:${num}` || Number(item.id.slice(8)) === num) || null;
+  if (!Number.isInteger(num) || num < 1) return null;
+  const row = db.prepare('SELECT * FROM gateways WHERE id = ?').get(num);
+  if (!row) return null;
+  return buildEntity(row);
 }
 
 function collisionsWithServers() {
   const servers = db.prepare('SELECT id FROM servers').all().map((row) => String(row.id));
-  return list().filter((entity) => servers.includes(entity.id));
+  return list({ projectedOnly: false }).filter((entity) => servers.includes(entity.id));
 }
 
 module.exports = {
   collisionsWithServers,
+  collisionsWithServers: collisionsWithServers,
   entityFromRow,
   get,
+  isLocallyAttached,
   list,
   sanitizeEntity,
   snapshotAllGateways,
