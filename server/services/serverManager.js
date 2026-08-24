@@ -27,6 +27,7 @@ class ServerManager {
     this.processes = new Map(); // serverId -> process reference
     this.scheduledRestarts = new Map(); // serverId -> warning/restart timers
     this.provisionJobs = new Map();
+    this.cancelledProvision = new Set();
     this.consoleBuffers = new Map(); // serverId -> recent PTY text
     this.ptyCaptures = new Map(); // serverId -> pending command captures
     this.onlineRefreshInFlight = new Map();
@@ -1058,6 +1059,7 @@ class ServerManager {
   }
 
   async createJavaServer(config) {
+    require('./javaHostingPolicy').assertServerEditionAvailable('java', 'create');
     const name = String(config.name || '').trim();
     const port = parseInt(config.port, 10);
     const version = config.minecraftVersion || config.version || 'latest';
@@ -1147,6 +1149,22 @@ class ServerManager {
 
   async finishCreateJavaServer(serverId, config) {
     const { name, port, maxPlayers, description, gamemode, difficulty, version, loaderProvider, loaderVersion, serverPath } = config;
+    const provisioningCancelled = () => this.cancelledProvision.has(Number(serverId));
+    const markCancelled = () => {
+      this.cancelledProvision.delete(Number(serverId));
+      if (!this.getServer(serverId)) return;
+      db.prepare(`
+        UPDATE servers
+        SET status = 'stopped', pending_restart = 0, pending_restart_reason = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run('Minecraft Java Hosting was disabled during provisioning', serverId);
+      this.invalidateServerCache(serverId);
+      this.broadcastServerStatus(serverId);
+    };
+    if (provisioningCancelled()) {
+      markCancelled();
+      return;
+    }
     try {
       let minecraftVersion = version;
       let resolvedLoader = loaderProvider || 'vanilla';
@@ -1209,7 +1227,10 @@ class ServerManager {
         JSON.stringify(metadata),
         serverId
       );
-      if (!this.getServer(serverId)) return;
+      if (!this.getServer(serverId) || provisioningCancelled()) {
+        if (provisioningCancelled()) markCancelled();
+        return;
+      }
 
       const server = this.getServer(serverId);
       const extras = javaEdition.readSettings(serverId);
@@ -1231,6 +1252,11 @@ class ServerManager {
       javaEdition.writeEula(serverPath);
       javaEdition.syncAccessFiles(server, []);
 
+      if (provisioningCancelled()) {
+        markCancelled();
+        return;
+      }
+
       db.prepare('UPDATE servers SET status = ?, pending_restart_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run('stopped', serverId);
       this.invalidateServerCache(serverId);
@@ -1243,6 +1269,30 @@ class ServerManager {
         .run('stopped', `Create failed: ${err.message}`, serverId);
       this.invalidateServerCache(serverId);
       this.broadcastServerStatus(serverId);
+    }
+  }
+
+  async cancelJavaProvisioning({ timeoutMs = 8000 } = {}) {
+    const java = this.getAllServers().filter((server) => this.isJava(server)
+      && (server.status === 'creating' || this.provisionJobs.has(Number(server.id))));
+    for (const server of java) this.cancelledProvision.add(Number(server.id));
+    const jobs = java
+      .map((server) => this.provisionJobs.get(Number(server.id)))
+      .filter((job) => job && typeof job.then === 'function');
+    if (jobs.length) {
+      await Promise.race([
+        Promise.allSettled(jobs),
+        new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+      ]);
+    }
+    for (const server of this.getAllServers().filter((item) => this.isJava(item) && item.status === 'creating')) {
+      db.prepare(`
+        UPDATE servers
+        SET status = 'stopped', pending_restart = 0, pending_restart_reason = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run('Minecraft Java Hosting was disabled during provisioning', server.id);
+      this.invalidateServerCache(server.id);
+      this.broadcastServerStatus(server.id);
     }
   }
 
@@ -1557,6 +1607,7 @@ done
   }
 
   async startJavaServer(server) {
+    require('./javaHostingPolicy').assertServerEditionAvailable('java', 'start');
     const loaderId = server.loader_provider_id || 'vanilla';
     const jar = javaEdition.installedJar(server.data_path);
     if (loaderId === 'vanilla') {
@@ -1665,6 +1716,7 @@ done
     }
 
     if (this.isJava(current)) {
+      require('./javaHostingPolicy').assertServerEditionAvailable('java', 'start');
       return this.startJavaServer(current);
     }
 
@@ -1817,6 +1869,10 @@ done
   }
 
   async restartServer(serverId) {
+    const server = this.getServer(serverId);
+    if (server && this.isJava(server)) {
+      require('./javaHostingPolicy').assertServerEditionAvailable('java', 'restart');
+    }
     await this.stopServer(serverId);
     await this.startServer(serverId);
     await this.completePendingBedrockConnectIfNeeded(serverId);
@@ -1826,6 +1882,9 @@ done
     const key = this.sessionKey(serverId);
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+    if (this.isJava(server)) {
+      require('./javaHostingPolicy').assertServerEditionAvailable('java', 'restart');
+    }
     if (this.isBedrockConnect(server)) {
       throw new Error('Bedrock Connect does not support warned restarts');
     }
@@ -2327,6 +2386,7 @@ done
     }
 
     if (this.isJava(server)) {
+      require('./javaHostingPolicy').assertServerEditionAvailable('java', 'update');
       const fromVersion = server.minecraft_version || server.version;
       const backupPath = path.join(server.data_path, 'backup_' + Date.now());
       await this.backupServerData(server.data_path, backupPath, { java: true });
@@ -3353,14 +3413,16 @@ done
   }
 
   async getAllPorts() {
+    const javaHostingPolicy = require('./javaHostingPolicy');
     const usedPorts = db.prepare(`
-      SELECT p.port, p.protocol, p.family, p.in_use, s.name as server_name
+      SELECT p.port, p.protocol, p.family, p.in_use, s.name as server_name, s.kind as server_kind
       FROM port_usage p
       LEFT JOIN servers s ON p.server_id = s.id
       ORDER BY p.port
     `).all().map((row) => ({
       ...row,
       family: row.family || portRanges.classifyFamily(row.port),
+      server_name: javaHostingPolicy.redactPortName(row.server_kind, row.server_name),
     }));
 
     const usedPortSet = new Set(usedPorts.map((p) => p.port));

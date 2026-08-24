@@ -376,6 +376,7 @@ function loadBackend(plugin) {
     const javaLoaderRegistry = require('./javaLoaderRegistry');
     const gatewayRegistry = require('./gatewayRegistry');
     const catalogProviderRegistry = require('./catalogProviderRegistry');
+    const serverEditionRegistry = require('./serverEditionRegistry');
     const pluginActions = require('./pluginActions');
     const services = plugin.source === 'bundled' ? createProviderServices(plugin) : { dataDir, logger };
     register({
@@ -388,6 +389,9 @@ function loadBackend(plugin) {
       services,
       registerJavaLoader: (provider) => javaLoaderRegistry.register(plugin, provider),
       registerGateway: (provider) => gatewayRegistry.register(plugin, provider),
+      registerServerEdition: plugin.source === 'bundled'
+        ? (provider) => serverEditionRegistry.register(plugin, provider)
+        : undefined,
       registerCatalogSource: plugin.source === 'bundled'
         ? (provider) => catalogProviderRegistry.register(plugin, provider)
         : undefined,
@@ -474,11 +478,14 @@ function unloadPlugins() {
   try { require('./javaLoaderRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./gatewayRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./catalogProviderRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
+  try { require('./serverEditionRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
 }
 
 function resetForTests() {
   unloadPlugins();
   lastDirs = null;
+  try { require('./javaHostingPolicy').resetForTests(); } catch { /* ignore */ }
+  try { require('./serverEditionRegistry').clear(); } catch { /* ignore */ }
 }
 
 function reloadPlugins() {
@@ -530,12 +537,21 @@ function isBackendEnabled(id, source, backendDeclared) {
   return Boolean(state.backendEnabled[id]);
 }
 
-function setPluginEnabled(id, enabled) {
+async function setPluginEnabled(id, enabled, options = {}) {
   const plugin = getPlugin(id);
   if (!plugin) {
     const err = new Error('Plugin not found');
     err.status = 404;
     throw err;
+  }
+  const javaHostingPolicy = require('./javaHostingPolicy');
+  const isServerEdition = (plugin.capabilities || []).includes('provider:server-edition');
+  if (!enabled && isServerEdition) {
+    const confirm = options.confirm === true || options.confirm === 'true' || options.confirm === 1 || options.confirm === '1';
+    if (!confirm) {
+      throw javaHostingPolicy.confirmError(javaHostingPolicy.disableImpact());
+    }
+    await javaHostingPolicy.performDisable();
   }
   if (!enabled && (plugin.capabilities || []).includes('provider:gateway')) {
     const gatewayManager = require('./gatewayManager');
@@ -551,6 +567,7 @@ function setPluginEnabled(id, enabled) {
   pluginAudit.record('plugin.enabled', { targetType: 'plugin', targetId: id, detail: { enabled: Boolean(enabled) } });
   try { require('./pluginEvents').emit(enabled ? 'plugin.enabled' : 'plugin.disabled', { pluginId: id }); } catch { /* ignore */ }
   reloadPlugins();
+  if (!enabled && isServerEdition) javaHostingPolicy.completeDisable();
   return publicPlugin(getPlugin(id));
 }
 

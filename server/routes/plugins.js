@@ -79,18 +79,35 @@ router.put('/:pluginId/backend-enabled', (req, res) => {
   }
 });
 
-router.put('/:pluginId/enabled', (req, res) => {
+router.put('/:pluginId/enabled', async (req, res) => {
   const value = req.body?.enabled;
   let enabled;
   if (value === true || value === 'true' || value === 1 || value === '1') enabled = true;
   else if (value === false || value === 'false' || value === 0 || value === '0') enabled = false;
   else return res.status(400).json({ error: 'enabled must be true or false' });
   try {
-    const plugin = pluginHost.setPluginEnabled(req.params.pluginId, enabled);
+    const confirm = req.body?.confirm === true || req.body?.confirm === 'true' || req.body?.confirm === 1 || req.body?.confirm === '1';
+    const plugin = await pluginHost.setPluginEnabled(req.params.pluginId, enabled, { confirm });
     sendPluginState(res, { plugin });
   } catch (err) {
-    return res.status(err.status || 400).json({ error: err.message });
+    return res.status(err.status || 400).json({
+      error: err.message,
+      code: err.code,
+      message: err.message,
+      impact: err.impact,
+      failures: err.failures,
+    });
   }
+});
+
+router.get('/:pluginId/disable-impact', (req, res) => {
+  const plugin = pluginHost.getPlugin(req.params.pluginId);
+  if (!plugin) return res.status(404).json({ error: 'Plugin not found' });
+  if (!(plugin.capabilities || []).includes('provider:server-edition')) {
+    return res.json({ required: false, pluginId: plugin.id });
+  }
+  const impact = require('../services/javaHostingPolicy').disableImpact();
+  res.json({ required: true, ...impact });
 });
 
 router.get('/:pluginId/meta', (req, res) => {

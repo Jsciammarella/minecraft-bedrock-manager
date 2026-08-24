@@ -280,6 +280,7 @@ function collectForAttachment(att, { javaServer = null, pluginDisabled = false, 
 
 function listForServer(server) {
   if (!server?.id) return [];
+  if (!require('./javaHostingPolicy').isJavaHostingAvailable()) return [];
   const attachments = require('./serverPluginAttachments').listForServer(server.id);
   const out = [];
   for (const att of attachments) {

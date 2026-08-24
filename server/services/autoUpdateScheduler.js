@@ -140,6 +140,11 @@ class AutoUpdateScheduler {
           }
 
           if (server.kind === 'java') {
+            if (!require('./javaHostingPolicy').isJavaHostingAvailable()) {
+              skipped++;
+              this.updateLastCheck(server.id);
+              continue;
+            }
             const javaEdition = require('./javaEdition');
             let latestJava = server.version;
             try {

@@ -49,6 +49,8 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
   const pluginCapabilities = require('../server/services/pluginCapabilities');
   const javaLoaderRegistry = require('../server/services/javaLoaderRegistry');
   const gatewayRegistry = require('../server/services/gatewayRegistry');
+  const serverEditionRegistry = require('../server/services/serverEditionRegistry');
+  const javaHostingPolicy = require('../server/services/javaHostingPolicy');
   const controlledFs = require('../server/services/controlledFs');
   const controlledDownload = require('../server/services/controlledDownload');
   const controlledProcess = require('../server/services/controlledProcess');
@@ -57,6 +59,9 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
   const javaModMetadata = require('../server/services/javaModMetadata');
   const zipGuard = require('../server/services/zipGuard');
   const gatewayManager = require('../server/services/gatewayManager');
+  const serverManager = require('../server/services/serverManager');
+  const javaModInstall = require('../server/services/javaModInstall');
+  const javaEdition = require('../server/services/javaEdition');
   const fabric = require('../server/bundled-plugins/java-loader-fabric/backend');
   const neoforge = require('../server/bundled-plugins/java-loader-neoforge/backend');
   const geyser = require('../server/bundled-plugins/gateway-geyser/backend');
@@ -66,10 +71,14 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
   const uploadedCaps = pluginCapabilities.parseCapabilities(['provider:java-loader', 'ui:pages'], 'user');
   assert.deepEqual(uploadedCaps.capabilities, ['ui:pages']);
   assert.deepEqual(uploadedCaps.rejectedPrivileged, ['provider:java-loader']);
+  const uploadedEdition = pluginCapabilities.parseCapabilities(['provider:server-edition', 'ui:pages'], 'user');
+  assert.deepEqual(uploadedEdition.capabilities, ['ui:pages']);
+  assert.deepEqual(uploadedEdition.rejectedPrivileged, ['provider:server-edition']);
 
   pluginHost.resetForTests();
   javaLoaderRegistry.clear();
   gatewayRegistry.clear();
+  serverEditionRegistry.clear();
 
   const bundledDir = path.join(testRoot, 'bundled-plugins');
   const userDir = pluginHost.USER_PLUGINS_DIR;
@@ -119,6 +128,7 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
   pluginHost.resetForTests();
   javaLoaderRegistry.clear();
   gatewayRegistry.clear();
+  serverEditionRegistry.clear();
 
   // Treat test folder as bundled by loading only that dir while copying into a dir named like bundled.
   // Direct register API:
@@ -539,6 +549,10 @@ versionRange="[13.0.8,)"
   pluginHost.resetForTests();
   gatewayRegistry.clear();
   pluginHost.loadPlugins([pluginHost.BUNDLED_PLUGINS_DIR]);
+  assert.ok(serverEditionRegistry.get('java'), 'Minecraft Java Hosting plugin should register the java edition');
+  assert.equal(javaHostingPolicy.isJavaHostingAvailable(), true);
+  assert.ok(javaHostingPolicy.listEditions().some((item) => item.id === 'java' && item.available));
+  assert.ok(javaHostingPolicy.listEditions().some((item) => item.id === 'bedrock' && item.core));
   assert.equal(modCompatibility.compatibleWithServer(
     { edition: 'java', loader: 'fabric', minecraft_versions: JSON.stringify(['1.21.1']) },
     { kind: 'java', loader_provider_id: 'fabric', minecraft_version: '1.26.1' }
@@ -1085,6 +1099,135 @@ versionRange="[13.0.8,)"
   assert.ok(gatewayRegistry.get('geyser'));
   assert.ok(pluginHost.getMenuItems().some((item) => item.pluginId === 'gateway-geyser'));
 
+  const javaHostingPlugin = pluginHost.getPlugin('server-edition-java');
+  assert.ok(javaHostingPlugin);
+  assert.equal(javaHostingPlugin.name, 'Minecraft Java Hosting');
+  assert.ok((javaHostingPlugin.capabilities || []).includes('provider:server-edition'));
+  assert.equal(pluginHost.getMenuItems().some((item) => item.pluginId === 'server-edition-java'), false);
+
+  await assert.rejects(
+    () => pluginHost.setPluginEnabled('server-edition-java', false),
+    (err) => err.code === 'JAVA_HOSTING_DISABLE_CONFIRM' && /No server data will be deleted/i.test(err.message)
+  );
+  assert.equal(pluginHost.getPlugin('server-edition-java').enabled, true);
+
+  const origStopFail = serverManager.stopServer.bind(serverManager);
+  serverManager.stopServer = async () => { throw new Error('refused to stop'); };
+  db.prepare(`UPDATE servers SET status = 'running' WHERE id = ?`).run(javaId);
+  try {
+    await assert.rejects(
+      () => pluginHost.setPluginEnabled('server-edition-java', false, { confirm: true }),
+      (err) => err.code === 'JAVA_HOSTING_DISABLE_FAILED'
+    );
+    assert.equal(pluginHost.getPlugin('server-edition-java').enabled, true);
+    assert.equal(javaHostingPolicy.isJavaHostingAvailable(), true);
+  } finally {
+    serverManager.stopServer = origStopFail;
+    db.prepare(`UPDATE servers SET status = 'stopped' WHERE id = ?`).run(javaId);
+  }
+
+  javaHostingPolicy.markDisabling();
+  await assert.rejects(
+    () => serverManager.createJavaServer({
+      name: 'blocked-java',
+      port: 25566,
+      acceptEula: true,
+      loaderProvider: 'vanilla',
+    }),
+    (err) => err.code === 'JAVA_HOSTING_DISABLED'
+  );
+  await assert.rejects(
+    () => gatewayManager.start(created.id),
+    (err) => err.code === 'JAVA_HOSTING_DISABLED'
+  );
+  javaHostingPolicy.clearDisabling();
+
+  db.prepare(`UPDATE servers SET status = 'creating' WHERE id = ?`).run(javaId);
+  await serverManager.cancelJavaProvisioning({ timeoutMs: 20 });
+  assert.equal(serverManager.getServer(javaId).status, 'stopped');
+
+  const stopOrder = [];
+  const origGwStop = gatewayManager.stop;
+  const origJavaStop = serverManager.stopServer.bind(serverManager);
+  gatewayManager.stop = (id) => {
+    stopOrder.push(`gateway:${id}`);
+    return origGwStop(id);
+  };
+  serverManager.stopServer = async (id) => {
+    stopOrder.push(`java:${id}`);
+    return origJavaStop(id);
+  };
+  db.prepare(`UPDATE servers SET status = 'running' WHERE id = ?`).run(javaId);
+  db.prepare(`UPDATE gateways SET status = 'running' WHERE id = ?`).run(created.id);
+  try {
+    await pluginHost.setPluginEnabled('server-edition-java', false, { confirm: true });
+  } finally {
+    gatewayManager.stop = origGwStop;
+    serverManager.stopServer = origJavaStop;
+  }
+  const firstGateway = stopOrder.findIndex((item) => item.startsWith('gateway:'));
+  const firstJava = stopOrder.findIndex((item) => item.startsWith('java:'));
+  assert.ok(firstGateway >= 0, 'disablement must stop Geyser/ViaProxy');
+  assert.ok(firstJava >= 0, 'disablement must stop Java servers');
+  assert.ok(firstGateway < firstJava, 'Geyser must stop before Java');
+  assert.equal(pluginHost.getPlugin('server-edition-java').enabled, false);
+  assert.equal(javaHostingPolicy.isJavaHostingAvailable(), false);
+  assert.equal(javaHostingPolicy.listEditions().some((item) => item.id === 'java'), false);
+  assert.ok(javaHostingPolicy.listEditions().some((item) => item.id === 'bedrock' && item.available));
+  assert.ok(javaLoaderRegistry.get('vanilla'), 'loader plugins remain installed while hosting is disabled');
+  assert.ok(
+    pluginHost.getPlugin('catalog-modrinth-java') || pluginHost.getPlugin('catalog-curseforge-java'),
+    'catalog plugins remain installed while hosting is disabled'
+  );
+  assert.equal(javaHostingPolicy.isJavaHostingAvailable(), false);
+  assert.equal(pluginDashboard.list().some((item) => item.id === `gateway:${created.id}`), false);
+  assert.equal(pluginAdvertisements.list().some((item) => item.port === storedVia.bedrock_udp_port), false);
+  assert.equal(pluginContributions.listForServer({ id: javaId, status: 'stopped' }).length, 0);
+  assert.equal(javaHostingPolicy.filterVisibleServers(serverManager.getAllServers()).some((row) => Number(row.id) === Number(javaId)), false);
+  const preservedJava = db.prepare('SELECT * FROM servers WHERE id = ?').get(javaId);
+  assert.ok(preservedJava);
+  assert.ok(fs.existsSync(preservedJava.data_path));
+  const preservedGateway = db.prepare('SELECT * FROM gateways WHERE id = ?').get(created.id);
+  assert.ok(preservedGateway);
+  assert.notEqual(preservedJava.status, 'running');
+  await assert.rejects(() => serverManager.startServer(javaId), (err) => err.code === 'JAVA_HOSTING_DISABLED');
+  await assert.rejects(() => serverManager.restartServer(javaId), (err) => err.code === 'JAVA_HOSTING_DISABLED');
+  assert.throws(
+    () => javaModInstall.install(preservedJava, 1),
+    (err) => err.code === 'JAVA_HOSTING_DISABLED'
+  );
+  await assert.rejects(() => gatewayManager.start(created.id), (err) => err.code === 'JAVA_HOSTING_DISABLED');
+  db.prepare(`UPDATE gateways SET status = 'running' WHERE id = ?`).run(created.id);
+  await javaHostingPolicy.reconcileOnStartup();
+  assert.equal(db.prepare('SELECT status FROM gateways WHERE id = ?').get(created.id).status, 'stopped');
+
+  await pluginHost.setPluginEnabled('server-edition-java', true);
+  assert.equal(javaHostingPolicy.isJavaHostingAvailable(), true);
+  assert.ok(serverEditionRegistry.get('java'));
+  assert.equal(db.prepare('SELECT status FROM servers WHERE id = ?').get(javaId).status, 'stopped');
+  assert.equal(db.prepare('SELECT status FROM gateways WHERE id = ?').get(created.id).status, 'stopped');
+  assert.ok(pluginDashboard.list().some((item) => item.id === `gateway:${created.id}`));
+  assert.ok(javaEdition.PERMISSIONS.some((item) => item.key === 'servers.create_java'));
+
+  const createUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/CreateServer.jsx'), 'utf8');
+  assert.match(createUi, /serverApi\.editions/);
+  assert.match(createUi, /Bedrock/);
+  const pluginsUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/Plugins.jsx'), 'utf8');
+  assert.match(pluginsUi, /Continue/);
+  assert.match(pluginsUi, /Cancel/);
+  assert.match(pluginsUi, /disableImpact|JAVA_HOSTING_DISABLE_CONFIRM/);
+  const dashUiHosting = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/Dashboard.jsx'), 'utf8');
+  assert.match(dashUiHosting, /javaHostingAvailable/);
+
+  assert.throws(
+    () => serverEditionRegistry.register({
+      id: 'evil-edition',
+      source: 'user',
+      capabilities: ['provider:server-edition'],
+    }, { getMetadata: () => ({ id: 'java', label: 'Java' }) }),
+    /bundled/
+  );
+
   const otherProvider = {
     getMetadata: () => ({
       id: 'other-gw',
@@ -1144,6 +1287,7 @@ versionRange="[13.0.8,)"
   pluginHost.resetForTests();
   javaLoaderRegistry.clear();
   gatewayRegistry.clear();
+  serverEditionRegistry.clear();
 }
 
 module.exports = { runJavaProviderTests };

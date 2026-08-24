@@ -4,10 +4,13 @@ const pluginDashboard = require('../services/pluginDashboard');
 
 router.get('/', (req, res) => {
   try {
+    const javaHostingPolicy = require('../services/javaHostingPolicy');
     const gateways = pluginDashboard.list();
     res.json({
       gateways,
       geyserCount: gateways.length,
+      editions: javaHostingPolicy.listEditions(),
+      javaHostingAvailable: javaHostingPolicy.isJavaHostingAvailable(),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

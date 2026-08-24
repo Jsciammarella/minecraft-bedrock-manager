@@ -23,6 +23,9 @@ function CreateServer() {
   const [loaderVersions, setLoaderVersions] = useState(['latest-compatible']);
   const [loaderVersion, setLoaderVersion] = useState('latest-compatible');
   const [loaderNotice, setLoaderNotice] = useState('');
+  const [editions, setEditions] = useState([
+    { id: 'bedrock', label: 'Bedrock', available: true, core: true },
+  ]);
   
   const [formData, setFormData] = useState({
     name: '',
@@ -42,6 +45,14 @@ function CreateServer() {
 
   useEffect(() => {
     loadPorts();
+    serverApi.editions()
+      .then((res) => {
+        const listed = (res.data?.editions || []).filter((item) => item?.available && item?.id);
+        if (listed.length) setEditions(listed);
+      })
+      .catch(() => {
+        setEditions([{ id: 'bedrock', label: 'Bedrock', available: true, core: true }]);
+      });
     serverApi.javaProviders()
       .then((res) => {
         const providers = res.data?.providers || [];
@@ -49,6 +60,12 @@ function CreateServer() {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (serverKind === 'java' && !editions.some((item) => item.id === 'java')) {
+      setServerKind('bedrock');
+    }
+  }, [editions, serverKind]);
 
   useEffect(() => {
     if (!java || remote) return undefined;
@@ -307,11 +324,11 @@ function CreateServer() {
             placeholder="My Awesome Server"
             required
           />
-          <div className="grid grid-cols-3 gap-2 mt-3" role="radiogroup" aria-label="Server type">
+          <div className={`grid gap-2 mt-3 ${editions.some((item) => item.id === 'java') ? 'grid-cols-3' : 'grid-cols-2'}`} role="radiogroup" aria-label="Server type">
             {[
               { id: 'remote', label: 'Remote', disabled: remoteCount >= MAX_REMOTE_SERVERS && !remote },
-              { id: 'java', label: 'Java' },
-              { id: 'bedrock', label: 'Bedrock' },
+              ...editions.filter((edition) => edition.id === 'java').map((edition) => ({ id: edition.id, label: edition.label })),
+              ...editions.filter((edition) => edition.id !== 'java').map((edition) => ({ id: edition.id, label: edition.label })),
             ].map((option) => (
               <button
                 key={option.id}

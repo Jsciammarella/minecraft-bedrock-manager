@@ -29,12 +29,13 @@ router.get('/providers/:providerId/loader-versions', async (req, res) => {
 
 router.post('/providers/:providerId/validate', async (req, res) => {
   try {
+    require('../services/javaHostingPolicy').assertServerEditionAvailable('java', 'validate');
     const entry = javaLoaderRegistry.requireLoader(req.params.providerId);
     const resolved = await entry.provider.resolveInstallation(req.body || {});
     pluginAudit.record('java.validate', { targetType: 'java-loader', targetId: entry.id, detail: resolved });
     res.json({ ok: true, resolved, notices: entry.provider.getMetadata()?.notices || [] });
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
   }
 });
 

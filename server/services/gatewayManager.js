@@ -493,6 +493,7 @@ function floodgatePresentOnServer(serverDir) {
 }
 
 async function ensureFloodgateOnLocalServer(row, { restartJava = true } = {}) {
+  require('./javaHostingPolicy').assertServerEditionAvailable('java', 'install-floodgate');
   if (!row || row.authentication !== 'floodgate' || row.target_type !== 'local-server' || !row.target_server_id) {
     return { installed: false, restarted: false };
   }
@@ -533,6 +534,7 @@ async function ensureFloodgateOnLocalServer(row, { restartJava = true } = {}) {
 }
 
 async function installFloodgate(id, { confirm = false } = {}) {
+  require('./javaHostingPolicy').assertServerEditionAvailable('java', 'install-floodgate');
   if (!confirm) {
     throw Object.assign(new Error('Floodgate is not installed onto the Java server unless you confirm that choice'), { status: 400 });
   }
@@ -726,7 +728,12 @@ async function start(id) {
   return work;
 }
 
+function isActive(id) {
+  return ptySessions.has(String(id));
+}
+
 async function startNow(id) {
+  require('./javaHostingPolicy').assertServerEditionAvailable('java', 'start-gateway');
   const row = get(id);
   if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
   if (ptySessions.has(String(id))) {
@@ -1004,7 +1011,17 @@ function stopAll() {
 }
 
 async function restoreRunning() {
+  const javaHostingPolicy = require('./javaHostingPolicy');
   const rows = db.prepare(`SELECT id FROM gateways WHERE status IN ('running', 'starting')`).all();
+  if (!javaHostingPolicy.isJavaHostingAvailable()) {
+    for (const row of rows) {
+      try { stop(row.id); } catch (err) {
+        logger.warn(`Could not stop leftover gateway ${row.id} while Java Hosting is disabled: ${err.message}`);
+      }
+      db.prepare(`UPDATE gateways SET status = 'stopped', health_status = 'stopped' WHERE id = ?`).run(row.id);
+    }
+    return;
+  }
   for (const row of rows) {
     db.prepare(`UPDATE gateways SET status = 'stopped' WHERE id = ?`).run(row.id);
     try { await start(row.id); } catch (err) {
@@ -1032,6 +1049,7 @@ module.exports = {
   remove,
   removeCompatibility,
   restart,
+  isActive,
   restoreRunning,
   runningForPlugin,
   start,

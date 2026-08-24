@@ -68,6 +68,13 @@ app.use('/api/java', require('./routes/java'));
 app.use('/api/gateways', require('./routes/gateways'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/plugin-actions', require('./routes/pluginActions'));
+app.get('/api/editions', (req, res) => {
+  try {
+    res.json({ editions: require('./services/javaHostingPolicy').listEditions() });
+  } catch (err) {
+    res.status(500).json({ error: err.message, editions: [{ id: 'bedrock', label: 'Bedrock', available: true, core: true }] });
+  }
+});
 app.get('/api/gateway-providers', (req, res) => {
   res.json({ providers: require('./services/gatewayRegistry').list() });
 });
@@ -207,6 +214,9 @@ server.listen(PORT, '0.0.0.0', () => {
     });
   dnsProxy.sync().catch((err) => {
     logger.warn(`DNS proxy restore failed: ${err.message}`);
+  });
+  require('./services/javaHostingPolicy').reconcileOnStartup().catch((err) => {
+    logger.warn(`Java hosting reconcile failed: ${err.message}`);
   });
   require('./services/gatewayManager').restoreRunning().catch((err) => {
     logger.warn(`Gateway restore failed: ${err.message}`);

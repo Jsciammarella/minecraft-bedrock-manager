@@ -6,8 +6,8 @@ Mod Catalog, Players, BedrockConnect, or Ports. Geyser is a bundled plugin page,
 not a hard-coded core screen.
 
 Trust is derived from **where the plugin is installed**, not from a field in
-`plugin.json`. Uploaded plugins can never become Java loader, gateway, or
-catalog-source providers by declaring privileged capabilities.
+`plugin.json`. Uploaded plugins can never become Java hosting, Java loader,
+gateway, or catalog-source providers by declaring privileged capabilities.
 
 The sidebar scrolls only when core items plus plugin items no longer fit. If
 they fit, there is no extra scrollbar.
@@ -16,17 +16,33 @@ they fit, there is no extra scrollbar.
 
 | Source | Trust | What it can do |
 | --- | --- | --- |
-| `server/bundled-plugins/` | `system-provider` | Register Java loaders, gateways, and catalog sources; use core download, filesystem, Java, and port services |
+| `server/bundled-plugins/` | `system-provider` | Register server editions, Java loaders, gateways, and catalog sources; use core download, filesystem, Java, and port services |
 | `data/plugins/` (upload) | `ui` (default) | Sandboxed pages only. Optional `backend.js` stays **disabled** until an administrator enables it |
 | Extra/example dirs | `external` | Same UI model as uploads; example backends load so developers can test |
 
-Privileged capabilities (`provider:java-loader`, `provider:gateway`,
+Privileged capabilities (`provider:server-edition`, `provider:java-loader`, `provider:gateway`,
 `provider:catalog-source`, `download:official-sources`, `runtime:java`,
 `filesystem:server-java`, `ports:udp`, …) are rejected for anything outside
 `server/bundled-plugins/`. Unknown capabilities fail plugin load.
 
 Uploaded `backend.js` still runs in the manager Node process if enabled. Treat
 that as trusted code. Isolated workers are a follow-up.
+
+**Minecraft Java Hosting** (`server-edition-java`) is the bundled first-party
+plugin that registers the Java server edition. Java servers cannot be created,
+started, restarted, updated, or given mods, and Geyser/ViaProxy cannot start,
+unless this plugin is installed, enabled, loaded, and registered as healthy.
+Bedrock hosting stays in core and is always available. Vanilla, Fabric, and
+NeoForge loaders, and Java catalog sources, are separate plugins; they do not
+independently enable Java hosting. Existing Java permissions such as
+`servers.create_java` still apply in addition to the plugin gate.
+
+Disabling Minecraft Java Hosting is a coordinated lifecycle operation: the
+Plugins page asks for confirmation, then core stops Geyser/ViaProxy, stops local
+Java servers, removes Bedrock Connect/LAN advertisements, and hides Java and
+Geyser tiles. Server files, worlds, mods, backups, settings, ports, and Geyser
+configuration are preserved. Re-enabling restores visibility without
+automatically restarting anything. Geyser itself is not uninstalled.
 
 First-party Java loaders, Geyser, the CurseForge Java catalog, and the Modrinth
 Java catalog live under `server/bundled-plugins/` and are documented in [`java-providers.md`](./java-providers.md)

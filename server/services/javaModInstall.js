@@ -134,6 +134,7 @@ function validate(server, mod, { file, override = false } = {}) {
 }
 
 function install(server, modId, { fileSha256, override = false } = {}) {
+  require('./javaHostingPolicy').assertServerEditionAvailable('java', 'install-mod');
   const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
   if (!mod) throw Object.assign(new Error('Mod not found'), { status: 404 });
   const existing = db.prepare('SELECT * FROM server_mods WHERE server_id = ? AND mod_id = ?').get(server.id, modId);
@@ -178,6 +179,7 @@ function install(server, modId, { fileSha256, override = false } = {}) {
 }
 
 function remove(server, installationId) {
+  require('./javaHostingPolicy').assertServerEditionAvailable('java', 'remove-mod');
   const row = db.prepare('SELECT * FROM server_mods WHERE id = ? AND server_id = ?').get(installationId, server.id);
   if (!row) throw Object.assign(new Error('Installation not found'), { status: 404 });
   const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(row.mod_id);

@@ -33,6 +33,7 @@ function sanitizeEndpoint(raw) {
 }
 
 function list() {
+  if (!require('./javaHostingPolicy').isJavaHostingAvailable()) return [];
   const pluginHost = require('./pluginHost');
   const enabled = new Set(
     (pluginHost.getPlugins() || []).filter((plugin) => plugin.enabled).map((plugin) => plugin.id)

@@ -199,6 +199,7 @@ function buildEntity(row, { pluginDisabled = false, enabledPlugins = null } = {}
 }
 
 function list({ projectedOnly = true } = {}) {
+  if (!require('./javaHostingPolicy').isJavaHostingAvailable()) return [];
   const pluginHost = require('./pluginHost');
   const enabledPlugins = new Set(
     (pluginHost.getPlugins() || []).filter((plugin) => plugin.enabled).map((plugin) => plugin.id)
@@ -218,6 +219,7 @@ function list({ projectedOnly = true } = {}) {
 }
 
 function get(id) {
+  if (!require('./javaHostingPolicy').isJavaHostingAvailable()) return null;
   const raw = String(id || '');
   const num = raw.startsWith('gateway:') ? Number(raw.slice(8)) : Number(raw);
   if (!Number.isInteger(num) || num < 1) return null;

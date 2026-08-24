@@ -98,7 +98,7 @@ function compareServers(a, b, sortBy) {
 
 function Dashboard() {
   const navigate = useNavigate();
-  const { servers, gateways, loading, refresh } = useApi();
+  const { servers, gateways, javaHostingAvailable, loading, refresh } = useApi();
   const { connected } = useSocket();
   const [actions, setActions] = useState({});
   const [bcPreview, setBcPreview] = useState(null);
@@ -364,13 +364,16 @@ function Dashboard() {
   const bcDisabled = bcExists || bcPending || bcBusy;
   const bcRunning = servers.some(server => isBedrockConnect(server) && (server.status === 'running' || server.status === 'starting'));
   const buildingServers = servers.filter((server) => server.status === 'creating');
+  const activeFilter = (!javaHostingAvailable && (filterType === 'java' || filterType === 'geyser'))
+    ? 'all'
+    : filterType;
   const visibleServers = [...servers, ...gatewayTiles]
     .filter((server) => {
-      if (filterType === 'remote') return isRemote(server);
-      if (filterType === 'local') return !isRemote(server);
-      if (filterType === 'java') return isJava(server) && !isGeyserGateway(server);
-      if (filterType === 'bedrock') return isBedrockEdition(server);
-      if (filterType === 'geyser') {
+      if (activeFilter === 'remote') return isRemote(server);
+      if (activeFilter === 'local') return !isRemote(server);
+      if (activeFilter === 'java') return isJava(server) && !isGeyserGateway(server);
+      if (activeFilter === 'bedrock') return isBedrockEdition(server);
+      if (activeFilter === 'geyser') {
         return isGeyserGateway(server) || pluginContributionsOf(server).length > 0;
       }
       return true;
@@ -558,16 +561,16 @@ function Dashboard() {
               />
             </div>
             <select
-              value={filterType}
+              value={activeFilter}
               onChange={(e) => setFilterType(e.target.value)}
               className="input w-40"
             >
               <option value="all">All Types</option>
               <option value="local">Local</option>
               <option value="remote">Remote</option>
-              <option value="java">Java</option>
+              {javaHostingAvailable && <option value="java">Java</option>}
               <option value="bedrock">Bedrock</option>
-              <option value="geyser">Geyser</option>
+              {javaHostingAvailable && <option value="geyser">Geyser</option>}
             </select>
             <select
               value={sortBy}

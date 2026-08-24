@@ -22,6 +22,7 @@ export const serverApi = {
   updateVersion: (id, version) => api.post(`/servers/${id}/update`, { version }, { timeout: 120000 }),
   checkUpdates: () => api.get('/servers/check-updates'),
   javaVersions: () => api.get('/servers/java/versions'),
+  editions: () => api.get('/editions'),
   javaProviders: () => api.get('/java/providers'),
   javaProviderVersions: (providerId) => api.get(`/java/providers/${encodeURIComponent(providerId)}/versions`),
   javaLoaderVersions: (providerId, minecraftVersion) => api.get(`/java/providers/${encodeURIComponent(providerId)}/loader-versions`, { params: { minecraftVersion } }),
@@ -219,7 +220,12 @@ export const dashboardApi = {
 export const pluginApi = {
   list: () => api.get('/plugins'),
   meta: (id) => api.get(`/plugins/${encodeURIComponent(id)}/meta`),
-  setEnabled: (id, enabled) => api.put(`/plugins/${encodeURIComponent(id)}/enabled`, { enabled }),
+  setEnabled: (id, enabled, extra = {}) => api.put(
+    `/plugins/${encodeURIComponent(id)}/enabled`,
+    { enabled, ...extra },
+    enabled === false ? { timeout: 10 * 60 * 1000 } : undefined,
+  ),
+  disableImpact: (id) => api.get(`/plugins/${encodeURIComponent(id)}/disable-impact`),
   setBackendEnabled: (id, enabled) => api.put(`/plugins/${encodeURIComponent(id)}/backend-enabled`, { enabled }),
   upload: (formData) => api.post('/plugins/upload', formData, { timeout: 120000 }),
 };

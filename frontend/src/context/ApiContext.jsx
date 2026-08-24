@@ -6,6 +6,7 @@ const ApiContext = createContext(null);
 export function ApiProvider({ children }) {
   const [servers, setServers] = useState([]);
   const [gateways, setGateways] = useState([]);
+  const [javaHostingAvailable, setJavaHostingAvailable] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   // Debounce ref to avoid too many rapid refreshes from real-time events
@@ -19,6 +20,9 @@ export function ApiProvider({ children }) {
       ]);
       setServers(res.data);
       setGateways(Array.isArray(dash.data?.gateways) ? dash.data.gateways : []);
+      if (dash.data && Object.prototype.hasOwnProperty.call(dash.data, 'javaHostingAvailable')) {
+        setJavaHostingAvailable(Boolean(dash.data.javaHostingAvailable));
+      }
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -77,7 +81,7 @@ export function ApiProvider({ children }) {
   }, [fetchServers]);
 
   return (
-    <ApiContext.Provider value={{ servers, gateways, loading, error, refresh, setServers }}>
+    <ApiContext.Provider value={{ servers, gateways, javaHostingAvailable, loading, error, refresh, setServers }}>
       {children}
     </ApiContext.Provider>
   );

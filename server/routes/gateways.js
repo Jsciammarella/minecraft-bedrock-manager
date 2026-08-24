@@ -47,7 +47,7 @@ router.post('/:id/start', async (req, res) => {
   try {
     res.json(await gatewayManager.start(req.params.id));
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
   }
 });
 
@@ -63,7 +63,7 @@ router.post('/:id/restart', async (req, res) => {
   try {
     res.json(await gatewayManager.restart(req.params.id));
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
   }
 });
 

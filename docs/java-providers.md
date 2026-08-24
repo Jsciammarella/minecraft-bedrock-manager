@@ -1,8 +1,31 @@
-# Java loaders and Geyser gateways
+# Java hosting, loaders, and Geyser gateways
 
 Minecraft Bedrock Manager does not ship Minecraft, Fabric, NeoForge, Geyser, or
 third-party mods. Official binaries are downloaded when an administrator creates
 or updates a server or gateway.
+
+## Minecraft Java Hosting plugin
+
+Java server hosting is optional. The bundled first-party **Minecraft Java
+Hosting** plugin (`server-edition-java`) registers the `java` server edition
+through the `provider:server-edition` capability. Core still owns provisioning,
+runtime, ports, and shutdown. The plugin is the mandatory gate:
+
+- Java is listed on New Server only while this plugin is enabled and healthy.
+- Direct create, start, restart, update, provisioning, and Java mod install
+  APIs return `409` with `JAVA_HOSTING_DISABLED` when it is not.
+- Geyser and ViaProxy cannot start, including gateways aimed at remote Java
+  servers, unless Java Hosting is available.
+- Existing Java permissions (`servers.create_java`, `servers.start_java`, and
+  related keys) still apply. They do not bypass the plugin.
+- Vanilla, Fabric, and NeoForge loaders do not enable hosting by themselves.
+- Java catalog plugins may still search and download into the mod library, but
+  they cannot install files onto a Java server while hosting is disabled.
+
+Disabling the plugin stops running Geyser/ViaProxy processes first, then local
+Java servers, hides those tiles and advertisements, and keeps all data, worlds,
+mods, backups, settings, Geyser associations, and port reservations. Re-enabling
+reveals the preserved servers as stopped. Nothing autostarts.
 
 ## Provider model
 
@@ -12,11 +35,15 @@ specifications, and (for Geyser) the management UI.
 
 ```text
 Core manager
+├── Server-edition registry (Bedrock core; Java from plugin)
 ├── Generic gateway-provider registry
 ├── Generic gateway records and lifecycle
 ├── Port allocation
 ├── Controlled downloads and Java processes
 └── Optional-integration links on Java servers
+
+Bundled server-edition-java plugin
+└── Registers the Java edition while enabled
 
 Bundled gateway-geyser plugin
 ├── Sidebar entry and management page
@@ -173,6 +200,7 @@ runs in its own isolated process or container.
 
 ## APIs
 
+- `GET /api/editions` (Bedrock always; Java only while Minecraft Java Hosting is enabled)
 - `GET /api/java/providers`
 - `GET /api/java/providers/:id/versions`
 - `GET /api/java/providers/:id/loader-versions`
