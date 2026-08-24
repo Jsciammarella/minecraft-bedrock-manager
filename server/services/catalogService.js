@@ -16,6 +16,7 @@ const LOCAL_PROVIDER_IDS = new Set(['git', 'file']);
 const LEGACY_CURSEFORGE_SOURCE = 'curseforge';
 const BEDROCK_CURSEFORGE_ID = 'curseforge-bedrock';
 const JAVA_CURSEFORGE_ID = 'curseforge-java';
+const JAVA_MODRINTH_ID = 'modrinth-java';
 
 function clampPageSize(value) {
   const size = parseInt(value, 10);
@@ -38,11 +39,13 @@ function sourceStatus() {
   ensureProviders();
   const settings = settingsStore.publicCatalogSettings();
   const java = catalogProviderRegistry.get(JAVA_CURSEFORGE_ID);
+  const modrinth = catalogProviderRegistry.get(JAVA_MODRINTH_ID);
   return {
     curseforge: settings.curseforge.configured,
     git: Boolean(settings.git.enabled && settings.git.url),
     file: fileCatalog.isConfigured(),
     [JAVA_CURSEFORGE_ID]: Boolean(java),
+    [JAVA_MODRINTH_ID]: Boolean(modrinth),
   };
 }
 
@@ -56,6 +59,7 @@ function publicSources() {
     let isAvailable = true;
     if (provider.id === BEDROCK_CURSEFORGE_ID) isAvailable = Boolean(available.curseforge);
     else if (provider.id === JAVA_CURSEFORGE_ID) isAvailable = Boolean(available[JAVA_CURSEFORGE_ID]);
+    else if (provider.id === JAVA_MODRINTH_ID) isAvailable = Boolean(available[JAVA_MODRINTH_ID]);
     else if (provider.id === 'git') isAvailable = Boolean(available.git);
     else if (provider.id === 'file') isAvailable = Boolean(available.file);
     sources[key] = {
@@ -78,6 +82,9 @@ function configureError(source) {
   }
   if (source === JAVA_CURSEFORGE_ID) {
     return 'CurseForge Java requires the existing CurseForge API key. Open Catalog Settings to add it.';
+  }
+  if (source === JAVA_MODRINTH_ID) {
+    return 'The Modrinth Java catalog is disabled. Enable the Modrinth Java Catalog plugin to search Java projects.';
   }
   return 'That catalog source is not configured.';
 }
@@ -121,10 +128,12 @@ function errorId(entry) {
 function categoryForProvider(entry, category) {
   const requested = String(category || '').trim();
   if (!requested) return '';
-  if (requested.startsWith('curseforge-java:')) {
-    return entry.id === JAVA_CURSEFORGE_ID ? requested : '__skip__';
+  const colon = requested.indexOf(':');
+  if (colon > 0) {
+    const prefix = requested.slice(0, colon);
+    return prefix === entry.id ? requested : '__skip__';
   }
-  if (entry.id === JAVA_CURSEFORGE_ID) return '__skip__';
+  if (entry.id === JAVA_CURSEFORGE_ID || entry.id === JAVA_MODRINTH_ID) return '__skip__';
   return requested;
 }
 
@@ -172,6 +181,8 @@ async function searchMods(query = '', options = {}) {
     provider,
     source,
     gameVersions: minecraftVersions.parseRequestedGameVersions(options.gameVersions),
+    loader: options.loader || '',
+    environment: options.environment || '',
   };
   const available = sourceStatus();
   const errors = [];
@@ -185,6 +196,11 @@ async function searchMods(query = '', options = {}) {
       warning: 'CurseForge Java is disabled. Enable the CurseForge Java Catalog plugin to search Java projects.',
     });
   }
+  if ((source === JAVA_MODRINTH_ID || provider === JAVA_MODRINTH_ID) && !catalogProviderRegistry.get(JAVA_MODRINTH_ID)) {
+    return withMeta(unsupportedCombination(source, edition, JAVA_MODRINTH_ID), errors, available, {
+      warning: 'Modrinth is disabled. Enable the Modrinth Java Catalog plugin to search Java projects.',
+    });
+  }
   if ((provider || (source && source !== 'all')) && !matched.length) {
     return withMeta(unsupportedCombination(source, edition, provider), errors, available);
   }
@@ -194,7 +210,7 @@ async function searchMods(query = '', options = {}) {
       total: 0,
       page,
       warning: edition === 'java'
-        ? 'No Java catalog sources are enabled. Enable the CurseForge Java Catalog plugin to search Java projects.'
+        ? 'No Java catalog sources are enabled. Enable the CurseForge Java Catalog or Modrinth Java Catalog plugin to search Java projects.'
         : 'No catalog sources match the selected filters.',
       emptyReason: 'no-providers',
     }, errors, available);
@@ -269,10 +285,13 @@ async function searchMods(query = '', options = {}) {
   const anyLocal = available.git || available.file;
   const cfFailed = errors.some((item) => item.providerId === BEDROCK_CURSEFORGE_ID || item.source === LEGACY_CURSEFORGE_SOURCE);
   const javaFailed = errors.some((item) => item.providerId === JAVA_CURSEFORGE_ID);
-  if (!anyLocal && cfFailed && !javaFailed) {
+  const modrinthFailed = errors.some((item) => item.providerId === JAVA_MODRINTH_ID);
+  if (!anyLocal && cfFailed && !javaFailed && !modrinthFailed) {
     warning = 'CurseForge is unavailable. Open Catalog Settings to add a Git repository, file catalog, or CurseForge API key.';
   } else if (javaFailed) {
     warning = errors.find((item) => item.providerId === JAVA_CURSEFORGE_ID)?.error;
+  } else if (modrinthFailed) {
+    warning = errors.find((item) => item.providerId === JAVA_MODRINTH_ID)?.error;
   } else if (!available.curseforge && !anyLocal && !remoteResults.length && !local.length) {
     warning = 'No catalog sources are configured. Open Catalog Settings to add a Git repository, file catalog, or CurseForge API key.';
   }
@@ -309,6 +328,15 @@ async function getCategories(options = {}) {
   return categories;
 }
 
+function catalogProjectId(body = {}, slug) {
+  return body.curseforgeId || body.modrinthId || slug;
+}
+
+function javaMinecraftVersions(body = {}) {
+  const requested = minecraftVersions.parseRequestedGameVersions(body.gameVersions || body.minecraftVersions);
+  return minecraftVersions.providerGameVersions(['java'], requested);
+}
+
 function resolveDownloadEntry(body = {}) {
   const provider = String(body.provider || '').trim();
   const source = String(body.source || LEGACY_CURSEFORGE_SOURCE).trim();
@@ -334,7 +362,7 @@ async function downloadMod(slug, body = {}) {
   const entry = resolveDownloadEntry(body);
   const selectedFiles = Array.isArray(body.files) ? body.files.map(String).filter(Boolean) : [];
   const javaPolicy = catalogDownloadPolicy.appliesJavaPolicy(entry, body);
-  const projectId = body.curseforgeId || slug;
+  const projectId = catalogProjectId(body, slug);
   let files = [];
   try {
     files = await listDownloadFiles(slug, body);
@@ -346,7 +374,10 @@ async function downloadMod(slug, body = {}) {
     ? catalogDownloadPolicy.projectAvailability(files, { complete: true })
     : null;
   if (javaPolicy && files.length) {
-    catalogDownloadPolicy.setCachedAvailability(entry.id, projectId, { files, availability });
+    catalogDownloadPolicy.setCachedAvailability(entry.id, projectId, { files, availability }, {
+      loader: body.loader,
+      minecraftVersions: javaMinecraftVersions(body),
+    });
   }
 
   if (javaPolicy && selectedFiles.length) {
@@ -407,6 +438,8 @@ async function downloadMod(slug, body = {}) {
     fileKind: body.fileKind,
     serverId: body.serverId,
     loader: javaPolicy ? requestedLoader : undefined,
+    minecraftVersions: javaPolicy ? javaMinecraftVersions(body) : undefined,
+    gameVersions: body.gameVersions,
   });
   if (downloaded?.needsSelection) {
     const listed = javaPolicy
@@ -432,11 +465,31 @@ async function downloadMod(slug, body = {}) {
         throw err;
       }
     }
-    return catalogLibrary.importDownloadPlan(downloaded, {
+    const importOpts = {
       allowHosts: entry.downloadHosts || entry.provider.getMetadata()?.downloadHosts || [],
       providerId: entry.id,
       loader: javaPolicy ? requestedLoader : undefined,
-    });
+    };
+    if (javaPolicy) {
+      for (const related of downloaded.relatedPlans || []) {
+        catalogDownloadPolicy.assertPlanNotClientOnly(related, { providerId: entry.id });
+      }
+    }
+    const imported = await catalogLibrary.importDownloadPlan(downloaded, importOpts);
+    const extras = [];
+    for (const plan of downloaded.relatedPlans || []) {
+      extras.push(await catalogLibrary.importDownloadPlan(plan, importOpts));
+    }
+    if (!extras.length) return imported;
+    return {
+      ...imported,
+      dependencies: extras.map((item) => ({
+        modId: item.modId,
+        name: item.name,
+        merged: item.merged,
+        files: item.files,
+      })),
+    };
   }
   return downloaded;
 }
@@ -444,10 +497,13 @@ async function downloadMod(slug, body = {}) {
 async function listDownloadFiles(slug, body = {}) {
   ensureProviders();
   const entry = resolveDownloadEntry(body);
-  const projectId = body.curseforgeId || slug;
+  const projectId = catalogProjectId(body, slug);
   const javaPolicy = catalogDownloadPolicy.appliesJavaPolicy(entry, body);
+  const cacheExtra = javaPolicy
+    ? { loader: body.loader, minecraftVersions: javaMinecraftVersions(body) }
+    : {};
   if (javaPolicy) {
-    const cached = catalogDownloadPolicy.getCachedAvailability(entry.id, projectId);
+    const cached = catalogDownloadPolicy.getCachedAvailability(entry.id, projectId, cacheExtra);
     if (cached?.files) return cached.files;
   }
   const files = await entry.provider.listDownloadFiles(projectId, {
@@ -455,6 +511,9 @@ async function listDownloadFiles(slug, body = {}) {
     projectClass: body.projectClass,
     curseforgeId: body.curseforgeId,
     fileKind: body.fileKind,
+    loader: body.loader,
+    minecraftVersions: javaPolicy ? cacheExtra.minecraftVersions : undefined,
+    gameVersions: body.gameVersions,
   });
   if (!javaPolicy) return files;
   const annotated = (files || []).map(catalogDownloadPolicy.annotateFile);
@@ -462,7 +521,7 @@ async function listDownloadFiles(slug, body = {}) {
   catalogDownloadPolicy.setCachedAvailability(entry.id, projectId, {
     files: annotated,
     availability,
-  });
+  }, cacheExtra);
   return annotated;
 }
 
@@ -474,7 +533,7 @@ function setMultiFileMode(mode) {
 async function getDetails(slug, query = {}) {
   ensureProviders();
   const entry = resolveDownloadEntry(query);
-  const details = await entry.provider.getDetails(query.curseforgeId || slug, {
+  const details = await entry.provider.getDetails(query.curseforgeId || query.modrinthId || slug, {
     slug,
     projectClass: query.projectClass,
     fileKind: query.fileKind,

@@ -307,6 +307,55 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
   const fabricMeta = javaModMetadata.inspectJar(jarPath);
   assert.equal(fabricMeta.loader, 'fabric');
   assert.equal(fabricMeta.environment, 'client');
+  const omittedFabric = javaModMetadata.detectFabric(JSON.stringify({
+    id: 'create',
+    name: 'Create',
+    version: '6.0.0',
+  }));
+  assert.equal(omittedFabric.environment, 'both');
+  const neoClientToml = javaModMetadata.detectNeoForge(`
+modLoader="javafml"
+[[mods]]
+modId="sodium"
+version="1.0"
+clientSideOnly=true
+[[dependencies.sodium]]
+modId="minecraft"
+side="BOTH"
+`);
+  assert.equal(neoClientToml.environment, 'client');
+  const neoDepSideOnly = javaModMetadata.detectNeoForge(`
+modLoader="javafml"
+[[mods]]
+modId="create"
+version="1.0"
+displayName="Create"
+[[dependencies.create]]
+modId="minecraft"
+side="CLIENT"
+`);
+  assert.equal(neoDepSideOnly.environment, 'unknown');
+  const neoDisplayTest = javaModMetadata.detectNeoForge(`
+[[mods]]
+modId="iris"
+displayTest="IGNORE_SERVER_VERSION"
+`);
+  assert.equal(neoDisplayTest.environment, 'client');
+  const quiltJar = path.join(testRoot, 'quilt-client.jar');
+  fs.writeFileSync(quiltJar, zipStore({
+    'quilt.mod.json': JSON.stringify({
+      schema_version: 1,
+      quilt_loader: { id: 'sodium', version: '1.0.0', metadata: { name: 'Sodium' } },
+      minecraft: { environment: 'client' },
+    }),
+  }));
+  const quiltMeta = javaModMetadata.inspectJar(quiltJar);
+  assert.equal(quiltMeta.environment, 'client');
+  assert.equal(quiltMeta.loader, 'fabric');
+  assert.equal(javaModMetadata.preferJarEnvironment('client', 'both'), 'client');
+  assert.equal(javaModMetadata.preferJarEnvironment('unknown', 'server'), 'server');
+  assert.equal(javaModMetadata.aggregateEnvironments(['client', 'both']), 'both');
+  assert.equal(javaModMetadata.aggregateEnvironments(['unknown', 'unknown']), 'unknown');
   const neoJar = path.join(testRoot, 'neo-mod.jar');
   fs.writeFileSync(neoJar, zipStore({
     'META-INF/neoforge.mods.toml': 'modId="demo"\nversion="2.0.0"\ndisplayName="Demo Neo"\n',
@@ -410,6 +459,33 @@ versionRange="[13.0.8,)"
     { allowUnknown: true }
   ), false);
   const javaModFiles = require('../server/services/javaModFiles');
+  const irisHintJar = path.join(testRoot, 'iris-hint.jar');
+  fs.writeFileSync(irisHintJar, zipStore({
+    'fabric.mod.json': JSON.stringify({
+      id: 'iris',
+      name: 'Iris',
+      version: '1.0.0',
+      environment: 'client',
+      depends: { minecraft: '1.21.1' },
+    }),
+  }));
+  assert.equal(javaModFiles.inspectPath(irisHintJar, { environment: 'both', loader: 'fabric' }).environment, 'client');
+  const staleJar = path.join(testRoot, 'stale-unknown.jar');
+  fs.writeFileSync(staleJar, zipStore({
+    'fabric.mod.json': JSON.stringify({
+      id: 'iris',
+      name: 'Iris',
+      version: '1.0.0',
+      environment: 'client',
+    }),
+  }));
+  const backfill = db.prepare(`
+    INSERT INTO mods (name, slug, type, description, file_path, source, edition, environment)
+    VALUES (?, ?, 'mod', '', ?, 'upload', 'java', 'unknown')
+  `).run('Iris Backfill', `iris-backfill-${Date.now()}`, staleJar);
+  const decoratedEnv = javaModFiles.decorate(db.prepare('SELECT * FROM mods WHERE id = ?').get(backfill.lastInsertRowid));
+  assert.equal(decoratedEnv.environment, 'client');
+  assert.equal(db.prepare('SELECT environment FROM mods WHERE id = ?').get(backfill.lastInsertRowid).environment, 'client');
   const fabricLibraryMod = {
     file_path: '/tmp/owo-lib-fabric.jar',
     loader: 'fabric',
@@ -500,8 +576,18 @@ versionRange="[13.0.8,)"
   const libraryUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/ModLibrary.jsx'), 'utf8');
   assert.match(libraryUi, /Downloaded jars/);
   assert.match(libraryUi, /Add jar files/);
+  assert.match(libraryUi, /environmentBadge/);
+  assert.match(libraryUi, /'Client'/);
+  assert.match(libraryUi, /'Server'/);
+  assert.match(libraryUi, /'Both'/);
+  assert.match(libraryUi, /'Unknown'/);
+  assert.doesNotMatch(libraryUi, /modVersionTags\(mod\)\.slice\(0, 4\)/);
   const tileUi = fs.readFileSync(path.join(__dirname, '../frontend/src/components/ModTileTags.jsx'), 'utf8');
-  assert.match(tileUi, /slice\(0, 8\)/);
+  assert.doesNotMatch(tileUi, /slice\(0,\s*8\)/);
+  assert.match(tileUi, /mod-tile-tags-expanded/);
+  const tileCss = fs.readFileSync(path.join(__dirname, '../frontend/src/index.css'), 'utf8');
+  assert.match(tileCss, /mod-tile-tags[^{]*\{[^}]*flex-wrap/s);
+  assert.match(tileCss, /height: 3rem/);
   const detailUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/ServerDetail.jsx'), 'utf8');
   assert.match(detailUi, /Re-evaluate/);
   assert.match(detailUi, /Wrong version \/ launcher/);
@@ -528,6 +614,12 @@ versionRange="[13.0.8,)"
     assert.equal(copied.length, 1);
     assert.ok(copied[0].endsWith(path.join('plugins', 'floodgate', 'key.pem')));
     assert.ok(fs.readFileSync(copied[0]).equals(fs.readFileSync(keyPath)));
+    const fgNeoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fg-neo-'));
+    fs.mkdirSync(path.join(fgNeoDir, 'mods'));
+    fs.writeFileSync(path.join(fgNeoDir, 'mods', 'Floodgate.jar'), Buffer.alloc(0));
+    const copiedNeo = gatewayManager.copyFloodgateKeyToLocalServer(keyPath, { id: 3, data_path: fgNeoDir });
+    assert.ok(copiedNeo.some((item) => item.endsWith(path.join('config', 'floodgate', 'key.pem'))));
+    fs.rmSync(fgNeoDir, { recursive: true, force: true });
     assert.deepEqual(gatewayManager.copyFloodgateKeyToLocalServer(keyPath, { id: 2, data_path: fgEmptyDir }), []);
   } finally {
     fs.rmSync(fgDir, { recursive: true, force: true });
@@ -666,6 +758,13 @@ versionRange="[13.0.8,)"
   const viaForCurrentJava = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '1.21.8' });
   assert.equal(viaForCurrentJava.recommendedMode, 'viaproxy');
   assert.equal(viaForCurrentJava.viaProxyEnabled, false);
+  const neoForgeKick = geyserProvider.checkCompatibility(storedDirect, {
+    minecraftVersion: '1.21.1',
+    loaderProviderId: 'neoforge',
+  });
+  assert.equal(neoForgeKick.compatible, false);
+  assert.equal(neoForgeKick.code, 'MODDED_CLIENT_REQUIRED');
+  assert.match(neoForgeKick.message, /vanilla Java client|Create|Xbox cannot install NeoForge/i);
   const viaAlreadyOn = geyserProvider.checkCompatibility(
     { ...storedDirect, compatibility_mode: 'viaproxy' },
     { minecraftVersion: '1.21.8' }
@@ -679,6 +778,29 @@ versionRange="[13.0.8,)"
   );
   assert.equal(db.prepare('SELECT compatibility_mode FROM gateways WHERE id = ?').get(created.id).compatibility_mode, 'direct');
   assert.equal(fs.existsSync(path.join(storedDirect.data_path, 'ViaProxy.jar')), false);
+
+  const floodgatePlan = geyserProvider.planFloodgateInstallation({ loader_provider_id: 'neoforge', minecraft_version: '1.21.1' });
+  javaLoaderHost.validatePlan(floodgatePlan);
+  assert.equal(floodgatePlan.downloads[0].destination, 'mods/Floodgate.jar');
+  assert.ok(geyser.DOWNLOAD_HOSTS.includes(new URL(floodgatePlan.downloads[0].url).hostname));
+  assert.doesNotMatch(floodgatePlan.downloads[0].url, /^http:/);
+  assert.throws(
+    () => geyserProvider.planFloodgateInstallation({ loader_provider_id: 'vanilla' }),
+    /Fabric|NeoForge|Paper/
+  );
+  await assert.rejects(
+    () => gatewayManager.installFloodgate(created.id, {}),
+    /not installed unless you confirm/
+  );
+  const tinyVia = path.join(storedDirect.data_path, 'ViaProxy.jar');
+  fs.writeFileSync(tinyVia, 'jar');
+  assert.doesNotThrow(() => geyserProvider.prepareRuntime({
+    ...created,
+    compatibility_mode: 'viaproxy',
+    authentication: 'floodgate',
+    data_path: storedDirect.data_path,
+  }));
+  assert.equal(fs.existsSync(path.join(storedDirect.data_path, 'plugins', 'FloodgateJoin.jar')), false);
 
   const viaPlan = await geyserProvider.planCompatibilityInstallation({ confirmViaProxy: true });
   javaLoaderHost.validatePlan(viaPlan);
@@ -706,10 +828,12 @@ versionRange="[13.0.8,)"
   assert.ok(!JSON.stringify(publicVia).includes(String(storedVia.viaproxy_bind_port)));
   const launchVia = geyserProvider.getLaunchSpecification(storedVia);
   assert.equal(launchVia.jar, 'ViaProxy.jar');
-  assert.equal(launchVia.javaAgent, 'ViaProxy.jar');
+  assert.equal(launchVia.javaAgent, undefined);
   assert.deepEqual(launchVia.arguments, ['config', 'viaproxy.yml']);
   const viaArgs = javaLoaderHost.buildJavaArgs(launchVia);
-  assert.ok(viaArgs.includes('-javaagent:ViaProxy.jar'));
+  assert.ok(!viaArgs.includes('-javaagent:ViaProxy.jar'));
+  assert.ok(viaArgs.includes('-jar'));
+  assert.ok(viaArgs.includes('ViaProxy.jar'));
   const viaYml = fs.readFileSync(path.join(storedVia.data_path, 'viaproxy.yml'), 'utf8');
   assert.match(viaYml, /bind-address:\s*127\.0\.0\.1:\d+/);
   assert.match(viaYml, /target-address:\s*\S+:\d+/);

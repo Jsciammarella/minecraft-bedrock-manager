@@ -49,9 +49,7 @@ function recordFromHints(filePath, hints = {}, jarMeta = {}) {
     sha256: jarMeta.sha256 || hints.sha256 || '',
     loader: loader || 'unknown',
     minecraftVersions: Array.isArray(versions) ? versions : [],
-    environment: (hints.environment && hints.environment !== 'unknown')
-      ? hints.environment
-      : (jarMeta.environment || 'unknown'),
+    environment: javaModMetadata.preferJarEnvironment(jarMeta.environment, hints.environment),
     curseforgeFileId: String(hints.curseforgeFileId || hints.fileId || hints.id || ''),
     version: hints.version || hints.displayName || jarMeta.version || '',
     kind: packFiles.typeFromExt(filePath, 'mod'),
@@ -149,9 +147,53 @@ function bestFileForServer(mod, server, { sha256, allowUnknown = false, allowMis
   return null;
 }
 
+function parseMetadata(raw) {
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function markJarEnvironment(modId) {
+  const row = db.prepare('SELECT metadata_json FROM mods WHERE id = ?').get(modId);
+  const metadata = parseMetadata(row?.metadata_json);
+  if (metadata.jarEnvironment === true) return;
+  metadata.jarEnvironment = true;
+  db.prepare('UPDATE mods SET metadata_json = ? WHERE id = ?').run(JSON.stringify(metadata), modId);
+}
+
+function refreshJarEnvironment(mod) {
+  if (!mod?.id || String(mod.edition || '').toLowerCase() !== 'java') return mod;
+  const metadata = parseMetadata(mod.metadata_json);
+  if (metadata.jarEnvironment === true) return mod;
+  const files = listFiles(mod);
+  const hasJar = files.some((file) => (
+    String(file.path || '').toLowerCase().endsWith('.jar') && fs.existsSync(file.path)
+  ));
+  if (!hasJar) return mod;
+  let inspected = false;
+  const next = files.map((file) => {
+    if (!String(file.path || '').toLowerCase().endsWith('.jar') || !fs.existsSync(file.path)) return file;
+    try {
+      const jarMeta = javaModMetadata.inspectJar(file.path, { hash: false });
+      inspected = true;
+      return {
+        ...file,
+        environment: javaModMetadata.preferJarEnvironment(jarMeta.environment, file.environment),
+      };
+    } catch {
+      return file;
+    }
+  });
+  if (!inspected) return mod;
+  return persistFiles(mod.id, next, { jarEnvironment: true });
+}
+
 function decorate(mod, { usageByMod } = {}) {
   if (!mod) return mod;
-  const files = listFiles(mod).map((file) => publicFile(file)).filter(Boolean);
+  const current = refreshJarEnvironment(mod);
+  const files = listFiles(current).map((file) => publicFile(file)).filter(Boolean);
   const stats = aggregate(files);
   const usageRows = usageByMod?.get(Number(mod.id)) || [];
   const primaryName = path.basename(mod.file_path || '');
@@ -165,11 +207,12 @@ function decorate(mod, { usageByMod } = {}) {
   });
   const usedBy = [...new Map(usageRows.map((row) => [row.serverId, { id: row.serverId, name: row.name }])).values()];
   return {
-    ...mod,
+    ...current,
     files: decoratedFiles,
     loaders: stats.loaders,
-    minecraftVersions: stats.minecraftVersions.length ? stats.minecraftVersions : minecraftVersions.modMinecraftVersions(mod),
-    loader: stats.loaders.length ? stats.loader : (mod.loader || 'any'),
+    minecraftVersions: stats.minecraftVersions.length ? stats.minecraftVersions : minecraftVersions.modMinecraftVersions(current),
+    loader: stats.loaders.length ? stats.loader : (current.loader || 'any'),
+    environment: javaModMetadata.aggregateEnvironments(files.map((file) => file.environment)),
     inUse: usedBy.length > 0,
     usedBy,
   };
@@ -196,15 +239,16 @@ function decorateMany(rows) {
   return (rows || []).map((row) => decorate(row, { usageByMod }));
 }
 
-function persistFiles(modId, files) {
+function persistFiles(modId, files, { jarEnvironment = false } = {}) {
   const list = (files || []).filter((file) => file?.path);
   if (!list.length) throw Object.assign(new Error('A Java mod must keep at least one jar file'), { status: 400 });
   const primary = list[0];
   const extras = list.slice(1);
   const stats = aggregate(list);
+  const environment = javaModMetadata.normalizeEnvironment(primary.environment);
   db.prepare(`
     UPDATE mods
-    SET file_path = ?, file_size = ?, extra_files = ?, loader = ?, minecraft_versions = ?, sha256 = ?
+    SET file_path = ?, file_size = ?, extra_files = ?, loader = ?, minecraft_versions = ?, sha256 = ?, environment = ?
     WHERE id = ?
   `).run(
     primary.path,
@@ -213,8 +257,10 @@ function persistFiles(modId, files) {
     stats.loader,
     JSON.stringify(stats.minecraftVersions),
     primary.sha256 || '',
+    environment,
     modId
   );
+  if (jarEnvironment) markJarEnvironment(modId);
   return decorate(db.prepare('SELECT * FROM mods WHERE id = ?').get(modId));
 }
 
@@ -222,10 +268,19 @@ function findExistingLibraryMod(project = {}) {
   const curseforgeId = project.curseforgeId != null && project.curseforgeId !== ''
     ? String(project.curseforgeId)
     : '';
+  const modrinthId = String(project.modrinthId || project.metadata?.modrinth?.projectId || '').trim();
   const slug = String(project.slug || '').trim();
   if (curseforgeId) {
     const byId = db.prepare('SELECT * FROM mods WHERE curseforge_id = ?').get(curseforgeId);
     if (byId) return byId;
+  }
+  if (modrinthId) {
+    const byModrinth = db.prepare(`
+      SELECT * FROM mods
+      WHERE json_extract(metadata_json, '$.modrinthProjectId') = ?
+         OR json_extract(metadata_json, '$.modrinth.projectId') = ?
+    `).get(modrinthId, modrinthId);
+    if (byModrinth) return byModrinth;
   }
   if (slug) {
     const bySlug = db.prepare('SELECT * FROM mods WHERE slug = ?').get(slug);
@@ -237,6 +292,12 @@ function findExistingLibraryMod(project = {}) {
     }
   }
   return null;
+}
+
+function findExistingByHash(sha256) {
+  const hash = String(sha256 || '').trim().toLowerCase();
+  if (!hash) return null;
+  return db.prepare('SELECT * FROM mods WHERE lower(COALESCE(sha256, \'\')) = ?').get(hash) || null;
 }
 
 function appendFiles(mod, incoming) {
@@ -260,7 +321,7 @@ function appendFiles(mod, incoming) {
     current.push(file);
     added.push(file);
   }
-  persistFiles(mod.id, current);
+  persistFiles(mod.id, current, { jarEnvironment: true });
   return { added, files: listFiles(db.prepare('SELECT * FROM mods WHERE id = ?').get(mod.id)) };
 }
 
@@ -306,6 +367,7 @@ module.exports = {
   fileKey,
   fileMatchesServer,
   findExistingLibraryMod,
+  findExistingByHash,
   inspectPath,
   listFiles,
   matchingFiles,

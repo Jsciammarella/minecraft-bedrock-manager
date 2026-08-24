@@ -144,11 +144,13 @@ export const modApi = {
     edition: mod.edition,
     projectClass: mod.projectClass,
     curseforgeId: mod.curseforgeId,
+    modrinthId: mod.modrinthId || extra.modrinthId,
     fileId: mod.fileId,
     fileKind: mod.fileKind,
     serverId,
     files,
     loader: extra.loader,
+    gameVersions: extra.gameVersions,
   }, { timeout: 10 * 60 * 1000 }),
   setCatalogMultiFileMode: (mode) => api.put('/mods/catalog/multi-file-mode', { mode }),
   catalogDetails: (slug, projectClass, source) => api.get(`/mods/catalog/${encodeURIComponent(slug)}`, {

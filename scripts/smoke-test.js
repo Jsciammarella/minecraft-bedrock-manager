@@ -30,6 +30,7 @@ const pluginHost = require('../server/services/pluginHost');
 const pluginRoutes = require('../server/routes/plugins');
 const { runJavaProviderTests } = require('./java-provider-test');
 const { runCatalogProviderTests } = require('./catalog-provider-test');
+const { runModrinthProviderTests } = require('./modrinth-provider-test');
 
 function zipStore(files) {
   const locals = [];
@@ -239,6 +240,7 @@ async function run() {
   await testPluginHost();
   await runJavaProviderTests({ pluginHost, testRoot });
   await runCatalogProviderTests({ pluginHost, testRoot });
+  await runModrinthProviderTests({ pluginHost, testRoot });
 
   const blocker = dgram.createSocket('udp4');
   await new Promise((resolve, reject) => {

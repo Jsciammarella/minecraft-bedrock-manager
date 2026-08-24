@@ -28,8 +28,8 @@ Privileged capabilities (`provider:java-loader`, `provider:gateway`,
 Uploaded `backend.js` still runs in the manager Node process if enabled. Treat
 that as trusted code. Isolated workers are a follow-up.
 
-First-party Java loaders, Geyser, and the CurseForge Java catalog live under
-`server/bundled-plugins/` and are documented in [`java-providers.md`](./java-providers.md)
+First-party Java loaders, Geyser, the CurseForge Java catalog, and the Modrinth
+Java catalog live under `server/bundled-plugins/` and are documented in [`java-providers.md`](./java-providers.md)
 and [`catalog-providers.md`](./catalog-providers.md). Geyser is opt-in: enabling
 the `gateway-geyser` plugin registers the provider and sidebar entry. Creating a
 Java server does not download Geyser, open a Bedrock UDP port, or start a

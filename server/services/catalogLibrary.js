@@ -77,6 +77,7 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
           destination: tmpPath,
           allowHosts,
           sha1: file.sha1,
+          sha512: file.sha512,
           maximumBytes: file.maximumBytes,
           project: project.name || project.slug,
           version: file.displayName || file.fileName,
@@ -137,7 +138,8 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
       curseforgeFileId: file.fileId || file.id,
       version: file.displayName || file.version,
     }));
-    const existing = javaModFiles.findExistingLibraryMod(project);
+    const existing = javaModFiles.findExistingLibraryMod(project)
+      || javaModFiles.findExistingByHash(primary.sha256);
     if (existing) {
       if (!existing.curseforge_id && project.curseforgeId != null && project.curseforgeId !== '') {
         try {
@@ -173,9 +175,10 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
       fileLoader: primary.loader,
       requestedLoader,
     }) || primaryRecord.loader;
-    const environment = primaryRecord.environment && primaryRecord.environment !== 'unknown'
-      ? primaryRecord.environment
-      : (jarMeta.environment || 'unknown');
+    const environment = javaModMetadata.preferJarEnvironment(
+      jarMeta.environment,
+      primaryRecord.environment
+    );
     const warning = [
       jarMeta.warning || 'Java mods are executable code. Only install mods you trust.',
       environment === 'client' ? 'This file is marked client-only and may not load on a dedicated server.' : '',
@@ -185,8 +188,11 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
       providerId: providerId || project.providerId,
       curseforgeProjectId: project.curseforgeId || null,
       curseforgeFileId: primary.fileId || primary.id || null,
+      modrinthProjectId: project.modrinthId || project.metadata?.modrinth?.projectId || null,
+      modrinthVersionId: primary.fileId || primary.metadata?.modrinth?.versionId || null,
       releaseType: primary.releaseType || 'unknown',
       catalog: true,
+      ...(primary.metadata?.modrinth ? { modrinth: primary.metadata.modrinth } : {}),
     };
     const result = db.prepare(`
       INSERT INTO mods (
@@ -219,7 +225,7 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
       JSON.stringify(metadata),
       warning
     );
-    javaModFiles.persistFiles(result.lastInsertRowid, records);
+    javaModFiles.persistFiles(result.lastInsertRowid, records, { jarEnvironment: true });
     pluginAudit.record('catalog.library.insert', {
       targetType: 'mod',
       targetId: String(result.lastInsertRowid),

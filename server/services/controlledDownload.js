@@ -6,11 +6,24 @@ const { URL } = require('url');
 const logger = require('./logger');
 const pluginAudit = require('./pluginAudit');
 const controlledFs = require('./controlledFs');
+const productIdentity = require('./productIdentity');
 
-const USER_AGENT = 'minecraft-bedrock-manager';
+const USER_AGENT = productIdentity.userAgent();
 const DEFAULT_MAX_BYTES = 250 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 180000;
 const DEFAULT_REDIRECTS = 3;
+
+function assertRedirectAllowed(config, allowHosts) {
+  const nextUrl = config?.url || config?.href;
+  if (!nextUrl) return;
+  const parsed = new URL(String(nextUrl), config.baseURL || undefined);
+  if (!hostnameAllowed(parsed.hostname, allowHosts)) {
+    throw Object.assign(new Error('Redirect rejected'), { status: 400 });
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw Object.assign(new Error('Redirect rejected'), { status: 400 });
+  }
+}
 
 function hostnameAllowed(hostname, allowHosts) {
   const host = String(hostname || '').toLowerCase().replace(/\.$/, '');
@@ -58,6 +71,7 @@ async function getJson(url, {
   const { data } = await axios.get(parsed.toString(), {
     timeout: timeoutMs,
     maxRedirects: DEFAULT_REDIRECTS,
+    beforeRedirect: (config) => assertRedirectAllowed(config, allowHosts),
     headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
   });
   return data;
@@ -76,6 +90,7 @@ async function getText(url, {
   const { data } = await axios.get(parsed.toString(), {
     timeout: timeoutMs,
     maxRedirects: DEFAULT_REDIRECTS,
+    beforeRedirect: (config) => assertRedirectAllowed(config, allowHosts),
     responseType: 'text',
     headers: { 'User-Agent': USER_AGENT },
   });
@@ -87,6 +102,7 @@ async function downloadToFile({
   destination,
   sha256,
   sha1,
+  sha512,
   maximumBytes = DEFAULT_MAX_BYTES,
   allowHosts,
   allowHttp = false,
@@ -109,6 +125,7 @@ async function downloadToFile({
         responseType: 'arraybuffer',
         timeout: timeoutMs,
         maxRedirects: DEFAULT_REDIRECTS,
+        beforeRedirect: (config) => assertRedirectAllowed(config, allowHosts),
         maxContentLength: maximumBytes,
         headers: { 'User-Agent': USER_AGENT },
       });
@@ -121,6 +138,12 @@ async function downloadToFile({
       const digest = crypto.createHash('sha256').update(buffer).digest('hex');
       if (digest.toLowerCase() !== String(sha256).toLowerCase()) {
         throw new Error('SHA-256 verification failed');
+      }
+    }
+    if (sha512) {
+      const digest = crypto.createHash('sha512').update(buffer).digest('hex');
+      if (digest.toLowerCase() !== String(sha512).toLowerCase()) {
+        throw new Error('SHA-512 verification failed');
       }
     }
     if (sha1) {

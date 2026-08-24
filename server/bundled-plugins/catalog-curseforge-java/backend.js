@@ -69,6 +69,17 @@ function parseGameVersions(versions) {
   return { loader, environment, minecraftVersions };
 }
 
+function matchesEnvironmentFilter(environment, filter) {
+  const value = String(filter || '').trim().toLowerCase();
+  if (!value || value === 'all') return true;
+  if (value === 'server-compatible' || value === 'server_compatible') return environment !== 'client';
+  if (value === 'server' || value === 'server-only' || value === 'server_only') return environment === 'server';
+  if (value === 'both' || value === 'client-and-server' || value === 'client_and_server') return environment === 'both';
+  if (value === 'client' || value === 'client-only' || value === 'client_only') return environment === 'client';
+  if (value === 'unknown') return environment === 'unknown';
+  return true;
+}
+
 function classSlug(item) {
   return CLASS_SLUGS[item.classId] || item.classId || 'mc-mods';
 }
@@ -326,14 +337,16 @@ function createProvider(services) {
           }
         }
         return {
-          results: results.slice(0, pageSize),
+          results: results.filter((item) => matchesEnvironmentFilter(item.environment, options.environment)).slice(0, pageSize),
           total: Math.max(...pages.map((item) => item.total), results.length),
           page: options.page || 1,
         };
       }
       const data = await apiGet('/v1/mods/search', params);
+      const results = (data.data || []).map(formatProject)
+        .filter((item) => matchesEnvironmentFilter(item.environment, options.environment));
       return {
-        results: (data.data || []).map(formatProject),
+        results,
         total: data.pagination?.totalCount || 0,
         page: options.page || 1,
       };
@@ -380,6 +393,7 @@ function createProvider(services) {
     parseGameVersions,
     formatFile,
     selectFiles,
+    matchesEnvironmentFilter,
   };
 }
 

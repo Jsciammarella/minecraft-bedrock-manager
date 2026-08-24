@@ -262,6 +262,7 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   pluginHost.resetForTests();
   pluginHost.loadPlugins([pluginHost.BUNDLED_PLUGINS_DIR]);
   assert.ok(catalogProviderRegistry.get('curseforge-java'), 'bundled CurseForge Java plugin should register');
+  assert.ok(catalogProviderRegistry.get('modrinth-java'), 'bundled Modrinth Java plugin should register');
   catalogDownloadPolicy.setCachedAvailability('curseforge-java', '99', {
     files: [{ id: '1', name: 'a.jar', extension: '.jar', environment: 'client' }],
     availability: { downloadState: 'blocked', blockedReason: 'client-only' },
@@ -269,6 +270,7 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   assert.ok(catalogDownloadPolicy.getCachedAvailability('curseforge-java', '99'));
   pluginHost.setPluginEnabled('catalog-curseforge-java', false);
   assert.equal(catalogProviderRegistry.get('curseforge-java'), null);
+  assert.ok(catalogProviderRegistry.get('modrinth-java'), 'disabling CurseForge Java must not unregister Modrinth');
   assert.equal(catalogDownloadPolicy.getCachedAvailability('curseforge-java', '99'), null);
   pluginHost.setPluginEnabled('catalog-curseforge-java', true);
   assert.ok(catalogProviderRegistry.get('curseforge-java'));
@@ -609,10 +611,34 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
     const row = db.prepare('SELECT * FROM mods WHERE id = ?').get(imported.modId);
     assert.equal(row.edition, 'java');
     assert.equal(row.loader, 'fabric');
+    assert.equal(row.environment, 'both');
     assert.ok(row.sha256);
     assert.match(row.file_path, /[/\\]mods[/\\]/);
     assert.ok(fs.existsSync(row.file_path));
     assert.equal(JSON.parse(row.metadata_json).providerId, 'curseforge-java');
+
+    const mismatched = await catalogLibrary.importDownloadPlan({
+      project: {
+        name: 'Create',
+        slug: 'create-env-jar',
+        edition: 'java',
+        source: 'curseforge',
+        providerId: 'curseforge-java',
+        curseforgeId: 102,
+        artifactType: 'mod',
+      },
+      files: [{
+        url: 'https://edge.forgecdn.net/files/create.jar',
+        fileName: 'create-fabric.jar',
+        fileId: 21,
+        loader: 'fabric',
+        minecraftVersions: ['1.21.1'],
+        environment: 'server',
+        displayName: '6.0.0',
+      }],
+    }, { allowHosts: ['edge.forgecdn.net'], providerId: 'curseforge-java' });
+    assert.equal(mismatched.success, true);
+    assert.equal(db.prepare('SELECT environment FROM mods WHERE id = ?').get(mismatched.modId).environment, 'both');
 
     const merged = await catalogLibrary.importDownloadPlan({
       project: {
@@ -835,6 +861,11 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   assert.match(frontendSource, /Client Side Only/);
   assert.match(frontendSource, /btn-client-only/);
   assert.match(frontendSource, /isClientOnlyProject/);
+  assert.match(frontendSource, /modrinth-java/);
+  assert.match(frontendSource, /Server Compatible/);
+  assert.match(frontendSource, /View on Modrinth/);
+  assert.match(frontendSource, /mod\.license/);
+  assert.match(frontendSource, /gameVersions: filtersRef\.current\.gameVersions/);
   assert.doesNotMatch(frontendSource, /Select a Java launcher before downloading/);
   assert.doesNotMatch(frontendSource, /selectedLoader/);
   assert.match(frontendSource, /All available Java files are marked client-only/);

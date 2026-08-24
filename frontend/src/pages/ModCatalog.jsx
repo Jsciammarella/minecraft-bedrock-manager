@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { modApi } from '../services/api';
+import { modApi, serverApi } from '../services/api';
 import ModTileTags from '../components/ModTileTags';
 import CatalogVersionFilter from '../components/CatalogVersionFilter';
 import { loaderDisplayName, modLoaderIds, modVersionTags } from '../utils/modCompatibility';
@@ -46,10 +46,15 @@ function reconcileCatalogFilters({ providers = [], source = 'all', edition = 'al
   }
   if (nextEdition !== 'all' && !editions.includes(nextEdition)) {
     nextEdition = 'all';
-    if (String(nextCategory).startsWith('curseforge-java:')) nextCategory = '';
+    if (String(nextCategory).includes(':')) nextCategory = '';
   }
-  if (nextSource !== 'curseforge-java' && String(nextCategory).startsWith('curseforge-java:')) {
+  if (nextSource === 'all' && String(nextCategory).includes(':')) {
     nextCategory = '';
+  } else if (nextSource !== 'all') {
+    const sourcePrefix = `${sourceId}:`;
+    if (nextCategory.includes(':') && !String(nextCategory).startsWith(sourcePrefix)) {
+      nextCategory = '';
+    }
   }
   const changed = nextSource !== (source || 'all')
     || nextEdition !== (edition || 'all')
@@ -113,13 +118,32 @@ function gameVersionsParam(allSelected, selectedKeys) {
 }
 
 function isJavaCatalogMod(mod) {
-  return Boolean(mod && (mod.edition === 'java' || mod.providerId === 'curseforge-java'));
+  return Boolean(mod && (
+    mod.edition === 'java'
+    || mod.providerId === 'curseforge-java'
+    || mod.providerId === 'modrinth-java'
+  ));
+}
+
+function isJavaCatalogSource(source) {
+  return source === 'curseforge-java' || source === 'modrinth-java';
 }
 
 function fileEnvironmentLabel(file) {
-  if (file.environment === 'client') return 'Client only';
+  if (file.environmentLabel) return file.environmentLabel;
+  if (file.environment === 'client') return 'Client Side Only';
   if (file.environment === 'server') return 'Server';
   if (file.environment === 'both') return 'Client and server';
+  if (file.environment === 'unknown') return 'Compatibility Unknown';
+  return '';
+}
+
+function tileEnvironmentLabel(mod) {
+  if (mod.environmentLabel) return mod.environmentLabel;
+  if (mod.environment === 'client') return 'Client';
+  if (mod.environment === 'server') return 'Server';
+  if (mod.environment === 'both') return 'Both';
+  if (mod.environment === 'unknown') return 'Unknown';
   return '';
 }
 
@@ -144,6 +168,9 @@ function ModCatalog() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [sortBy, setSortBy] = useState('relevancy');
+  const [loader, setLoader] = useState('');
+  const [environment, setEnvironment] = useState('server-compatible');
+  const [javaProviders, setJavaProviders] = useState([]);
   const [downloadModal, setDownloadModal] = useState(null);
   const [filePicker, setFilePicker] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
@@ -153,11 +180,12 @@ function ModCatalog() {
   const [expandedMod, setExpandedMod] = useState(null);
   const { status, startSync } = useGitCatalogSync();
   const wasSyncing = useRef(false);
-  const filtersRef = useRef({ source: 'all', edition: 'all', category: '', gameVersions: '' });
+  const filtersRef = useRef({ source: 'all', edition: 'all', category: '', gameVersions: '', loader: '', environment: 'server-compatible' });
   const queryRef = useRef({ q: '', sortBy: 'relevancy' });
   const installedVersions = installedCatalogVersions(servers);
   const gameVersions = gameVersionsParam(versionAll, selectedVersionKeys);
-  filtersRef.current = { source, edition, category, gameVersions };
+  const javaCatalogActive = edition === 'java' || isJavaCatalogSource(source);
+  filtersRef.current = { source, edition, category, gameVersions, loader, environment };
   queryRef.current = { q: search, sortBy };
 
   const availableEditions = editionOptionsFromProviders(providers);
@@ -165,6 +193,9 @@ function ModCatalog() {
   useEffect(() => {
     loadMultiFileMode();
     refreshProviders({ search: true });
+    serverApi.javaProviders()
+      .then((res) => setJavaProviders((res.data || []).filter((item) => item.id && item.id !== 'vanilla')))
+      .catch(() => setJavaProviders([]));
   }, []);
 
   useEffect(() => {
@@ -275,6 +306,7 @@ function ModCatalog() {
         : requestedSource === 'curseforge'
           ? 'curseforge-bedrock'
           : requestedSource;
+      const javaActive = requestedEdition === 'java' || isJavaCatalogSource(requestedSource);
       const res = await modApi.catalogSearch({
         q: queryRef.current.q,
         category: requestedCategory,
@@ -285,6 +317,8 @@ function ModCatalog() {
         provider,
         edition: requestedEdition,
         gameVersions: filtersRef.current.gameVersions,
+        loader: javaActive ? filtersRef.current.loader : '',
+        environment: javaActive ? filtersRef.current.environment : '',
       });
       setMods(res.data.results || []);
       setTotal(Number(res.data.total) || 0);
@@ -358,7 +392,12 @@ function ModCatalog() {
     setDownloading(true);
     setError('');
     try {
-      const res = await modApi.catalogDownload(mod, undefined, files, {});
+      const extra = isJavaCatalogMod(mod) ? {
+        loader: filtersRef.current.loader,
+        gameVersions: filtersRef.current.gameVersions,
+        modrinthId: mod.modrinthId || mod.id,
+      } : {};
+      const res = await modApi.catalogDownload(mod, undefined, files, extra);
       if (res.data?.downloadState === 'blocked' && res.data?.blockedReason === 'client-only') {
         applyAvailability(mod, res.data);
         setDownloadModal(null);
@@ -389,9 +428,12 @@ function ModCatalog() {
         setDownloadModal(null);
         return;
       }
+      const depCount = (res.data?.dependencies || []).length;
       setSuccess(res.data?.merged
         ? `"${mod.name}" files were added to the existing library mod.`
-        : `"${mod.name}" downloaded to mod library!`);
+        : depCount
+          ? `"${mod.name}" downloaded to mod library with ${depCount} required ${depCount === 1 ? 'dependency' : 'dependencies'}.`
+          : `"${mod.name}" downloaded to mod library!`);
       setDownloadModal(null);
       setFilePicker(null);
       setSelectedFiles([]);
@@ -440,6 +482,9 @@ function ModCatalog() {
   };
 
   const getSourceBadge = (modSource, fileKind, mod = {}) => {
+    if (mod.providerId === 'modrinth-java' || modSource === 'modrinth') {
+      return <span className="badge badge-success">Modrinth</span>;
+    }
     if (mod.providerId === 'curseforge-java' || (mod.edition === 'java' && modSource === 'curseforge')) {
       return <span className="badge badge-info">CurseForge Java</span>;
     }
@@ -469,6 +514,8 @@ function ModCatalog() {
       ? 'Searching file catalog...'
       : source === 'curseforge-java'
         ? 'Searching CurseForge Java...'
+        : source === 'modrinth-java'
+          ? 'Searching Modrinth...'
         : source === 'curseforge'
           ? 'Searching CurseForge Bedrock...'
           : 'Searching catalog...';
@@ -482,7 +529,7 @@ function ModCatalog() {
           </button>
           <div>
             <h1 className="text-2xl font-bold text-white">Mod Catalog</h1>
-            <p className="text-mc-textMuted mt-1">Browse and download from CurseForge, Git, and file catalogs</p>
+            <p className="text-mc-textMuted mt-1">Browse and download from CurseForge, Modrinth, Git, and file catalogs</p>
           </div>
         </div>
         <div className="page-header-actions flex items-center gap-2">
@@ -629,6 +676,46 @@ function ModCatalog() {
                     searchMods(1, source, edition, category);
                   }}
                 />
+                {javaCatalogActive && (
+                  <>
+                    <select
+                      aria-label="Loader"
+                      value={loader}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        setLoader(next);
+                        filtersRef.current = { ...filtersRef.current, loader: next };
+                        setPage(1);
+                        searchMods(1, source, edition, category);
+                      }}
+                      className="input w-40"
+                    >
+                      <option value="">All loaders</option>
+                      {(javaProviders.length ? javaProviders : [{ id: 'fabric', name: 'Fabric' }, { id: 'neoforge', name: 'NeoForge' }]).map((item) => (
+                        <option key={item.id} value={item.id}>{item.name || loaderDisplayName(item.id)}</option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Environment"
+                      value={environment}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        setEnvironment(next);
+                        filtersRef.current = { ...filtersRef.current, environment: next };
+                        setPage(1);
+                        searchMods(1, source, edition, category);
+                      }}
+                      className="input w-52"
+                    >
+                      <option value="server-compatible">Server Compatible</option>
+                      <option value="all">All environments</option>
+                      <option value="server-only">Server Only</option>
+                      <option value="client-and-server">Client and Server</option>
+                      <option value="client-only">Client Only</option>
+                      <option value="unknown">Unknown</option>
+                    </select>
+                  </>
+                )}
               </div>
             </div>
             <div className="flex items-start gap-3 min-w-[16.5rem] flex-1 sm:flex-none">
@@ -663,9 +750,9 @@ function ModCatalog() {
           <Package className="w-16 h-16 text-mc-textMuted mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">No mods found</h3>
           <p className="text-mc-textMuted mb-6">
-            {sources.git?.available || sources.curseforge?.available || sources.file?.available || sources['curseforge-java']
+            {sources.git?.available || sources.curseforge?.available || sources.file?.available || sources['curseforge-java'] || sources['modrinth-java']
               ? 'Try adjusting your search or filters'
-              : 'Configure a Git repository or CurseForge API key to populate the catalog'}
+              : 'Configure a Git repository, CurseForge API key, or enable the Modrinth catalog plugin'}
           </p>
           <button onClick={() => navigate('/mods/catalog/settings')} className="btn btn-secondary">
             <Settings className="w-4 h-4" /> Catalog Settings
@@ -734,6 +821,8 @@ function ModCatalog() {
                 ? ' from the Git catalog'
                 : downloadModal.source === 'file'
                   ? ' from the file catalog'
+                  : downloadModal.providerId === 'modrinth-java' || downloadModal.source === 'modrinth'
+                    ? ' from Modrinth'
                   : downloadModal.providerId === 'curseforge-java' || downloadModal.edition === 'java'
                     ? ' from CurseForge Java'
                     : ' from CurseForge Bedrock'}?
@@ -1027,14 +1116,25 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
           </div>
         )}
       </div>
-      <ModTileTags>
+      <ModTileTags expanded={expanded}>
         {getTypeBadge(mod.type)}
         {getSourceBadge(mod.source, mod.fileKind, mod)}
         {mod.edition === 'java' && <span className="badge badge-warning">Java</span>}
+        {isJavaCatalogMod(mod) && tileEnvironmentLabel(mod) && (
+          <span className={`badge ${
+            mod.environment === 'client' ? 'badge-warning'
+              : mod.environment === 'server' ? 'badge-success'
+                : mod.environment === 'unknown' ? 'badge-muted'
+                  : 'badge-info'
+          }`}
+          >
+            {tileEnvironmentLabel(mod)}
+          </span>
+        )}
         {modLoaderIds(mod).map((id) => (
           loaderDisplayName(id) ? <span key={id} className="badge badge-info">{loaderDisplayName(id)}</span> : null
         ))}
-        {modVersionTags(mod).slice(0, 4).map((version) => (
+        {modVersionTags(mod).map((version) => (
           <span key={version} className="badge badge-success">{version}</span>
         ))}
       </ModTileTags>
@@ -1059,6 +1159,12 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
             <Star className={expanded ? 'w-4 h-4' : 'w-3 h-3'} />
             {mod.author}
           </span>
+        )}
+        {mod.license && (
+          <span className="truncate" title={mod.license}>{mod.license}</span>
+        )}
+        {Number(mod.follows) > 0 && (
+          <span>{Number(mod.follows).toLocaleString()} follows</span>
         )}
       </div>
 
@@ -1098,7 +1204,12 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
             target="_blank"
             rel="noopener noreferrer"
             className={`btn btn-secondary ${expanded ? '' : 'text-xs p-2'}`}
-            title={mod.source === 'git' ? 'View source' : mod.source === 'file' ? 'Open catalog folder' : 'View on CurseForge'}
+            title={
+              mod.source === 'git' ? 'View source'
+                : mod.source === 'file' ? 'Open catalog folder'
+                  : mod.source === 'modrinth' || mod.providerId === 'modrinth-java' ? 'View on Modrinth'
+                    : 'View on CurseForge'
+            }
           >
             <ExternalLink className={expanded ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
           </a>

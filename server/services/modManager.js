@@ -192,7 +192,7 @@ class ModManager {
         JSON.stringify(javaMeta.metadata || {})
       );
       if (isJava && javaRecords.length) {
-        javaModFiles.persistFiles(result.lastInsertRowid, javaRecords);
+        javaModFiles.persistFiles(result.lastInsertRowid, javaRecords, { jarEnvironment: true });
       }
     } catch (err) {
       for (const item of stored) {

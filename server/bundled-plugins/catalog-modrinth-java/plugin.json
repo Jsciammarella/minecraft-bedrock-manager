@@ -1,0 +1,27 @@
+{
+  "id": "catalog-modrinth-java",
+  "name": "Modrinth Java Catalog",
+  "version": "1.0.0",
+  "author": "Minecraft Bedrock Manager",
+  "description": "Adds Minecraft Java projects from Modrinth to the Mod Catalog. No API key is required.",
+  "pages": [],
+  "menus": [],
+  "backend": "backend.js",
+  "capabilities": [
+    "provider:catalog-source",
+    "catalog:metadata",
+    "download:catalog-sources"
+  ],
+  "downloadHosts": [
+    "api.modrinth.com",
+    "cdn.modrinth.com"
+  ],
+  "providers": [
+    {
+      "type": "catalog-source",
+      "id": "modrinth-java",
+      "name": "Modrinth",
+      "edition": "java"
+    }
+  ]
+}

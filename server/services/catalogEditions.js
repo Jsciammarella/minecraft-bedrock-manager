@@ -67,10 +67,15 @@ function reconcileCatalogFilters({ providers = [], source = 'all', edition = 'al
   }
   if (nextEdition !== 'all' && !editions.includes(nextEdition)) {
     nextEdition = 'all';
-    if (String(nextCategory).startsWith('curseforge-java:')) nextCategory = '';
+    if (String(nextCategory).includes(':')) nextCategory = '';
   }
-  if (nextSource !== 'curseforge-java' && String(nextCategory).startsWith('curseforge-java:')) {
+  if (nextSource === 'all' && String(nextCategory).includes(':')) {
     nextCategory = '';
+  } else if (nextSource !== 'all') {
+    const sourcePrefix = `${sourceIdFromFilter(nextSource)}:`;
+    if (nextCategory.includes(':') && !String(nextCategory).startsWith(sourcePrefix)) {
+      nextCategory = '';
+    }
   }
   const changed = nextSource !== (source || 'all')
     || nextEdition !== (edition || 'all')

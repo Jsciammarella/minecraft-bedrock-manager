@@ -97,12 +97,15 @@ function publicCachedFile(file = {}) {
     loader: annotated.loader,
     minecraftVersions: annotated.minecraftVersions,
     environment: annotated.environment,
+    environmentLabel: annotated.environmentLabel,
+    environmentRaw: annotated.environmentRaw,
     downloadable: annotated.downloadable,
     blockedReason: annotated.blockedReason,
     warning: annotated.warning,
     fabric: annotated.fabric,
     neoforge: annotated.neoforge,
     sha1: annotated.sha1,
+    sha512: annotated.sha512,
     edition: annotated.edition,
   };
 }
@@ -176,19 +179,25 @@ function assertPlanNotClientOnly(plan = {}, { providerId } = {}) {
 function appliesJavaPolicy(entry, body = {}) {
   const providerId = entry?.id || body.provider || '';
   const edition = String(body.edition || '').toLowerCase();
-  return providerId === 'curseforge-java' || edition === 'java';
+  return providerId === 'curseforge-java' || providerId === 'modrinth-java' || edition === 'java';
 }
 
 function isClientOnlyAvailability(availability = {}) {
   return availability.downloadState === 'blocked' && availability.blockedReason === 'client-only';
 }
 
-function cacheKey(providerId, projectId) {
-  return `${String(providerId || '')}:${String(projectId || '')}`;
+function cacheKey(providerId, projectId, extra = {}) {
+  const base = `${String(providerId || '')}:${String(projectId || '')}`;
+  const loader = String(extra.loader || '').trim().toLowerCase();
+  const versions = Array.isArray(extra.minecraftVersions)
+    ? extra.minecraftVersions.join(',')
+    : String(extra.minecraftVersions || extra.gameVersions || '');
+  if (!loader && !versions) return base;
+  return `${base}:${loader}:${versions}`;
 }
 
-function getCachedAvailability(providerId, projectId) {
-  const key = cacheKey(providerId, projectId);
+function getCachedAvailability(providerId, projectId, extra = {}) {
+  const key = cacheKey(providerId, projectId, extra);
   const cached = availabilityCache.get(key);
   if (!cached) return null;
   if (Date.now() - cached.at > CACHE_TTL_MS) {
@@ -198,8 +207,8 @@ function getCachedAvailability(providerId, projectId) {
   return cached;
 }
 
-function setCachedAvailability(providerId, projectId, value, { at = Date.now() } = {}) {
-  availabilityCache.set(cacheKey(providerId, projectId), {
+function setCachedAvailability(providerId, projectId, value, { at = Date.now(), loader = '', minecraftVersions, gameVersions } = {}) {
+  availabilityCache.set(cacheKey(providerId, projectId, { loader, minecraftVersions, gameVersions }), {
     at,
     files: (value.files || []).map(publicCachedFile),
     availability: value.availability,
@@ -207,12 +216,12 @@ function setCachedAvailability(providerId, projectId, value, { at = Date.now() }
 }
 
 function applyCachedProjectAvailability(project = {}) {
-  if (project.providerId !== 'curseforge-java' && project.edition !== 'java') {
+  if (project.providerId !== 'curseforge-java' && project.providerId !== 'modrinth-java' && project.edition !== 'java') {
     return project;
   }
   const cached = getCachedAvailability(
     project.providerId || 'curseforge-java',
-    project.curseforgeId || project.id
+    project.curseforgeId || project.modrinthId || project.id
   );
   if (cached?.availability) {
     return {

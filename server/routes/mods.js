@@ -402,6 +402,8 @@ router.get('/catalog/search', async (req, res) => {
       provider: req.query.provider || '',
       edition: req.query.edition || 'all',
       gameVersions: req.query.gameVersions,
+      loader: req.query.loader || '',
+      environment: req.query.environment || '',
     });
     res.json(result);
   } catch (err) {
