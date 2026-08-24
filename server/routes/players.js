@@ -39,6 +39,9 @@ router.get('/server/:serverId', async (req, res) => {
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
+});
+
+// Update whitelist, permission, or ban state for one player on one server
 router.put('/server/:serverId/:playerId', async (req, res) => {
   try {
     const player = serverManager.updatePlayerAccess(
