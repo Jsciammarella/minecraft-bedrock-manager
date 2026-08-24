@@ -619,6 +619,7 @@ async function runModrinthProviderTests({ pluginHost, testRoot }) {
     const db = require('../server/db/connection');
     const row = db.prepare('SELECT * FROM mods WHERE id = ?').get(imported.modId);
     assert.equal(row.source, 'modrinth');
+    assert.equal(row.curseforge_id, null);
     assert.equal(JSON.parse(row.metadata_json).modrinthProjectId, 'PROJ1');
     assert.equal(JSON.parse(row.metadata_json).modrinthVersionId, 'VERSERVER');
     libraryModId = imported.modId;
@@ -642,6 +643,46 @@ async function runModrinthProviderTests({ pluginHost, testRoot }) {
     }, { allowHosts: ['cdn.modrinth.com'], providerId: 'modrinth-java' });
     assert.equal(merged.merged, true);
     assert.equal(merged.modId, imported.modId);
+    const otherPayload = zipStore({
+      'fabric.mod.json': JSON.stringify({
+        id: 'other',
+        name: 'Other',
+        version: '1.0.0',
+        environment: '*',
+      }),
+    });
+    controlledDownload.downloadToFile = async ({ destination }) => {
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.writeFileSync(destination, otherPayload);
+      return {
+        path: destination,
+        bytes: otherPayload.length,
+        sha256: crypto.createHash('sha256').update(otherPayload).digest('hex'),
+      };
+    };
+    const second = await catalogLibrary.importDownloadPlan({
+      project: {
+        name: 'Other',
+        slug: 'modrinth-other',
+        edition: 'java',
+        source: 'modrinth',
+        providerId: 'modrinth-java',
+        modrinthId: 'PROJ2',
+        artifactType: 'mod',
+      },
+      files: [{
+        url: 'https://cdn.modrinth.com/data/PROJ2/other.jar',
+        fileName: 'other.jar',
+        fileId: 'VEROTHER',
+        loader: 'fabric',
+        minecraftVersions: ['1.21.1'],
+        environment: 'server',
+      }],
+    }, { allowHosts: ['cdn.modrinth.com'], providerId: 'modrinth-java' });
+    assert.equal(second.success, true);
+    assert.notEqual(second.modId, imported.modId);
+    const secondRow = db.prepare('SELECT curseforge_id FROM mods WHERE id = ?').get(second.modId);
+    assert.equal(secondRow.curseforge_id, null);
   } finally {
     controlledDownload.downloadToFile = originalDownload;
   }

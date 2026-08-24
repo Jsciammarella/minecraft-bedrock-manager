@@ -37,6 +37,11 @@ function resolvedCatalogLoader({ jarLoader, fileLoader, requestedLoader } = {}) 
   return jar || file || requested || 'unknown';
 }
 
+function storeCurseforgeId(project = {}) {
+  if (project.curseforgeId == null || project.curseforgeId === '') return null;
+  return String(project.curseforgeId);
+}
+
 async function importDownloadPlan(plan, { allowHosts, providerId, loader: requestedLoader } = {}) {
   const project = plan?.project || {};
   const files = Array.isArray(plan?.files) ? plan.files : [];
@@ -76,8 +81,6 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
           url: file.url,
           destination: tmpPath,
           allowHosts,
-          sha1: file.sha1,
-          sha512: file.sha512,
           maximumBytes: file.maximumBytes,
           project: project.name || project.slug,
           version: file.displayName || file.fileName,
@@ -211,7 +214,7 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
       primary.path,
       primary.size || 0,
       null,
-      project.curseforgeId != null ? String(project.curseforgeId) : '',
+      storeCurseforgeId(project),
       project.source || 'curseforge',
       project.edition || 'java',
       project.artifactType || 'mod',
@@ -248,7 +251,8 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
     const unique = /UNIQUE constraint failed/i.test(String(err.message || ''));
     if (unique) {
       const javaModFiles = require('./javaModFiles');
-      const existing = javaModFiles.findExistingLibraryMod(plan?.project || {});
+      const existing = javaModFiles.findExistingLibraryMod(plan?.project || {})
+        || javaModFiles.findExistingByHash(stored[0]?.sha256);
       if (existing) {
         try {
           const records = stored.map((file) => javaModFiles.inspectPath(file.path, {
@@ -286,4 +290,5 @@ async function importDownloadPlan(plan, { allowHosts, providerId, loader: reques
 module.exports = {
   importDownloadPlan,
   resolvedCatalogLoader,
+  storeCurseforgeId,
 };

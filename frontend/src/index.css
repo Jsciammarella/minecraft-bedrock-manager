@@ -134,6 +134,22 @@
   .toggle-thumb {
     @apply inline-block h-4 w-4 rounded-full bg-white transition-transform;
   }
+
+  .catalog-filter-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    column-gap: 0.75rem;
+    row-gap: 0.75rem;
+    align-items: start;
+    min-width: 0;
+    flex: 1.35 1 20rem;
+  }
+
+  .catalog-filter-search {
+    grid-column: 3 / span 2;
+    grid-row: 3;
+    width: 100%;
+  }
 }
 
 /* Animations */

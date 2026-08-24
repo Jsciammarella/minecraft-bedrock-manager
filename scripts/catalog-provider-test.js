@@ -871,7 +871,12 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   assert.match(frontendSource, /All available Java files are marked client-only/);
   assert.match(frontendSource, /downloadable === false/);
   assert.match(frontendSource, /setDownloadModal\(null\)/);
+  assert.match(frontendSource, /catalog-filter-grid/);
+  assert.match(frontendSource, /catalog-filter-search/);
   assert.match(frontendSource, /justify-center/);
+  assert.match(frontendSource, /aria-label="Loader"/);
+  assert.match(frontendSource, /aria-label="Environment"/);
+  assert.doesNotMatch(frontendSource, /\{javaCatalogActive && \(/);
   assert.match(frontendSource, /You are about to download/);
   assert.match(frontendSource, /DOWNLOAD_ALL_CONFIRM_AFTER/);
   assert.match(frontendSource, /setFilePicker\(null\)/);

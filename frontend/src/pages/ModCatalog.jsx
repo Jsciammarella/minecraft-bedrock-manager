@@ -125,10 +125,6 @@ function isJavaCatalogMod(mod) {
   ));
 }
 
-function isJavaCatalogSource(source) {
-  return source === 'curseforge-java' || source === 'modrinth-java';
-}
-
 function fileEnvironmentLabel(file) {
   if (file.environmentLabel) return file.environmentLabel;
   if (file.environment === 'client') return 'Client Side Only';
@@ -184,7 +180,6 @@ function ModCatalog() {
   const queryRef = useRef({ q: '', sortBy: 'relevancy' });
   const installedVersions = installedCatalogVersions(servers);
   const gameVersions = gameVersionsParam(versionAll, selectedVersionKeys);
-  const javaCatalogActive = edition === 'java' || isJavaCatalogSource(source);
   filtersRef.current = { source, edition, category, gameVersions, loader, environment };
   queryRef.current = { q: search, sortBy };
 
@@ -306,7 +301,6 @@ function ModCatalog() {
         : requestedSource === 'curseforge'
           ? 'curseforge-bedrock'
           : requestedSource;
-      const javaActive = requestedEdition === 'java' || isJavaCatalogSource(requestedSource);
       const res = await modApi.catalogSearch({
         q: queryRef.current.q,
         category: requestedCategory,
@@ -317,8 +311,8 @@ function ModCatalog() {
         provider,
         edition: requestedEdition,
         gameVersions: filtersRef.current.gameVersions,
-        loader: javaActive ? filtersRef.current.loader : '',
-        environment: javaActive ? filtersRef.current.environment : '',
+        loader: filtersRef.current.loader,
+        environment: filtersRef.current.environment,
       });
       setMods(res.data.results || []);
       setTotal(Number(res.data.total) || 0);
@@ -609,131 +603,122 @@ function ModCatalog() {
               </p>
             </div>
           </div>
-          <div className="flex flex-wrap items-start gap-3">
-            <div className="flex flex-col gap-3">
-              <div className="flex flex-wrap items-start gap-3">
-                <select
-                  value={source}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setSource(next);
-                    setPage(1);
-                    setCategory('');
-                    loadCategories(next, edition);
-                    searchMods(1, next, edition, '');
-                  }}
-                  className="input w-44"
-                >
-                  <option value="all">All Sources</option>
-                  {providers.map((provider) => (
-                    <option key={provider.id} value={provider.id === 'curseforge-bedrock' ? 'curseforge' : provider.id}>
-                      {provider.name}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  className="input w-40"
-                >
-                  <option value="">All Categories</option>
-                  {categories.map(cat => (
-                    <option key={cat.id} value={cat.id}>{cat.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex flex-wrap items-start gap-3">
-                <select
-                  id="catalog-edition"
-                  aria-label="Edition"
-                  value={availableEditions.includes(edition) || edition === 'all' ? edition : 'all'}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setEdition(next);
-                    setPage(1);
-                    setCategory('');
-                    loadCategories(source, next);
-                    searchMods(1, source, next, '');
-                  }}
-                  className="input w-44"
-                >
-                  <option value="all">All editions</option>
-                  {availableEditions.map((id) => (
-                    <option key={id} value={id}>{EDITION_LABELS[id] || id}</option>
-                  ))}
-                </select>
-                <CatalogVersionFilter
-                  className="w-56"
-                  versions={installedVersions}
-                  selectedKeys={selectedVersionKeys}
-                  allSelected={versionAll}
-                  onChange={({ allSelected, selectedKeys }) => {
-                    setVersionAll(allSelected);
-                    setSelectedVersionKeys(selectedKeys);
-                  }}
-                  onClose={() => {
-                    setPage(1);
-                    searchMods(1, source, edition, category);
-                  }}
-                />
-                {javaCatalogActive && (
-                  <>
-                    <select
-                      aria-label="Loader"
-                      value={loader}
-                      onChange={(e) => {
-                        const next = e.target.value;
-                        setLoader(next);
-                        filtersRef.current = { ...filtersRef.current, loader: next };
-                        setPage(1);
-                        searchMods(1, source, edition, category);
-                      }}
-                      className="input w-40"
-                    >
-                      <option value="">All loaders</option>
-                      {(javaProviders.length ? javaProviders : [{ id: 'fabric', name: 'Fabric' }, { id: 'neoforge', name: 'NeoForge' }]).map((item) => (
-                        <option key={item.id} value={item.id}>{item.name || loaderDisplayName(item.id)}</option>
-                      ))}
-                    </select>
-                    <select
-                      aria-label="Environment"
-                      value={environment}
-                      onChange={(e) => {
-                        const next = e.target.value;
-                        setEnvironment(next);
-                        filtersRef.current = { ...filtersRef.current, environment: next };
-                        setPage(1);
-                        searchMods(1, source, edition, category);
-                      }}
-                      className="input w-52"
-                    >
-                      <option value="server-compatible">Server Compatible</option>
-                      <option value="all">All environments</option>
-                      <option value="server-only">Server Only</option>
-                      <option value="client-and-server">Client and Server</option>
-                      <option value="client-only">Client Only</option>
-                      <option value="unknown">Unknown</option>
-                    </select>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="flex items-start gap-3 min-w-[16.5rem] flex-1 sm:flex-none">
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-                className="input w-36"
-              >
-                <option value="relevancy">Relevancy</option>
-                <option value="popularity">Popularity</option>
-                <option value="lastUpdated">Recently Updated</option>
-                <option value="totalDownloads">Most Downloaded</option>
-              </select>
-              <button type="submit" className="btn btn-primary flex-1" disabled={searching}>
-                {searching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                Search
-              </button>
-            </div>
+          <div className="catalog-filter-grid">
+            <select
+              value={source}
+              onChange={(e) => {
+                const next = e.target.value;
+                setSource(next);
+                setPage(1);
+                setCategory('');
+                loadCategories(next, edition);
+                searchMods(1, next, edition, '');
+              }}
+              className="input"
+              aria-label="Source"
+            >
+              <option value="all">All Sources</option>
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id === 'curseforge-bedrock' ? 'curseforge' : provider.id}>
+                  {provider.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="input"
+              aria-label="Category"
+            >
+              <option value="">All Categories</option>
+              {categories.map(cat => (
+                <option key={cat.id} value={cat.id}>{cat.name}</option>
+              ))}
+            </select>
+            <select
+              id="catalog-edition"
+              aria-label="Edition"
+              value={availableEditions.includes(edition) || edition === 'all' ? edition : 'all'}
+              onChange={(e) => {
+                const next = e.target.value;
+                setEdition(next);
+                setPage(1);
+                setCategory('');
+                loadCategories(source, next);
+                searchMods(1, source, next, '');
+              }}
+              className="input"
+            >
+              <option value="all">All editions</option>
+              {availableEditions.map((id) => (
+                <option key={id} value={id}>{EDITION_LABELS[id] || id}</option>
+              ))}
+            </select>
+            <CatalogVersionFilter
+              className="w-full min-w-0"
+              versions={installedVersions}
+              selectedKeys={selectedVersionKeys}
+              allSelected={versionAll}
+              onChange={({ allSelected, selectedKeys }) => {
+                setVersionAll(allSelected);
+                setSelectedVersionKeys(selectedKeys);
+              }}
+              onClose={() => {
+                setPage(1);
+                searchMods(1, source, edition, category);
+              }}
+            />
+            <select
+              aria-label="Loader"
+              value={loader}
+              onChange={(e) => {
+                const next = e.target.value;
+                setLoader(next);
+                filtersRef.current = { ...filtersRef.current, loader: next };
+                setPage(1);
+                searchMods(1, source, edition, category);
+              }}
+              className="input"
+            >
+              <option value="">All loaders</option>
+              {(javaProviders.length ? javaProviders : [{ id: 'fabric', name: 'Fabric' }, { id: 'neoforge', name: 'NeoForge' }]).map((item) => (
+                <option key={item.id} value={item.id}>{item.name || loaderDisplayName(item.id)}</option>
+              ))}
+            </select>
+            <select
+              aria-label="Environment"
+              value={environment}
+              onChange={(e) => {
+                const next = e.target.value;
+                setEnvironment(next);
+                filtersRef.current = { ...filtersRef.current, environment: next };
+                setPage(1);
+                searchMods(1, source, edition, category);
+              }}
+              className="input"
+            >
+              <option value="server-compatible">Server Compatible</option>
+              <option value="all">All environments</option>
+              <option value="server-only">Server Only</option>
+              <option value="client-and-server">Client and Server</option>
+              <option value="client-only">Client Only</option>
+              <option value="unknown">Unknown</option>
+            </select>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="input"
+              aria-label="Sort"
+            >
+              <option value="relevancy">Relevancy</option>
+              <option value="popularity">Popularity</option>
+              <option value="lastUpdated">Recently Updated</option>
+              <option value="totalDownloads">Most Downloaded</option>
+            </select>
+            <button type="submit" className="btn btn-primary catalog-filter-search justify-center" disabled={searching}>
+              {searching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+              Search
+            </button>
           </div>
         </div>
       </form>

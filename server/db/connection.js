@@ -262,6 +262,12 @@ ensureModColumn('sha256', 'TEXT');
 ensureModColumn('metadata_json', 'TEXT');
 ensureModColumn('warning', 'TEXT');
 
+db.exec(`
+  UPDATE mods
+  SET curseforge_id = NULL
+  WHERE curseforge_id IS NOT NULL AND TRIM(curseforge_id) = ''
+`);
+
 if (!serverModColumns.has('status')) {
   db.exec("ALTER TABLE server_mods ADD COLUMN status TEXT NOT NULL DEFAULT 'installed'");
 }
