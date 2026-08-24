@@ -38,7 +38,7 @@ function publicError(err, fallback, { curseforgeAuth = false } = {}) {
   }
   if (curseforgeAuth && (status === 401 || status === 403)) {
     return Object.assign(
-      new Error('CurseForge rejected the catalog request. Check the API key in Catalog Settings.'),
+      new Error('CurseForge rejected the catalog request. Check the API key in the CurseForge Catalog plugin settings.'),
       { status }
     );
   }
@@ -123,7 +123,7 @@ async function requestCurseforge({ url, params, method = 'GET' } = {}) {
       targetId: 'curseforge',
     });
     throw Object.assign(
-      new Error('CurseForge Java requires the existing CurseForge API key. Open Catalog Settings to add it.'),
+      new Error('CurseForge catalog access requires an API key. Open the CurseForge Catalog plugin settings to add it.'),
       { status: 400, code: 'CURSEFORGE_API_KEY_REQUIRED' }
     );
   }

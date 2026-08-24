@@ -159,10 +159,7 @@ export const modApi = {
   catalogDetails: (slug, projectClass, source) => api.get(`/mods/catalog/${encodeURIComponent(slug)}`, {
     params: { projectClass, source },
   }),
-  catalogSettings: () => api.get('/mods/catalog/settings'),
-  saveCatalogSettings: (data) => api.put('/mods/catalog/settings', data),
-  testGitCatalog: (data) => api.post('/mods/catalog/git/test', data, { timeout: 45000 }),
-  testFileCatalog: (data) => api.post('/mods/catalog/file/test', data, { timeout: 45000 }),
+  catalogMultiFileMode: () => api.get('/mods/catalog/multi-file-mode'),
   gitCatalogSyncStatus: () => api.get('/mods/catalog/git/status'),
   syncGitCatalog: () => api.post('/mods/catalog/git/sync'),
 };
@@ -228,6 +225,12 @@ export const pluginApi = {
   disableImpact: (id) => api.get(`/plugins/${encodeURIComponent(id)}/disable-impact`),
   setBackendEnabled: (id, enabled) => api.put(`/plugins/${encodeURIComponent(id)}/backend-enabled`, { enabled }),
   upload: (formData) => api.post('/plugins/upload', formData, { timeout: 120000 }),
+  settings: (id) => api.get(`/plugins/${encodeURIComponent(id)}/settings`),
+  settingsAction: (id, actionId, data) => api.post(
+    `/plugins/${encodeURIComponent(id)}/settings/actions/${encodeURIComponent(actionId)}`,
+    data,
+    { timeout: 120000 },
+  ),
 };
 
 export const publicApi = {

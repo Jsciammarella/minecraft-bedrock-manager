@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { pluginApi } from '../services/api';
 import { isAllowedPluginNavigatePath, proxyPluginApi } from '../services/pluginBridge';
+import NativePluginSettings from '../components/pluginSettings/NativePluginSettings';
 
 function PluginPage() {
   const { pluginId, pageId } = useParams();
@@ -91,6 +92,10 @@ function PluginPage() {
           <p className="text-mc-textMuted">{error || 'That plugin page does not exist.'}</p>
       </div>
     );
+  }
+
+  if (page.renderer === 'native-settings') {
+    return <NativePluginSettings pluginId={pluginId} />;
   }
 
   return (

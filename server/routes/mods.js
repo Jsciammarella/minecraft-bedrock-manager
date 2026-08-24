@@ -7,8 +7,6 @@ const modManager = require('../services/modManager');
 const catalog = require('../services/catalogService');
 const gitCatalog = require('../services/gitCatalogClient');
 const fileCatalog = require('../services/fileCatalogClient');
-const fileCatalogTemplate = require('../services/fileCatalogTemplate');
-const gitCatalogTemplate = require('../services/gitCatalogTemplate');
 const packFiles = require('../services/packFiles');
 const curseforgeImporter = require('../services/curseforgeImporter');
 const mcpedlImporter = require('../services/mcpedlImporter');
@@ -273,9 +271,17 @@ router.delete('/:modId/uninstall/:serverId', async (req, res) => {
 
 router.get('/catalog/settings', async (req, res) => {
   try {
-    res.json(catalog.getSettings());
+    res.json({ multiFileMode: require('../services/settingsStore').getMultiFileMode() });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/catalog/multi-file-mode', (req, res) => {
+  try {
+    res.json({ multiFileMode: require('../services/settingsStore').getMultiFileMode() });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -287,57 +293,15 @@ router.put('/catalog/multi-file-mode', (req, res) => {
   }
 });
 
-router.put('/catalog/settings', async (req, res) => {
-  try {
-    const previous = gitCatalog.getConfig();
-    const saved = catalog.saveSettings(req.body || {});
-    const next = gitCatalog.getConfig();
-    const gitChanged = previous.enabled !== next.enabled
-      || previous.url !== next.url
-      || previous.branch !== next.branch
-      || previous.username !== next.username
-      || previous.token !== next.token
-      || previous.subdir !== next.subdir;
-    if (gitChanged && gitCatalog.canSync()) {
-      gitCatalog.startSync('settings-save').catch(() => {});
-    }
-    res.json({
-      ...saved,
-      git: {
-        ...saved.git,
-        sync: gitCatalog.getSyncStatus(),
-      },
-    });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.get('/catalog/git/starter', (req, res) => {
-  const zip = gitCatalogTemplate.buildStarterZip();
-  res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', `attachment; filename="${gitCatalogTemplate.STARTER_FILENAME}"`);
-  res.send(zip);
-});
-
 router.get('/catalog/git/status', (req, res) => {
   res.json(gitCatalog.getSyncStatus());
-});
-
-router.post('/catalog/git/test', async (req, res) => {
-  try {
-    const result = await catalog.testGitConnection(req.body || {});
-    res.json(result);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
 });
 
 router.post('/catalog/git/sync', async (req, res) => {
   try {
     if (!gitCatalog.canSync()) {
       return res.status(400).json({
-        error: 'Save Git catalog settings with the catalog enabled and an access token before syncing.',
+        error: 'Save Git Catalog plugin settings with the catalog enabled and an access token before syncing.',
       });
     }
     gitCatalog.startSync('manual').catch(() => {});
@@ -356,22 +320,6 @@ router.get('/catalog/git/thumbnail/:slug', async (req, res) => {
     res.sendFile(path.resolve(filePath), {
       headers: { 'Cache-Control': 'no-cache' },
     });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.get('/catalog/file/starter', (req, res) => {
-  const zip = fileCatalogTemplate.buildStarterZip();
-  res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', `attachment; filename="${fileCatalogTemplate.STARTER_FILENAME}"`);
-  res.send(zip);
-});
-
-router.post('/catalog/file/test', async (req, res) => {
-  try {
-    const result = await catalog.testFileConnection(req.body || {});
-    res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

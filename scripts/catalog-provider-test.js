@@ -79,7 +79,7 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   const zipGuard = require('../server/services/zipGuard');
   const javaModMetadata = require('../server/services/javaModMetadata');
   const settingsStore = require('../server/services/settingsStore');
-  const javaCatalog = require('../server/bundled-plugins/catalog-curseforge-java/backend');
+  const javaCatalog = require('../server/bundled-plugins/catalog-curseforge/providers/java');
 
   const uploadedCaps = pluginCapabilities.parseCapabilities(['provider:catalog-source', 'ui:pages'], 'user');
   assert.deepEqual(uploadedCaps.capabilities, ['ui:pages']);
@@ -141,7 +141,7 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
 
   catalogProviderRegistry.unregisterPlugins(['ok-catalog']);
   catalogService.ensureProviders();
-  assert.deepEqual(catalogProviderRegistry.availableEditions(), ['bedrock']);
+  assert.deepEqual(catalogProviderRegistry.availableEditions(), []);
   assert.equal(catalogProviderRegistry.availableEditions().includes('java'), false);
 
   catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture({ id: 'java-one', editions: ['java'] }));
@@ -182,7 +182,11 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   assert.equal(keepJava.edition, 'java');
 
   assert.throws(
-    () => catalogProviderRegistry.register(bundledPlugin, catalogProviderFixture()),
+    () => catalogProviderRegistry.register({
+      id: 'other-catalog',
+      source: 'bundled',
+      capabilities: ['provider:catalog-source'],
+    }, catalogProviderFixture()),
     /already registered/
   );
 
@@ -254,29 +258,38 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   catalogProviderRegistry.clear();
   catalogService.ensureProviders();
   const listed = catalogService.listProviders();
-  assert.ok(listed.providers.some((item) => item.id === 'curseforge-bedrock'));
-  assert.ok(listed.providers.some((item) => item.id === 'git'));
-  assert.ok(listed.providers.some((item) => item.id === 'file'));
-  assert.equal(listed.providers.some((item) => item.id === 'curseforge-java'), false);
+  assert.equal(listed.providers.some((item) => item.id === 'curseforge-bedrock'), false);
+  assert.equal(listed.providers.some((item) => item.id === 'git'), false);
+  assert.equal(listed.providers.some((item) => item.id === 'file'), false);
 
   pluginHost.resetForTests();
   pluginHost.loadPlugins([pluginHost.BUNDLED_PLUGINS_DIR]);
-  assert.ok(catalogProviderRegistry.get('curseforge-java'), 'bundled CurseForge Java plugin should register');
+  assert.ok(catalogProviderRegistry.get('curseforge-bedrock'), 'combined CurseForge plugin should register Bedrock');
+  assert.ok(catalogProviderRegistry.get('curseforge-java'), 'combined CurseForge plugin should register Java');
+  assert.ok(catalogProviderRegistry.get('file'), 'File Catalog plugin should register when enabled');
+  assert.equal(catalogProviderRegistry.get('git'), null, 'Git Catalog source stays unregistered until enabled');
   assert.ok(catalogProviderRegistry.get('modrinth-java'), 'bundled Modrinth Java plugin should register');
   catalogDownloadPolicy.setCachedAvailability('curseforge-java', '99', {
     files: [{ id: '1', name: 'a.jar', extension: '.jar', environment: 'client' }],
     availability: { downloadState: 'blocked', blockedReason: 'client-only' },
   });
   assert.ok(catalogDownloadPolicy.getCachedAvailability('curseforge-java', '99'));
-  pluginHost.setPluginEnabled('catalog-curseforge-java', false);
+  pluginHost.setPluginEnabled('catalog-curseforge', false);
   assert.equal(catalogProviderRegistry.get('curseforge-java'), null);
-  assert.ok(catalogProviderRegistry.get('modrinth-java'), 'disabling CurseForge Java must not unregister Modrinth');
+  assert.equal(catalogProviderRegistry.get('curseforge-bedrock'), null);
+  assert.ok(catalogProviderRegistry.get('modrinth-java'), 'disabling CurseForge must not unregister Modrinth');
   assert.equal(catalogDownloadPolicy.getCachedAvailability('curseforge-java', '99'), null);
-  pluginHost.setPluginEnabled('catalog-curseforge-java', true);
+  pluginHost.setPluginEnabled('catalog-curseforge', true);
   assert.ok(catalogProviderRegistry.get('curseforge-java'));
+  assert.ok(catalogProviderRegistry.get('curseforge-bedrock'));
   pluginHost.resetForTests();
   catalogProviderRegistry.clear();
   catalogService.ensureProviders();
+  catalogProviderRegistry.register({
+    id: 'catalog-git',
+    source: 'bundled',
+    capabilities: ['provider:catalog-source'],
+  }, catalogProviderFixture({ id: 'git', editions: ['bedrock', 'java'] }));
 
   const gitOnly = await catalogService.searchMods('anything', { source: 'git', edition: 'java', pageSize: 5 });
   assert.notEqual(gitOnly.emptyReason, 'unsupported-combination');
@@ -549,8 +562,11 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
       throw new Error(`Download exceeded the ${maximumBytes} byte limit`);
     }
     fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.writeFileSync(destination, goodJar);
-    return { path: destination, bytes: goodJar.length, sha256: crypto.createHash('sha256').update(goodJar).digest('hex') };
+    const body = String(url).includes('electroenergetics')
+      ? Buffer.concat([goodJar, Buffer.from('electroenergetics')])
+      : goodJar;
+    fs.writeFileSync(destination, body);
+    return { path: destination, bytes: body.length, sha256: crypto.createHash('sha256').update(body).digest('hex') };
   };
   try {
     await assert.rejects(

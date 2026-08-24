@@ -61,7 +61,19 @@ function register(plugin, provider, { core = false } = {}) {
   }
   const editions = validateProviderEditions(meta);
   if (providers.has(id)) {
-    throw new Error(`Catalog provider "${id}" is already registered`);
+    const existing = providers.get(id);
+    if (existing.pluginId !== plugin.id) {
+      throw new Error(`Catalog provider "${id}" is already registered`);
+    }
+    providers.set(id, {
+      id,
+      pluginId: plugin.id,
+      core: Boolean(core),
+      provider: wrapped,
+      editions,
+      downloadHosts: meta.downloadHosts || [],
+    });
+    return publicMetadata(providers.get(id));
   }
   providers.set(id, {
     id,
@@ -78,6 +90,29 @@ function register(plugin, provider, { core = false } = {}) {
   });
   logger.info(`Registered catalog source ${id} from ${core ? 'core' : `plugin ${plugin.id}`}`);
   return publicMetadata(providers.get(id));
+}
+
+function unregister(plugin, providerId) {
+  const id = String(providerId || '').trim();
+  const entry = providers.get(id);
+  if (!entry) return false;
+  if (!plugin || entry.pluginId !== plugin.id) {
+    throw Object.assign(new Error('Plugins can only unregister their own catalog sources'), { status: 403 });
+  }
+  if (entry.core) {
+    throw Object.assign(new Error('Core catalog sources cannot be unregistered by a plugin'), { status: 403 });
+  }
+  providers.delete(id);
+  pluginAudit.record('provider.unregister', {
+    targetType: 'catalog-source',
+    targetId: id,
+    detail: { pluginId: plugin.id },
+  });
+  try {
+    require('./catalogDownloadPolicy').clearCacheForProviders([id]);
+  } catch { /* ignore */ }
+  logger.info(`Unregistered catalog source ${id} from plugin ${plugin.id}`);
+  return true;
 }
 
 function unregisterPlugins(pluginIds) {
@@ -138,5 +173,6 @@ module.exports = {
   publicMetadata,
   register,
   requireProvider,
+  unregister,
   unregisterPlugins,
 };

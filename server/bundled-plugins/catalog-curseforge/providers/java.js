@@ -297,7 +297,7 @@ function createProvider(services) {
     },
     async search(query, options = {}) {
       if (!this.isAvailable()) {
-        const err = new Error('CurseForge Java requires the existing CurseForge API key. Open Catalog Settings to add it.');
+        const err = new Error('CurseForge catalog access requires an API key. Open the CurseForge Catalog plugin settings to add it.');
         err.status = 400;
         err.code = 'CURSEFORGE_API_KEY_REQUIRED';
         throw err;
@@ -401,7 +401,4 @@ module.exports = {
   GAME_ID,
   createProvider,
   parseGameVersions,
-  register({ registerCatalogSource, services }) {
-    registerCatalogSource(createProvider(services));
-  },
 };

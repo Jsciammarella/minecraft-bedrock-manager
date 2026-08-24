@@ -8,7 +8,7 @@ import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
 import { useApi } from '../context/ApiContext';
 import {
   ArrowLeft, Search, Download, Package, AlertCircle, Check, Loader2,
-  ExternalLink, Star, Settings, GitBranch, RefreshCw, X, Folder
+  ExternalLink, Star, GitBranch, RefreshCw, X, Folder
 } from 'lucide-react';
 
 const CATALOG_PAGE_SIZE = 40;
@@ -217,7 +217,7 @@ function ModCatalog() {
 
   const loadMultiFileMode = async () => {
     try {
-      const res = await modApi.catalogSettings();
+      const res = await modApi.catalogMultiFileMode();
       if (res.data?.multiFileMode === 'auto' || res.data?.multiFileMode === 'manual') {
         setMultiFileMode(res.data.multiFileMode);
       }
@@ -327,7 +327,7 @@ function ModCatalog() {
     } catch (err) {
       setMods([]);
       setTotal(0);
-      setError(err.response?.data?.error || 'Failed to load the catalog. Check Catalog Settings.');
+      setError(err.response?.data?.error || 'Failed to load the catalog. Check catalog plugin settings.');
     } finally {
       setSearching(false);
     }
@@ -535,18 +535,11 @@ function ModCatalog() {
               status.running
                 ? 'Git catalog is syncing'
                 : !status.canSync
-                  ? 'Save Git catalog settings with an access token to sync'
+                  ? 'Save Git catalog plugin settings with an access token to sync'
                   : 'Refresh Git catalog'
             }
           >
             <RefreshCw className={`w-5 h-5 ${status.running ? 'animate-spin' : ''}`} />
-          </button>
-          <button
-            onClick={() => navigate('/mods/catalog/settings')}
-            className="p-2 hover:bg-mc-surfaceLight rounded-lg transition-colors"
-            title="Catalog settings"
-          >
-            <Settings className="w-5 h-5" />
           </button>
         </div>
       </div>
@@ -563,8 +556,8 @@ function ModCatalog() {
             <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0" />
             <p className="text-sm text-amber-300">{warning}</p>
           </div>
-          <button onClick={() => navigate('/mods/catalog/settings')} className="btn btn-secondary text-xs">
-            Open Settings
+          <button onClick={() => navigate('/plugins')} className="btn btn-secondary text-xs">
+            Open Plugins
           </button>
         </div>
       )}
@@ -737,10 +730,10 @@ function ModCatalog() {
           <p className="text-mc-textMuted mb-6">
             {sources.git?.available || sources.curseforge?.available || sources.file?.available || sources['curseforge-java'] || sources['modrinth-java']
               ? 'Try adjusting your search or filters'
-              : 'Configure a Git repository, CurseForge API key, or enable the Modrinth catalog plugin'}
+              : 'Configure a Git repository, CurseForge API key, or enable a catalog plugin'}
           </p>
-          <button onClick={() => navigate('/mods/catalog/settings')} className="btn btn-secondary">
-            <Settings className="w-4 h-4" /> Catalog Settings
+          <button onClick={() => navigate('/plugins')} className="btn btn-secondary">
+            Open Plugins
           </button>
           {showPager && (
             <CatalogPager

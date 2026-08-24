@@ -1176,7 +1176,7 @@ versionRange="[13.0.8,)"
   assert.ok(javaHostingPolicy.listEditions().some((item) => item.id === 'bedrock' && item.available));
   assert.ok(javaLoaderRegistry.get('vanilla'), 'loader plugins remain installed while hosting is disabled');
   assert.ok(
-    pluginHost.getPlugin('catalog-modrinth-java') || pluginHost.getPlugin('catalog-curseforge-java'),
+    pluginHost.getPlugin('catalog-modrinth-java') || pluginHost.getPlugin('catalog-curseforge'),
     'catalog plugins remain installed while hosting is disabled'
   );
   assert.equal(javaHostingPolicy.isJavaHostingAvailable(), false);

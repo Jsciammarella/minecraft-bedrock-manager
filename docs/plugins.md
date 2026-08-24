@@ -44,8 +44,9 @@ Geyser tiles. Server files, worlds, mods, backups, settings, ports, and Geyser
 configuration are preserved. Re-enabling restores visibility without
 automatically restarting anything. Geyser itself is not uninstalled.
 
-First-party Java loaders, Geyser, the CurseForge Java catalog, and the Modrinth
-Java catalog live under `server/bundled-plugins/` and are documented in [`java-providers.md`](./java-providers.md)
+First-party Java loaders, Geyser, the CurseForge catalog, the Git catalog, the
+File catalog, and the Modrinth Java catalog live under `server/bundled-plugins/`
+and are documented in [`java-providers.md`](./java-providers.md)
 and [`catalog-providers.md`](./catalog-providers.md). Geyser is opt-in: enabling
 the `gateway-geyser` plugin registers the provider and sidebar entry. Creating a
 Java server does not download Geyser, open a Bedrock UDP port, or start a
@@ -124,11 +125,30 @@ Reserved ids such as `servers`, `mods`, `catalog`, `players`, `ports`, and
 
 ## Pages and isolation
 
-Plugin pages are HTML/CSS/JS under `ui/`. The manager opens them in a sandboxed
-iframe so plugin CSS and JavaScript cannot restyle or patch Dashboard, catalog,
-library, or the other core pages.
+Plugin pages are HTML/CSS/JS under `ui/` unless a bundled first-party plugin
+declares `"renderer": "native-settings"`. Sandboxed pages open in an iframe so
+plugin CSS and JavaScript cannot restyle or patch Dashboard, catalog, library,
+or the other core pages.
 
-The manager injects `/api/plugins/sdk.js`, which exposes `window.MBM`:
+Uploaded plugins must keep using sandboxed iframe pages. Only bundled
+first-party plugins may request native settings. Native pages are React
+components owned by the manager. The plugin supplies a validated settings
+descriptor (plain-text sections, field types, and registered action ids) and
+never HTML, JSX, CSS, JavaScript, or secret values.
+
+Native catalog settings routes look like `/plugins/catalog-curseforge/settings`.
+Secrets such as the CurseForge API key, Git token, and SMB password are posted
+to core, stored in existing settings keys, and returned only as
+`{ "configured": true }`.
+
+The manager injects `/api/plugins/sdk.js` and a versioned `/api/plugins/ui.css`
+theme kit for sandboxed iframe pages, which exposes `window.MBM`. Native
+first-party settings pages do not use that iframe kit; they render core React
+components with the same cards, toggles, inputs, and buttons as the rest of the
+application. Named settings actions (`save`, `test-connection`, `sync-now`,
+path tests, and template downloads) run through core with plugin ownership
+checks, CSRF origin checks, rate limits, audit logs, and sanitized errors.
+Secret values never go to the plugin backend or back to the browser.
 
 | Call | Purpose |
 | --- | --- |
@@ -145,9 +165,11 @@ backend. A plugin cannot call another plugin’s API or load another plugin’s 
 ## Backend (optional)
 
 `backend.js` may export `register({ id, router, dataDir, logger, services,
-registerJavaLoader, registerGateway, registerCatalogSource })`. The router
+registerJavaLoader, registerGateway, registerCatalogSource,
+unregisterCatalogSource, registerPluginSettings, registerPluginAction })`. The router
 is mounted only at `/api/plugins/<id>/`. It cannot replace `/api/servers` or any
-other core route. `registerCatalogSource`, `registerJavaLoader`,
+other core route. `registerCatalogSource`, `unregisterCatalogSource`,
+`registerPluginSettings`, `registerJavaLoader`,
 `registerGateway`, and `registerPluginAction` are only provided to bundled
 plugins. Bundled gateway plugins also receive `services.gateways`, a
 provider-scoped wrapper around core gateway lifecycle. They can manage only

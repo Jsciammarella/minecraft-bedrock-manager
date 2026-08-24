@@ -2,7 +2,6 @@ const gitCatalog = require('./gitCatalogClient');
 const fileCatalog = require('./fileCatalogClient');
 const settingsStore = require('./settingsStore');
 const catalogProviderRegistry = require('./catalogProviderRegistry');
-const coreCatalogProviders = require('./coreCatalogProviders');
 const catalogLibrary = require('./catalogLibrary');
 const pluginAudit = require('./pluginAudit');
 const { ALLOWED_CATALOG_EDITIONS } = require('./catalogEditions');
@@ -25,7 +24,7 @@ function clampPageSize(value) {
 }
 
 function ensureProviders() {
-  coreCatalogProviders.registerAll();
+  /* Catalog sources are registered by bundled plugins during pluginHost.loadPlugins(). */
 }
 
 function normalizeEdition(value) {
@@ -37,16 +36,16 @@ function normalizeEdition(value) {
 
 function sourceStatus() {
   ensureProviders();
-  const settings = settingsStore.publicCatalogSettings();
-  const java = catalogProviderRegistry.get(JAVA_CURSEFORGE_ID);
-  const modrinth = catalogProviderRegistry.get(JAVA_MODRINTH_ID);
-  return {
-    curseforge: settings.curseforge.configured,
-    git: Boolean(settings.git.enabled && settings.git.url),
-    file: fileCatalog.isConfigured(),
-    [JAVA_CURSEFORGE_ID]: Boolean(java),
-    [JAVA_MODRINTH_ID]: Boolean(modrinth),
-  };
+  const available = {};
+  for (const entry of catalogProviderRegistry.entries()) {
+    const ok = typeof entry.provider.isAvailable === 'function'
+      ? Boolean(entry.provider.isAvailable())
+      : true;
+    const key = entry.id === BEDROCK_CURSEFORGE_ID ? LEGACY_CURSEFORGE_SOURCE : entry.id;
+    available[key] = ok;
+    available[entry.id] = ok;
+  }
+  return available;
 }
 
 function publicSources() {
@@ -56,12 +55,7 @@ function publicSources() {
   const sources = {};
   for (const provider of providers) {
     const key = provider.id === BEDROCK_CURSEFORGE_ID ? LEGACY_CURSEFORGE_SOURCE : provider.id;
-    let isAvailable = true;
-    if (provider.id === BEDROCK_CURSEFORGE_ID) isAvailable = Boolean(available.curseforge);
-    else if (provider.id === JAVA_CURSEFORGE_ID) isAvailable = Boolean(available[JAVA_CURSEFORGE_ID]);
-    else if (provider.id === JAVA_MODRINTH_ID) isAvailable = Boolean(available[JAVA_MODRINTH_ID]);
-    else if (provider.id === 'git') isAvailable = Boolean(available.git);
-    else if (provider.id === 'file') isAvailable = Boolean(available.file);
+    const isAvailable = Boolean(available[provider.id] || available[key]);
     sources[key] = {
       available: isAvailable,
       label: provider.name,
@@ -75,13 +69,13 @@ function publicSources() {
 
 function configureError(source) {
   if (source === 'git') {
-    return 'Git catalog is not configured. Add a repository in Catalog Settings.';
+    return 'Git catalog is not configured. Open the Git Catalog plugin settings to add a repository.';
   }
   if (source === 'file') {
-    return 'File catalog is not configured. Enable a local folder, SMB share, or NFS path in Catalog Settings.';
+    return 'File catalog is not configured. Open the File Catalog plugin settings to enable a local folder, SMB share, or NFS path.';
   }
-  if (source === JAVA_CURSEFORGE_ID) {
-    return 'CurseForge Java requires the existing CurseForge API key. Open Catalog Settings to add it.';
+  if (source === JAVA_CURSEFORGE_ID || source === BEDROCK_CURSEFORGE_ID || source === LEGACY_CURSEFORGE_SOURCE) {
+    return 'CurseForge catalog access requires an API key. Open the CurseForge Catalog plugin settings to add it.';
   }
   if (source === JAVA_MODRINTH_ID) {
     return 'The Modrinth Java catalog is disabled. Enable the Modrinth Java Catalog plugin to search Java projects.';
@@ -193,7 +187,7 @@ async function searchMods(query = '', options = {}) {
   }
   if ((source === JAVA_CURSEFORGE_ID || provider === JAVA_CURSEFORGE_ID) && !catalogProviderRegistry.get(JAVA_CURSEFORGE_ID)) {
     return withMeta(unsupportedCombination(source, edition, JAVA_CURSEFORGE_ID), errors, available, {
-      warning: 'CurseForge Java is disabled. Enable the CurseForge Java Catalog plugin to search Java projects.',
+      warning: 'CurseForge Java is disabled. Enable it in the CurseForge Catalog plugin settings to search Java projects.',
     });
   }
   if ((source === JAVA_MODRINTH_ID || provider === JAVA_MODRINTH_ID) && !catalogProviderRegistry.get(JAVA_MODRINTH_ID)) {
@@ -210,7 +204,7 @@ async function searchMods(query = '', options = {}) {
       total: 0,
       page,
       warning: edition === 'java'
-        ? 'No Java catalog sources are enabled. Enable the CurseForge Java Catalog or Modrinth Java Catalog plugin to search Java projects.'
+        ? 'No Java catalog sources are enabled. Enable CurseForge Java or the Modrinth Java Catalog plugin to search Java projects.'
         : 'No catalog sources match the selected filters.',
       emptyReason: 'no-providers',
     }, errors, available);
@@ -287,13 +281,13 @@ async function searchMods(query = '', options = {}) {
   const javaFailed = errors.some((item) => item.providerId === JAVA_CURSEFORGE_ID);
   const modrinthFailed = errors.some((item) => item.providerId === JAVA_MODRINTH_ID);
   if (!anyLocal && cfFailed && !javaFailed && !modrinthFailed) {
-    warning = 'CurseForge is unavailable. Open Catalog Settings to add a Git repository, file catalog, or CurseForge API key.';
+    warning = 'CurseForge is unavailable. Open the CurseForge Catalog plugin settings to add an API key, or enable a Git or file catalog plugin.';
   } else if (javaFailed) {
     warning = errors.find((item) => item.providerId === JAVA_CURSEFORGE_ID)?.error;
   } else if (modrinthFailed) {
     warning = errors.find((item) => item.providerId === JAVA_MODRINTH_ID)?.error;
   } else if (!available.curseforge && !anyLocal && !remoteResults.length && !local.length) {
-    warning = 'No catalog sources are configured. Open Catalog Settings to add a Git repository, file catalog, or CurseForge API key.';
+    warning = 'No catalog sources are configured. Open CurseForge, Git, or File Catalog plugin settings to add a source.';
   }
 
   return withMeta({

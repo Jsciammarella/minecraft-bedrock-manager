@@ -9,33 +9,51 @@ HTTPS downloads, archive inspection, and Mod Library storage.
 ```text
 Core manager
 ├── Catalog provider registry
-│   ├── CurseForge Bedrock (core)
-│   ├── Git repository (core)
-│   ├── File catalog (core)
-│   ├── CurseForge Java (`catalog-curseforge-java` bundled plugin)
-│   └── Modrinth Java (`catalog-modrinth-java` bundled plugin)
-├── Java loader provider registry
-└── Gateway provider registry
+├── Native plugin settings renderer
+├── Secret and credential storage
+├── Controlled HTTP and download brokers
+├── Controlled Git and filesystem services
+├── Mod Library importer
+└── Bundled first-party plugins
+    ├── catalog-curseforge
+    │   ├── curseforge-bedrock
+    │   └── curseforge-java
+    ├── catalog-git
+    ├── catalog-file
+    └── catalog-modrinth-java
 ```
 
 Only plugins loaded from `server/bundled-plugins/` may declare
 `provider:catalog-source` and call `registerCatalogSource`. Uploaded plugins
-that declare the capability are rejected at install time. Disabling a catalog
-plugin unregisters its source. Downloaded Mod Library entries and server installs
+that declare the capability are rejected at install time. Core does not register
+CurseForge, Git, or file catalog providers itself. Disabling a catalog plugin
+unregisters its sources. Downloaded Mod Library entries and server installs
 are left in place.
 
-## CurseForge Java
+Catalog source configuration lives on first-party plugin settings pages in the
+sidebar (**CurseForge Catalog**, **Git Catalog**, **File Catalog**). The old Mod
+Catalog settings icon is gone. Bookmarks to `/mods/catalog/settings` redirect to
+**Plugins**.
 
-The bundled `catalog-curseforge-java` plugin adds Minecraft Java projects from
-https://www.curseforge.com/minecraft using CurseForge’s official API.
+## CurseForge Catalog
 
-It reuses the existing CurseForge API-key setting. The plugin receives a
-credential-aware HTTP broker (`services.catalogHttp`). The raw key is never
-passed into the plugin, returned by APIs, written to logs, or stored on download
-records.
+The bundled `catalog-curseforge` plugin owns both Minecraft Bedrock and Minecraft
+Java CurseForge sources. Provider IDs stay `curseforge-bedrock` and
+`curseforge-java`. Both sources share one core-protected API key.
 
-If the key is missing, the source explains that Catalog Settings still needs the
-existing CurseForge API key. There is no Java web-scraping fallback.
+Bedrock and Java can be enabled independently, including neither, while the
+plugin itself stays enabled so its settings page remains reachable. Existing
+installations keep the stored API key. A previously disabled CurseForge Java
+plugin migrates to a disabled Java source; Bedrock defaults to enabled.
+
+The plugin receives a credential-aware HTTP broker (`services.catalogHttp`).
+The raw key is never passed into the plugin, returned by APIs, written to logs,
+or stored on download records.
+
+If the key is missing, the source explains that CurseForge catalog access
+requires an API key and to open the CurseForge Catalog plugin settings. There
+is no catalog web-scraping fallback. The separate manual CurseForge URL importer
+is unchanged.
 
 Java mods are executable code. Trust a project before installing it on a server.
 Loader and Minecraft-version compatibility is validated again by the Fabric or
@@ -196,10 +214,8 @@ picker: client files are visible and disabled, and Download selected stays off
 until a permitted file is chosen.
 
 Availability is cached by provider and project so catalog tiles are not refreshed
-with a CurseForge request on every render. Disabling the CurseForge Java plugin
-unregisters the source and clears that cache. Previously downloaded Mod Library
-files and installed server mods are left in place, including older client-only
-records.
+with a CurseForge request on every render. Disabling the CurseForge Catalog plugin
+or turning off the Java source unregisters that source and clears that cache.
 
 Java mods remain executable code. Server-compatible classification does not mean
 a JAR is safe to trust.
@@ -233,5 +249,28 @@ and their editions.
 - `POST /api/mods/catalog/download/:slug`
 
 Default search without `edition` or `provider` matches the previous Bedrock
-catalog. CurseForge Java and Modrinth appear only while their plugins are
-enabled.
+catalog. CurseForge Java appears while the CurseForge Catalog plugin and its
+Java source are enabled. Modrinth appears only while its plugin is enabled.
+Legacy `source=curseforge` still resolves to `curseforge-bedrock`.
+
+## Upgrade notes
+
+Catalog source settings moved from **Mod Catalog → Settings** to first-party
+plugin pages:
+
+- **CurseForge Catalog** (`/plugins/catalog-curseforge/settings`)
+- **Git Catalog** (`/plugins/catalog-git/settings`)
+- **File Catalog** (`/plugins/catalog-file/settings`)
+
+The old catalog settings icon is gone. Bookmarks to `/mods/catalog/settings`
+redirect to **Plugins**. Automatic/manual multi-file handling stays on the Mod
+Catalog page.
+
+Existing CurseForge API keys, Git tokens, SMB passwords, repository URLs, and
+file catalog paths are kept. Environment variables such as `CURSEFORGE_API_KEY`,
+`GIT_CATALOG_*`, and `FILE_CATALOG_*` still apply when no UI value is stored.
+The old CurseForge Java plugin folder is replaced by `catalog-curseforge`. If
+that Java plugin was disabled, the Java source stays disabled. Bedrock CurseForge
+defaults to enabled. Disabling a catalog plugin does not delete downloaded or
+installed content. Native first-party settings pages are core-rendered so they
+match the rest of the application and cannot run plugin HTML or JavaScript.

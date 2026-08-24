@@ -44,6 +44,77 @@ router.get('/sdk.js', (req, res) => {
   res.sendFile(sdkPath);
 });
 
+router.get('/ui.css', (req, res) => {
+  setPluginAssetHeaders(res);
+  res.setHeader('Content-Type', 'text/css; charset=utf-8');
+  res.sendFile(path.join(__dirname, '../static/plugin-ui.css'));
+});
+
+function sendSettingsError(res, err) {
+  return res.status(err.status || 400).json({
+    error: err.message,
+    code: err.code,
+  });
+}
+
+router.get('/:pluginId/settings', (req, res) => {
+  const plugin = pluginHost.getPlugin(req.params.pluginId);
+  if (!plugin || !plugin.enabled) return res.status(404).json({ error: 'Plugin not found' });
+  try {
+    const pluginSettings = require('../services/pluginSettings');
+    pluginSettings.assertSameOrigin(req);
+    res.json(pluginSettings.publicPage(plugin.id, { actor: 'local' }));
+  } catch (err) {
+    return sendSettingsError(res, err);
+  }
+});
+
+router.post('/:pluginId/settings/actions/:actionId', async (req, res) => {
+  const plugin = pluginHost.getPlugin(req.params.pluginId);
+  if (!plugin || !plugin.enabled) return res.status(404).json({ error: 'Plugin not found' });
+  try {
+    const pluginSettings = require('../services/pluginSettings');
+    pluginSettings.assertSameOrigin(req);
+    const result = await pluginSettings.invokeAction(
+      plugin.id,
+      req.params.actionId,
+      req.body || {},
+      { actor: 'local' }
+    );
+    if (result && result.download && Buffer.isBuffer(result.buffer)) {
+      const filename = String(result.filename || 'download.bin').replace(/[^a-zA-Z0-9._-]/g, '_');
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      return res.send(result.buffer);
+    }
+    res.json(result);
+  } catch (err) {
+    return sendSettingsError(res, err);
+  }
+});
+
+router.get('/:pluginId/settings/download/:actionId', async (req, res) => {
+  const plugin = pluginHost.getPlugin(req.params.pluginId);
+  if (!plugin || !plugin.enabled) return res.status(404).json({ error: 'Plugin not found' });
+  try {
+    const result = await require('../services/pluginSettings').invokeAction(
+      plugin.id,
+      req.params.actionId,
+      {},
+      { actor: 'local' }
+    );
+    if (!result || !result.download || !Buffer.isBuffer(result.buffer)) {
+      return res.status(400).json({ error: 'That action does not provide a download' });
+    }
+    const filename = String(result.filename || 'download.bin').replace(/[^a-zA-Z0-9._-]/g, '_');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.send(result.buffer);
+  } catch (err) {
+    return sendSettingsError(res, err);
+  }
+});
+
 router.post('/upload', (req, res) => {
   upload.fields([
     { name: 'archive', maxCount: 1 },

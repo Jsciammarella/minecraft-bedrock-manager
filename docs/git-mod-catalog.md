@@ -8,7 +8,7 @@ Use any Git host that speaks HTTPS or SSH. GitLab is the primary target; GitHub,
 
 1. Create the Git project (public or private).
 2. Commit packs using the layout below.
-3. In the manager, open **Mod Catalog** and click the settings gear.
+3. In the manager, open **Git Catalog** in the plugin sidebar.
 4. Enable **Git catalog** and paste the clone URL, branch, and an access token. **Sync Now** stays disabled until the catalog is enabled and a token has been saved.
 5. Use **Test Connection**, then **Save Settings**. Save returns immediately. If Git is enabled and a token is saved, a background sync starts (the **Sync Now** button and catalog refresh icon spin until it finishes). Wait for that spinner before downloading packs.
 
@@ -28,7 +28,7 @@ The host running the manager needs a `git` binary. The production Docker image i
 ## GitLab setup
 
 1. Create a project, for example `bedrock-mod-catalog`.
-2. Use `main` as the default branch, or set the branch name in Catalog Settings.
+2. Use `main` as the default branch, or set the branch name in Git Catalog plugin settings.
 3. For a **private** project, create a token that can **download repository code**:
    - Personal access token with `read_repository` checked
    - Project access token with the Guest (or higher) role and `read_repository`
@@ -36,7 +36,7 @@ The host running the manager needs a `git` binary. The production Docker image i
    - Do **not** use a token that only has `read_user`. GitLab will accept that token for login, then reject the clone with "You are not allowed to download code."
 4. Paste the HTTPS clone URL, such as `https://gitlab.example.com/group/bedrock-mod-catalog.git`.
 5. Username may be left blank. The manager authenticates as `oauth2` with the token, which GitLab accepts. You can also set username to your GitLab username.
-6. Paste the token in Catalog Settings. Do not commit it or send it in chat.
+6. Paste the token in Git Catalog plugin settings. Do not commit it or send it in chat.
 
 SSH URLs such as `git@gitlab.example.com:group/bedrock-mod-catalog.git` are converted to HTTPS when a token is provided. Passwordless SSH keys inside the manager container are not required.
 

@@ -101,7 +101,7 @@ function prettyJson(value) {
 function starterReadme() {
   return `# File catalog starter
 
-Extract this archive, then point **Mod Catalog → Settings → File Catalog** at the \`file-catalog\` folder. The example mods are labeled Example and should be deleted once your catalog is set up.
+Extract this archive, then point **File Catalog** plugin settings at the \`file-catalog\` folder. The example mods are labeled Example and should be deleted once your catalog is set up.
 
 ## Layout
 

@@ -6,7 +6,7 @@ The folder layout is the same as the Git catalog, including `edition` and `loade
 
 ## Sources
 
-Open **Mod Catalog → Settings** and enable **File catalog**, then any of:
+Open **File Catalog** in the plugin sidebar and enable **File catalog**, then any of:
 
 | Source | What to enter |
 | --- | --- |
@@ -39,7 +39,7 @@ catalog/
 
 Drop packs into those folders, or add `catalog.json` / per-folder `mod.json` the same way as Git. `file` can be a string or an array of archives. A folder that contains both a world and a texture pack is listed once and downloads both files as one library mod.
 
-**Catalog Settings** has a **Download folder template** button. It is a zip of this layout, with `README.md`, `catalog.json`, an `example-mod` folder, and an example in each category. Extract it, replace the empty pack files, and point the local (or share) path at that folder.
+**File Catalog** plugin settings have a **Download folder template** button. It is a zip of this layout, with `README.md`, `catalog.json`, an `example-mod` folder, and an example in each category. Extract it, replace the empty pack files, and point the local (or share) path at that folder.
 
 ## Docker and network shares
 
@@ -66,4 +66,4 @@ These are used only when the matching setting has not been saved in the UI.
 | `FILE_CATALOG_NFS_ENABLED` | Enable NFS |
 | `FILE_CATALOG_NFS_PATH` | Mount path or `host:/export` |
 
-Do not store share passwords in git. Prefer Catalog Settings.
+Do not store share passwords in git. Prefer File Catalog plugin settings.

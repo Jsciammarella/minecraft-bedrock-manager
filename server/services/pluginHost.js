@@ -135,34 +135,54 @@ function normalizeIcon(value) {
   return ALLOWED_ICONS.has(icon) ? icon : 'puzzle';
 }
 
-function parsePages(rawPages, pluginId, pluginName) {
-  if (Array.isArray(rawPages) && rawPages.length === 0) return [];
-  const source = Array.isArray(rawPages) && rawPages.length
+function parsePages(rawPages, pluginId, pluginName, { source = 'user' } = {}) {
+  if (Array.isArray(rawPages) && rawPages.length === 0) return { ok: true, pages: [] };
+  const sourcePages = Array.isArray(rawPages) && rawPages.length
     ? rawPages
     : [{ id: 'home', title: pluginName, file: 'index.html' }];
   const pages = [];
   const seen = new Set();
-  source.forEach((row, index) => {
+  for (const [index, row] of sourcePages.entries()) {
     const id = slug(row && row.id, index === 0 ? 'home' : `page-${index + 1}`);
-    if (!PAGE_ID_RE.test(id) || seen.has(id)) return;
+    if (!PAGE_ID_RE.test(id) || seen.has(id)) continue;
+    const renderer = String((row && row.renderer) || '').trim().toLowerCase();
+    if (renderer === 'native-settings') {
+      if (source !== 'bundled') {
+        return { ok: false, error: 'native-settings pages are limited to bundled first-party plugins' };
+      }
+      seen.add(id);
+      pages.push({
+        id,
+        title: String((row && row.title) || pluginName).trim() || pluginName,
+        renderer: 'native-settings',
+        file: '',
+      });
+      continue;
+    }
+    if (renderer && renderer !== 'iframe') {
+      return { ok: false, error: `unsupported page renderer "${renderer}"` };
+    }
     const file = String((row && (row.file || row.entry)) || 'index.html').replace(/\\/g, '/').replace(/^\/+/, '');
-    if (!file || file.includes('..') || path.isAbsolute(file)) return;
+    if (!file || file.includes('..') || path.isAbsolute(file)) continue;
     seen.add(id);
     pages.push({
       id,
       title: String((row && row.title) || pluginName).trim() || pluginName,
+      renderer: 'iframe',
       file,
     });
-  });
+  }
   if (!pages.length) {
-    pages.push({ id: 'home', title: pluginName, file: 'index.html' });
+    pages.push({ id: 'home', title: pluginName, renderer: 'iframe', file: 'index.html' });
   }
   pages.forEach((page) => {
-    page.path = page.id === pages[0].id
-      ? `/plugins/${pluginId}`
-      : `/plugins/${pluginId}/${page.id}`;
+    page.path = page.renderer === 'native-settings'
+      ? `/plugins/${pluginId}/${page.id}`
+      : page.id === pages[0].id
+        ? `/plugins/${pluginId}`
+        : `/plugins/${pluginId}/${page.id}`;
   });
-  return pages;
+  return { ok: true, pages };
 }
 
 function parseMenus(rawManifest, pluginId, pluginName, pages) {
@@ -218,7 +238,9 @@ function parseManifest(raw, folderName, { source = 'user' } = {}) {
     return { ok: false, error: `plugin id "${id}" is reserved` };
   }
   const name = String(raw.name || folderName).trim() || folderName;
-  const pages = parsePages(raw.pages, id, name);
+  const parsedPages = parsePages(raw.pages, id, name, { source });
+  if (!parsedPages.ok) return parsedPages;
+  const pages = parsedPages.pages;
   const menus = parseMenus(raw, id, name, pages);
   for (const menu of menus) {
     if (!menu.path.startsWith(`/plugins/${id}`)) {
@@ -301,7 +323,8 @@ function publicPlugin(plugin) {
       id: page.id,
       title: page.title,
       path: page.path,
-      file: page.file || 'index.html',
+      file: page.file || '',
+      renderer: page.renderer || 'iframe',
     })) : [],
     hasBackend: Boolean(plugin.router),
   };
@@ -343,8 +366,10 @@ function createProviderServices(plugin) {
     catalogHttp: (plugin.capabilities || []).includes('provider:catalog-source')
       ? require('./catalogHttp').forPlugin()
       : undefined,
+    gitCatalog: plugin.id === 'catalog-git' ? require('./gitCatalogService').forPlugin(plugin) : undefined,
+    fileCatalog: plugin.id === 'catalog-file' ? require('./fileCatalogService').forPlugin(plugin) : undefined,
+    catalogConfig: plugin.id === 'catalog-curseforge' ? require('./catalogPluginConfig') : undefined,
     gateways,
-    gateways: gateways,
     audit: pluginAudit,
     logger,
   };
@@ -395,8 +420,14 @@ function loadBackend(plugin) {
       registerCatalogSource: plugin.source === 'bundled'
         ? (provider) => catalogProviderRegistry.register(plugin, provider)
         : undefined,
+      unregisterCatalogSource: plugin.source === 'bundled'
+        ? (providerId) => catalogProviderRegistry.unregister(plugin, providerId)
+        : undefined,
       registerPluginAction: plugin.source === 'bundled'
         ? (spec) => pluginActions.register(plugin.id, spec)
+        : undefined,
+      registerPluginSettings: plugin.source === 'bundled'
+        ? (spec) => require('./pluginSettings').register(plugin, spec)
         : undefined,
     });
     plugin.router = router;
@@ -475,6 +506,7 @@ function unloadPlugins() {
   backendModules = [];
   loaded = [];
   try { require('./pluginActions').clear(); } catch { /* ignore */ }
+  try { require('./pluginSettings').clear(); } catch { /* ignore */ }
   try { require('./javaLoaderRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./gatewayRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./catalogProviderRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
@@ -843,6 +875,12 @@ function injectHtmlSdk(html, plugin = null) {
   let source = inlinePluginPageAssets(plugin, html);
   const headBits = [];
   if (!/fonts\.googleapis\.com/.test(source)) headBits.push(PLUGIN_UI_FONTS);
+  if (!source.includes('data-mbm-plugin-ui')) {
+    const uiCssPath = path.join(__dirname, '../static/plugin-ui.css');
+    if (fs.existsSync(uiCssPath)) {
+      headBits.push(`<style data-mbm-plugin-ui>${escapeInline(fs.readFileSync(uiCssPath, 'utf8'), 'style')}</style>`);
+    }
+  }
   if (!source.includes('data-mbm-plugin-chrome')) {
     headBits.push(`<style data-mbm-plugin-chrome>${PLUGIN_UI_CHROME_CSS}</style>`);
   }
@@ -909,6 +947,7 @@ module.exports = {
   loadPlugins,
   parseManifest,
   publicPlugin,
+  readPluginState,
   reloadPlugins,
   resetForTests,
   resolveUiFile,
