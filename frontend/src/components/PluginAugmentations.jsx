@@ -180,7 +180,3 @@ export function PluginDetailSummary({ server, pending, onAction, onManage }) {
     </div>
   );
 }
-
-export const PluginPrimaryActions = PluginPrimaryActions;
-export const pluginContributionsOf = pluginContributionsOf;
-export const primarySplitActions = primarySplitActions;
