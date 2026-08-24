@@ -17,6 +17,8 @@ function stripAnsi(text) {
     .replace(ANSI_CHAR_RE, '')
     .replace(CSI_8BIT_RE, '')
     .replace(BARE_SGR_RE, '')
+    .replace(/\[\?[0-9;]*\$p/g, '')
+    .replace(/\[c(?=\[|$)/g, '')
     .replace(/\r/g, '');
 }
 

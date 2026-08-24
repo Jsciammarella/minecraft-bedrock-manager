@@ -121,6 +121,12 @@ label { display: block; font-size: 0.85rem; margin-top: 0.75rem; }
   font-size: 0.9rem;
 }
 
+.error.info {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.3);
+  color: #93c5fd;
+}
+
 .logs {
   margin-top: 0.75rem;
   max-height: 16rem;

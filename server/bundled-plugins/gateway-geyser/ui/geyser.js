@@ -22,15 +22,25 @@
     if (t.textMuted) root.setProperty('--muted', t.textMuted);
   }
 
-  function showError(message) {
+  function showError(message, kind) {
     var box = $('error');
     if (!message) {
       box.classList.add('hidden');
+      box.classList.remove('info');
       box.textContent = '';
       return;
     }
     box.textContent = message;
+    box.classList.toggle('info', kind === 'info');
     box.classList.remove('hidden');
+  }
+
+  function stripLog(text) {
+    return String(text || '')
+      .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+      .replace(/\[\?[0-9;]*\$p/g, '')
+      .replace(/\[c(?=\[|$)/g, '')
+      .replace(/\[(?:\d{1,3}(?:;\d{1,3})*)?m/g, '');
   }
 
   function params() {
@@ -94,11 +104,16 @@
       + ' · ' + (gateway.compatibilityMode === 'viaproxy' ? 'ViaProxy' : 'Direct Geyser')
       + (gateway.geyser_version ? ' · Geyser ' + gateway.geyser_version : '')
       + (gateway.viaproxyVersion ? ' · ViaProxy ' + gateway.viaproxyVersion : '');
-    if (gateway.lastCompatibilityResult || gateway.lastError) {
+    if (gateway.lastError) {
       var notice = document.createElement('p');
       notice.className = 'notice';
-      notice.textContent = gateway.lastError || gateway.lastCompatibilityResult;
+      notice.textContent = gateway.lastError;
       info.appendChild(notice);
+    } else if (gateway.lastCompatibilityResult === 'viaproxy-recommended') {
+      var viaNotice = document.createElement('p');
+      viaNotice.className = 'notice';
+      viaNotice.textContent = 'This Java server needs ViaProxy compatibility mode.';
+      info.appendChild(viaNotice);
     }
     info.appendChild(title);
     info.appendChild(meta);
@@ -170,7 +185,7 @@
     if (!panel) return;
     try {
       var data = await MBM.get(API + '/gateways/' + encodeURIComponent(id) + '/logs');
-      panel.textContent = data.logs || 'No log output yet.';
+      panel.textContent = stripLog(data.logs || 'No log output yet.');
     } catch (err) {
       panel.textContent = err.message || 'Could not load logs.';
     }
@@ -189,17 +204,24 @@
   async function act(id, action) {
     busy = String(id);
     showError('');
+    await loadGateways();
     try {
       if (action === 'remove') {
         await MBM.del(API + '/gateways/' + encodeURIComponent(id));
       } else {
         await MBM.post(API + '/gateways/' + encodeURIComponent(id) + '/' + action);
       }
-      await loadGateways();
     } catch (err) {
       showError(err.message || 'Request failed');
     } finally {
       busy = '';
+      await loadGateways();
+      if (action === 'start' || action === 'restart') {
+        setTimeout(function () {
+          loadGateways();
+          if (selectedId) showLogs(selectedId);
+        }, 1500);
+      }
     }
   }
 
@@ -207,7 +229,8 @@
     showError('');
     try {
       var result = await MBM.get(API + '/gateways/' + encodeURIComponent(id) + '/compatibility');
-      showError(result.message || result.recommendedMode || 'Compatibility checked');
+      var kind = result.viaProxyEnabled || result.recommendedMode === 'direct' ? 'info' : 'error';
+      showError(result.message || result.recommendedMode || 'Compatibility checked', kind);
       await loadGateways();
     } catch (err) {
       showError(err.message || 'Compatibility check failed');
@@ -219,16 +242,17 @@
     if (!window.confirm('Download ViaProxy and Geyser-ViaProxy from official sources into this gateway folder?')) return;
     busy = String(id);
     showError('');
+    await loadGateways();
     try {
       await MBM.post(API + '/gateways/' + encodeURIComponent(id) + '/viaproxy/install', {
         confirmViaProxy: true,
         confirmModeSwitch: true,
       });
-      await loadGateways();
     } catch (err) {
       showError(err.message || 'ViaProxy install failed');
     } finally {
       busy = '';
+      await loadGateways();
     }
   }
 
@@ -236,28 +260,30 @@
     if (!window.confirm('Remove ViaProxy from this gateway and return to direct Geyser?')) return;
     busy = String(id);
     showError('');
+    await loadGateways();
     try {
       await MBM.post(API + '/gateways/' + encodeURIComponent(id) + '/viaproxy/remove', { confirm: true });
-      await loadGateways();
     } catch (err) {
       showError(err.message || 'ViaProxy remove failed');
     } finally {
       busy = '';
+      await loadGateways();
     }
   }
 
   async function toggleAdvertise(gateway) {
     busy = String(gateway.id);
     showError('');
+    await loadGateways();
     try {
       await MBM.patch(API + '/gateways/' + encodeURIComponent(gateway.id), {
         advertiseInBedrockConnect: gateway.advertiseInBedrockConnect === false,
       });
-      await loadGateways();
     } catch (err) {
       showError(err.message || 'Could not update advertisement');
     } finally {
       busy = '';
+      await loadGateways();
     }
   }
 

@@ -69,12 +69,21 @@ Target Java server
 Direct mode keeps the existing Geyser Standalone layout. ViaProxy mode runs
 ViaProxy with the official Geyser-ViaProxy plugin inside the same per-gateway
 data directory (`data/gateways/<id>/`). The process is started as
-`java -jar ViaProxy.jar config viaproxy.yml` (ViaProxy 3.4.12 has no `start`
-command). Geyser currently emulates a Java 1.26.2 client, so ViaProxy 3.4.12
-is required to translate that to older Java servers. Geyser-ViaProxy connects
-through ViaProxy to the target Java server; it does not loop back to ViaProxy's
-own bind port. The internal ViaProxy Java listener binds to loopback only and is
-never advertised. Bedrock Connect lists the Geyser Bedrock UDP host and port.
+`java -javaagent:ViaProxy.jar -jar ViaProxy.jar config viaproxy.yml`
+(ViaProxy 3.4.12 has no `start` command; the javaagent flag prevents ViaProxy
+from relaunching a second JVM that would steal the Bedrock UDP port). Geyser
+currently emulates a Java 1.26.2 client, so ViaProxy 3.4.12 is required to
+translate that to older Java servers. Geyser-ViaProxy connects through ViaProxy
+to the target Java server; it does not loop back to ViaProxy's own bind port.
+The internal ViaProxy Java listener binds to loopback only and is never
+advertised. Bedrock Connect lists the Geyser Bedrock UDP host and port.
+
+ViaProxy is **not** installed automatically. Direct Geyser start still requires
+an explicit ViaProxy install if the Java protocol is outside Geyser's native
+range. If ViaProxy is already enabled on that gateway, Start launches ViaProxy
+(not standalone Geyser). A leftover ViaProxy JVM from a previous relaunch can
+hold UDP 19132 / TCP 25566 (`Address already in use`); Start now kills Java
+processes whose working directory is that gateway folder before binding.
 
 ViaProxy is GPL-3.0; Geyser is MIT. Runtime download does not relicense this
 manager. If authentication is Java online-mode, ViaProxy CLI mode requires
@@ -119,7 +128,13 @@ runs in its own isolated process or container.
   Java target without Floodgate. Use Floodgate with an explicit key copy, or
   confirm insecure offline mode. The manager will not change server auth itself.
 - **Port conflict:** The Bedrock UDP port must be unique. The internal ViaProxy
-  TCP port is loopback-only and is not listed to players.
+  TCP port is loopback-only and is not listed to players. `Address already in
+  use` on Geyser/ViaProxy usually means a leftover JVM still holds that port;
+  stop the gateway (or restart the manager) so those processes are killed.
+- **Unsafe / launcher warnings:** Java 21+ may print `Unsafe` or “Injected using
+  Launcher Agent” lines. Those are not the crash. Duplicate overlapping Geyser
+  banners in the log mean two JVMs started; the javaagent launch plus killing
+  leftover Java in the gateway folder prevents that.
 - **Plugin disabled:** Gateway files remain. The dashboard tile stays read-only
   and Bedrock Connect stops advertising that UDP endpoint until the plugin is
   enabled again.

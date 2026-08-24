@@ -102,6 +102,7 @@ function createProvider() {
           javaMajor: Number(record.java_major || 21),
           workingDirectory: '.',
           jar: 'ViaProxy.jar',
+          javaAgent: 'ViaProxy.jar',
           arguments: ['config', 'viaproxy.yml'],
           memory: { minimum: '512M', maximum: '1G' },
           environment: {},
@@ -138,13 +139,17 @@ function createProvider() {
           message: 'Direct Geyser can target this Java version.',
         };
       }
+      const viaEnabled = String(record.compatibility_mode || 'direct') === 'viaproxy';
       return {
         compatible: false,
         recommendedMode: 'viaproxy',
+        viaProxyEnabled: viaEnabled,
         targetVersion: version,
         nativeVersions: GEYSER_NATIVE_JAVA_VERSIONS,
-        message: 'This Java server does not support the protocol required by the current Geyser release. Enable ViaProxy compatibility mode or update the Java server.',
-        action: 'Use ViaProxy Compatibility Mode',
+        message: viaEnabled
+          ? 'This Java version needs ViaProxy. Compatibility mode is already enabled, so Bedrock players join through ViaProxy rather than native Geyser.'
+          : 'This Java server does not support the protocol required by the current Geyser release. Enable ViaProxy compatibility mode or update the Java server.',
+        action: viaEnabled ? undefined : 'Use ViaProxy Compatibility Mode',
       };
     },
     async planCompatibilityInstallation(request) {

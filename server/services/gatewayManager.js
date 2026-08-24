@@ -11,10 +11,47 @@ const portRanges = require('./portRanges');
 const { sanitizedChildEnv } = require('./childEnv');
 const controlledFs = require('./controlledFs');
 const pluginEvents = require('./pluginEvents');
+const playerPresence = require('./playerPresence');
 
 const BASE_DIR = path.join(__dirname, '../../data/gateways');
 const ptySessions = new Map();
+const startInflight = new Map();
 const COMPAT_MODES = new Set(['direct', 'viaproxy']);
+
+function killJavaInDirectory(dir) {
+  if (process.platform === 'win32' || !dir) return;
+  const root = path.resolve(dir);
+  if (!root || !fs.existsSync('/proc')) return;
+  let pids = [];
+  try { pids = fs.readdirSync('/proc'); } catch { return; }
+  for (const pid of pids) {
+    if (!/^\d+$/.test(pid)) continue;
+    try {
+      const comm = fs.readFileSync(path.join('/proc', pid, 'comm'), 'utf8').trim();
+      if (comm !== 'java') continue;
+      let belongs = false;
+      try {
+        belongs = path.resolve(fs.readlinkSync(path.join('/proc', pid, 'cwd'))) === root;
+      } catch { /* ignore */ }
+      if (!belongs) {
+        const cmdline = fs.readFileSync(path.join('/proc', pid, 'cmdline'), 'utf8');
+        belongs = cmdline.includes(root);
+      }
+      if (!belongs) continue;
+      process.kill(Number(pid), 'SIGKILL');
+    } catch { /* process vanished or is not ours */ }
+  }
+}
+
+function removePluginBackups(dataPath) {
+  const pluginsDir = path.join(dataPath, 'plugins');
+  if (!fs.existsSync(pluginsDir)) return;
+  for (const name of fs.readdirSync(pluginsDir)) {
+    if (/\.bak$/i.test(name) || /\.jar\.bak$/i.test(name)) {
+      try { fs.unlinkSync(path.join(pluginsDir, name)); } catch { /* ignore */ }
+    }
+  }
+}
 
 function publicRecord(row) {
   if (!row) return null;
@@ -145,6 +182,7 @@ function writeRuntimeFiles(row, provider) {
     }
   }
   if (typeof provider.prepareRuntime === 'function') provider.prepareRuntime(row);
+  removePluginBackups(row.data_path);
   return dest;
 }
 
@@ -172,7 +210,9 @@ function checkCompatibility(id) {
   persistGatewayExtras(id, {
     target_minecraft_version: version,
     last_compatibility_check: new Date().toISOString(),
-    last_compatibility_result: result.recommendedMode === 'viaproxy' ? 'viaproxy-recommended' : 'direct-ok',
+    last_compatibility_result: result.recommendedMode === 'viaproxy'
+      ? (compatibilityModeOf(row.compatibility_mode) === 'viaproxy' ? 'viaproxy-active' : 'viaproxy-recommended')
+      : 'direct-ok',
   });
   pluginAudit.record('gateway.compatibility.check', {
     targetType: 'gateway',
@@ -204,13 +244,16 @@ async function installCompatibility(id, { confirmViaProxy = false, confirmModeSw
   try {
     const plan = await entry.provider.planCompatibilityInstallation({ ...next, confirmViaProxy: true });
     const jarNames = (plan.downloads || []).map((item) => path.join(next.data_path, item.destination));
+    const backupDir = path.join(next.data_path, '.backup');
+    fs.mkdirSync(backupDir, { recursive: true });
     for (const jar of jarNames) {
       if (fs.existsSync(jar)) {
-        const backup = `${jar}.bak`;
+        const backup = path.join(backupDir, path.basename(jar));
         fs.copyFileSync(jar, backup);
         backups.push({ jar, backup });
       }
     }
+    removePluginBackups(next.data_path);
     await javaLoaderHost.executeInstallPlan(plan, {
       serverDir: next.data_path,
       allowHosts: entry.downloadHosts,
@@ -552,10 +595,22 @@ function syncLocalTargetPort(serverId, tcpPort) {
 }
 
 async function start(id) {
+  const key = String(id);
+  if (startInflight.has(key)) return startInflight.get(key);
+  const work = startNow(id).finally(() => startInflight.delete(key));
+  startInflight.set(key, work);
+  return work;
+}
+
+async function startNow(id) {
   const row = get(id);
   if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
-  if (row.status === 'running' || row.status === 'starting') {
+  if (ptySessions.has(String(id))) {
     throw Object.assign(new Error('Gateway already running'), { status: 400 });
+  }
+  if (row.status === 'running' || row.status === 'starting') {
+    killJavaInDirectory(row.data_path);
+    db.prepare(`UPDATE gateways SET status = 'stopped', health_status = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
   }
   const entry = gatewayRegistry.requireGateway(row.provider_id);
   if (row.target_type === 'local-server') {
@@ -564,74 +619,107 @@ async function start(id) {
       throw Object.assign(new Error('The associated Java server no longer exists. Choose a new target before starting this gateway.'), { status: 400 });
     }
   }
-  if (row.authentication === 'floodgate') {
-    row.floodgate_key_path = syncFloodgateKey(row);
-    db.prepare(`UPDATE gateways SET floodgate_key_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .run(row.floodgate_key_path, id);
-  }
-  if (typeof entry.provider.validateLaunch === 'function') {
-    entry.provider.validateLaunch(get(id));
-  }
-  if (compatibilityModeOf(row.compatibility_mode) === 'viaproxy') {
-    const wanted = typeof entry.provider.getMetadata === 'function'
-      ? entry.provider.getMetadata().viaproxyVersion
-      : null;
-    const jar = path.join(row.data_path, 'ViaProxy.jar');
-    if (wanted && (!fs.existsSync(jar) || String(row.viaproxy_version || '') !== String(wanted))) {
-      await installCompatibility(id, { confirmViaProxy: true, confirmModeSwitch: true });
-    } else if (!fs.existsSync(jar)) {
-      throw Object.assign(new Error('ViaProxy is not installed for this gateway. Install compatibility mode from the Geyser plugin first.'), { status: 400 });
+  db.prepare(`UPDATE gateways SET status = 'starting', health_status = 'starting', last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+  if (global.io) global.io.emit('gateway-status', { gatewayId: id, status: 'starting' });
+  pluginEvents.emit('gateway.updated', { gatewayId: id });
+  try {
+    if (row.authentication === 'floodgate') {
+      row.floodgate_key_path = syncFloodgateKey(row);
+      db.prepare(`UPDATE gateways SET floodgate_key_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .run(row.floodgate_key_path, id);
     }
-  }
-  writeRuntimeFiles(get(id), entry.provider);
-  const spec = entry.provider.getLaunchSpecification(get(id));
-  if (Array.isArray(spec.jvmArguments) && spec.jvmArguments.length) {
-    throw Object.assign(new Error('Gateway providers cannot supply extra JVM arguments'), { status: 400 });
-  }
-  if (spec.javaBin || spec.executable || spec.bin || spec.command || spec.shell) {
-    throw Object.assign(new Error('Gateway providers cannot choose an executable path or shell command'), { status: 400 });
-  }
-  const validated = javaLoaderHost.validateLaunchSpec(spec, row.data_path);
-  const javaBin = await javaRuntime.ensureJava({ major: spec.javaMajor || 21 });
-  const args = javaLoaderHost.buildJavaArgs(spec);
-  const { spawn: spawnPty } = require('node-pty');
-  const pty = spawnPty(javaBin, args, {
-    name: 'xterm-color',
-    cols: 120,
-    rows: 30,
-    cwd: validated.cwd,
-    env: sanitizedChildEnv({
-      ...(spec.environment || {}),
-      JAVA_HOME: javaRuntime.javaHomeFromBin(javaBin),
-    }),
-  });
-  ptySessions.set(String(id), { pty, logs: '' });
-  pty.onData((chunk) => {
-    const session = ptySessions.get(String(id));
-    if (!session) return;
-    session.logs = `${session.logs}${chunk}`.slice(-80000);
-    if (global.io) global.io.to(`gateway-${id}`).emit('gateway-output', { gatewayId: id, data: chunk });
-  });
-  pty.onExit(() => {
-    ptySessions.delete(String(id));
-    db.prepare(`UPDATE gateways SET status = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+    if (typeof entry.provider.validateLaunch === 'function') {
+      entry.provider.validateLaunch(get(id));
+    }
+    const current = get(id);
+    if (compatibilityModeOf(current.compatibility_mode) !== 'viaproxy'
+      && typeof entry.provider.checkCompatibility === 'function') {
+      const version = localTargetVersion(current);
+      if (version) {
+        const compat = entry.provider.checkCompatibility(current, { minecraftVersion: version });
+        if (compat.recommendedMode === 'viaproxy') {
+          throw Object.assign(new Error(compat.message), { status: 400, code: 'PROTOCOL_INCOMPATIBLE' });
+        }
+      }
+    }
+    if (compatibilityModeOf(current.compatibility_mode) === 'viaproxy') {
+      const wanted = typeof entry.provider.getMetadata === 'function'
+        ? entry.provider.getMetadata().viaproxyVersion
+        : null;
+      const jar = path.join(current.data_path, 'ViaProxy.jar');
+      if (wanted && (!fs.existsSync(jar) || String(current.viaproxy_version || '') !== String(wanted))) {
+        await installCompatibility(id, { confirmViaProxy: true, confirmModeSwitch: true });
+      } else if (!fs.existsSync(jar)) {
+        throw Object.assign(new Error('ViaProxy is not installed for this gateway. Install compatibility mode from the Geyser plugin first.'), { status: 400 });
+      }
+    }
+    writeRuntimeFiles(get(id), entry.provider);
+    removePluginBackups(get(id).data_path);
+    killJavaInDirectory(get(id).data_path);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const spec = entry.provider.getLaunchSpecification(get(id));
+    if (Array.isArray(spec.jvmArguments) && spec.jvmArguments.length) {
+      throw Object.assign(new Error('Gateway providers cannot supply extra JVM arguments'), { status: 400 });
+    }
+    if (spec.javaBin || spec.executable || spec.bin || spec.command || spec.shell) {
+      throw Object.assign(new Error('Gateway providers cannot choose an executable path or shell command'), { status: 400 });
+    }
+    const latest = get(id);
+    const validated = javaLoaderHost.validateLaunchSpec(spec, latest.data_path);
+    const javaBin = await javaRuntime.ensureJava({ major: spec.javaMajor || 21 });
+    const args = javaLoaderHost.buildJavaArgs(spec);
+    const { spawn: spawnPty } = require('node-pty');
+    const pty = spawnPty(javaBin, args, {
+      name: 'xterm-color',
+      cols: 120,
+      rows: 30,
+      cwd: validated.cwd,
+      env: sanitizedChildEnv({
+        ...(spec.environment || {}),
+        JAVA_HOME: javaRuntime.javaHomeFromBin(javaBin),
+      }),
+    });
+    ptySessions.set(String(id), { pty, logs: '' });
+    pty.onData((chunk) => {
+      const session = ptySessions.get(String(id));
+      if (!session) return;
+      const text = playerPresence.stripAnsi(chunk);
+      session.logs = `${session.logs}${text}`.slice(-80000);
+      if (global.io) global.io.to(`gateway-${id}`).emit('gateway-output', { gatewayId: id, data: text });
+    });
+    pty.onExit(() => {
+      ptySessions.delete(String(id));
+      killJavaInDirectory(latest.data_path);
+      db.prepare(`UPDATE gateways SET status = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+      if (global.io) global.io.emit('gateway-status', { gatewayId: id, status: 'stopped' });
+      pluginEvents.emit('gateway.stopped', { gatewayId: id });
+    });
+    db.prepare(`UPDATE gateways SET status = 'running', health_status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+    pluginAudit.record('gateway.start', { targetType: 'gateway', targetId: String(id), detail: { compatibilityMode: compatibilityModeOf(latest.compatibility_mode) } });
+    pluginEvents.emit('gateway.started', { gatewayId: id });
+    if (global.io) global.io.emit('gateway-status', { gatewayId: id, status: 'running' });
+    return { success: true, message: 'Gateway starting...' };
+  } catch (err) {
+    db.prepare(`UPDATE gateways SET status = 'stopped', health_status = 'failed', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(String(err.message || err), id);
     if (global.io) global.io.emit('gateway-status', { gatewayId: id, status: 'stopped' });
-  });
-  db.prepare(`UPDATE gateways SET status = 'running', health_status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
-  pluginAudit.record('gateway.start', { targetType: 'gateway', targetId: String(id), detail: { compatibilityMode: compatibilityModeOf(row.compatibility_mode) } });
-  pluginEvents.emit('gateway.started', { gatewayId: id });
-  return { success: true, message: 'Gateway starting...' };
+    pluginEvents.emit('gateway.updated', { gatewayId: id });
+    throw err;
+  }
 }
 
 function stop(id) {
+  const row = get(id);
   const session = ptySessions.get(String(id));
   if (session) {
     try { session.pty.kill(); } catch { /* ignore */ }
     ptySessions.delete(String(id));
   }
+  if (row?.data_path) killJavaInDirectory(row.data_path);
   db.prepare(`UPDATE gateways SET status = 'stopped', health_status = 'stopped', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
   pluginAudit.record('gateway.stop', { targetType: 'gateway', targetId: String(id) });
   pluginEvents.emit('gateway.stopped', { gatewayId: id });
+  if (global.io) global.io.emit('gateway-status', { gatewayId: id, status: 'stopped' });
   return { success: true };
 }
 

@@ -56,6 +56,13 @@ function validateLaunchSpec(spec, serverDir) {
     : '.';
   const cwd = cwdRel === '.' ? path.resolve(serverDir) : controlledFs.resolveInRoot(serverDir, cwdRel);
   if (spec.jar) controlledFs.assertRelative(spec.jar);
+  if (spec.javaAgent) {
+    if (typeof spec.javaAgent !== 'string' || spec.javaAgent.includes('=') || spec.javaAgent.includes(':')
+      || spec.javaAgent.includes('/') || spec.javaAgent.includes('\\') || !spec.javaAgent.endsWith('.jar')) {
+      throw new Error('Java agent must be a relative jar name in the working directory');
+    }
+    controlledFs.assertRelative(spec.javaAgent);
+  }
   const args = controlledProcess.assertArgArray(spec.arguments || [], 'Launch');
   const jvm = controlledProcess.assertArgArray(spec.jvmArguments || [], 'JVM');
   return { spec, cwd, args, jvm };
@@ -121,6 +128,9 @@ function buildJavaArgs(spec) {
   const xmx = spec.memory?.maximum || memoryFlag('MC_MANAGER_JAVA_XMX', '2G');
   args.push(`-Xms${xms}`, `-Xmx${xmx}`);
   args.push(...controlledProcess.assertArgArray(spec.jvmArguments || [], 'JVM'));
+  if (spec.javaAgent) {
+    args.push(`-javaagent:${spec.javaAgent}`);
+  }
   if (spec.jar) {
     args.push('-jar', spec.jar);
   }

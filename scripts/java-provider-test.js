@@ -665,6 +665,13 @@ versionRange="[13.0.8,)"
   assert.equal(nativeProtocol.recommendedMode, 'direct');
   const viaForCurrentJava = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '1.21.8' });
   assert.equal(viaForCurrentJava.recommendedMode, 'viaproxy');
+  assert.equal(viaForCurrentJava.viaProxyEnabled, false);
+  const viaAlreadyOn = geyserProvider.checkCompatibility(
+    { ...storedDirect, compatibility_mode: 'viaproxy' },
+    { minecraftVersion: '1.21.8' }
+  );
+  assert.equal(viaAlreadyOn.viaProxyEnabled, true);
+  assert.match(viaAlreadyOn.message, /already enabled/i);
 
   await assert.rejects(
     () => gatewayManager.installCompatibility(created.id, {}),
@@ -699,7 +706,10 @@ versionRange="[13.0.8,)"
   assert.ok(!JSON.stringify(publicVia).includes(String(storedVia.viaproxy_bind_port)));
   const launchVia = geyserProvider.getLaunchSpecification(storedVia);
   assert.equal(launchVia.jar, 'ViaProxy.jar');
+  assert.equal(launchVia.javaAgent, 'ViaProxy.jar');
   assert.deepEqual(launchVia.arguments, ['config', 'viaproxy.yml']);
+  const viaArgs = javaLoaderHost.buildJavaArgs(launchVia);
+  assert.ok(viaArgs.includes('-javaagent:ViaProxy.jar'));
   const viaYml = fs.readFileSync(path.join(storedVia.data_path, 'viaproxy.yml'), 'utf8');
   assert.match(viaYml, /bind-address:\s*127\.0\.0\.1:\d+/);
   assert.match(viaYml, /target-address:\s*\S+:\d+/);
