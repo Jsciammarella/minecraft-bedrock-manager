@@ -3,8 +3,20 @@
   var busy = '';
   var selectedId = '';
   var logTimer = null;
+  var gatewaysCache = [];
 
   function $(id) { return document.getElementById(id); }
+
+  function icon(name) {
+    var paths = {
+      play: '<polygon points="5 3 19 12 5 21 5 3" fill="currentColor" stroke="none"/>',
+      stop: '<rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" stroke="none"/>',
+      restart: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+      trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+      close: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+    };
+    return '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (paths[name] || '') + '</svg>';
+  }
 
   function applyTheme() {
     if (!window.MBM || !MBM.theme) return;
@@ -54,6 +66,45 @@
     return Number.isInteger(num) && num > 0 ? String(num) : '';
   }
 
+  function isRunning(gateway) {
+    return gateway.status === 'running' || gateway.status === 'starting';
+  }
+
+  function statusClass(status) {
+    if (status === 'running') return 'badge-success';
+    if (status === 'starting') return 'badge-warning';
+    return 'badge-muted';
+  }
+
+  function dotClass(status) {
+    if (status === 'running') return 'dot-running';
+    if (status === 'starting') return 'dot-starting';
+    return 'dot-stopped';
+  }
+
+  function authLabel(value) {
+    if (value === 'floodgate') return 'Floodgate';
+    if (value === 'offline') return 'Offline';
+    return 'Online';
+  }
+
+  function modeLabel(gateway) {
+    return gateway.compatibilityMode === 'viaproxy' ? 'ViaProxy' : 'Direct';
+  }
+
+  function targetLabel(gateway) {
+    return (gateway.target_host || 'Java') + ':' + gateway.target_tcp_port;
+  }
+
+  function setOverlay(id, open) {
+    var node = $(id);
+    if (!node) return;
+    node.classList.toggle('hidden', !open);
+    var anyOpen = !$('createOverlay').classList.contains('hidden')
+      || !$('detailOverlay').classList.contains('hidden');
+    document.body.classList.toggle('modal-open', anyOpen);
+  }
+
   function toggleAuthHints() {
     var auth = $('authentication').value;
     var remote = $('targetType').value === 'remote-address';
@@ -83,142 +134,340 @@
     return servers;
   }
 
+  function makeButton(label, cls, onClick, glyph) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    if (cls) btn.className = cls;
+    if (glyph) btn.innerHTML = icon(glyph) + '<span></span>';
+    if (glyph) btn.querySelector('span').textContent = label;
+    else btn.textContent = label;
+    btn.addEventListener('click', function (event) {
+      event.stopPropagation();
+      onClick(event);
+    });
+    return btn;
+  }
+
+  function addLifecycleButtons(target, gateway, growStart) {
+    var running = isRunning(gateway);
+    var disabled = busy === String(gateway.id);
+    var startStop = running
+      ? makeButton(busy === String(gateway.id) ? 'Stopping...' : 'Stop', 'danger' + (growStart ? ' grow' : ''), function () { act(gateway.id, 'stop'); }, 'stop')
+      : makeButton(busy === String(gateway.id) ? 'Starting...' : 'Start', (growStart ? 'grow' : ''), function () { act(gateway.id, 'start'); }, 'play');
+    startStop.disabled = disabled;
+    var restart = makeButton('Restart', 'secondary', function () { act(gateway.id, 'restart'); }, 'restart');
+    restart.disabled = disabled;
+    var remove = makeButton('Delete', 'secondary danger', function () { removeGateway(gateway); }, 'trash');
+    remove.title = 'Delete gateway';
+    remove.setAttribute('aria-label', 'Delete gateway');
+    remove.disabled = disabled;
+    target.appendChild(startStop);
+    target.appendChild(restart);
+    target.appendChild(remove);
+  }
+
+  function renderStats(gateways) {
+    var running = gateways.filter(function (item) { return item.status === 'running'; }).length;
+    var starting = gateways.filter(function (item) { return item.status === 'starting'; }).length;
+    var stopped = gateways.length - running - starting;
+    $('stats').innerHTML = '';
+    [
+      ['Gateways', String(gateways.length)],
+      ['Running', String(running + starting)],
+      ['Stopped', String(stopped)],
+    ].forEach(function (row) {
+      var card = document.createElement('div');
+      card.className = 'stat';
+      var label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = row[0];
+      var value = document.createElement('div');
+      value.className = 'value';
+      value.textContent = row[1];
+      card.appendChild(label);
+      card.appendChild(value);
+      $('stats').appendChild(card);
+    });
+  }
+
   function renderGateway(gateway) {
-    var card = document.createElement('div');
-    card.className = 'card';
-    card.id = 'gw-' + gateway.id;
-    var running = gateway.status === 'running' || gateway.status === 'starting';
-    card.innerHTML = '';
-    var top = document.createElement('div');
-    top.className = 'row';
+    var tile = document.createElement('div');
+    tile.className = 'tile';
+    tile.id = 'gw-' + gateway.id;
+    tile.tabIndex = 0;
+    tile.setAttribute('role', 'button');
+    tile.setAttribute('aria-label', 'View ' + gateway.name + ' details');
+    tile.addEventListener('click', function () { openDetail(gateway.id); });
+    tile.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openDetail(gateway.id);
+      }
+    });
+
+    var header = document.createElement('div');
+    header.className = 'tile-header';
+    var titleWrap = document.createElement('div');
+    titleWrap.className = 'tile-title';
+    var dot = document.createElement('span');
+    dot.className = 'dot ' + dotClass(gateway.status);
+    var names = document.createElement('div');
+    var heading = document.createElement('h3');
+    heading.textContent = gateway.name;
+    var chips = document.createElement('div');
+    chips.style.display = 'flex';
+    chips.style.flexWrap = 'wrap';
+    chips.style.gap = '0.35rem';
+    chips.style.marginTop = '0.35rem';
+    function chip(text, cls) {
+      var node = document.createElement('span');
+      node.className = 'chip ' + cls;
+      node.textContent = text;
+      chips.appendChild(node);
+    }
+    chip('Geyser', 'chip-geyser');
+    if (gateway.compatibilityMode === 'viaproxy') chip('ViaProxy', 'chip-via');
+    if (gateway.authentication === 'floodgate') chip('Floodgate', 'chip-floodgate');
+    if (gateway.target_type === 'remote-address') chip('Remote', 'chip-remote');
+    var subtitle = document.createElement('p');
+    subtitle.className = 'meta';
+    subtitle.textContent = 'UDP ' + gateway.bedrock_udp_port + ' → ' + targetLabel(gateway);
+    names.appendChild(heading);
+    names.appendChild(chips);
+    names.appendChild(subtitle);
+    titleWrap.appendChild(dot);
+    titleWrap.appendChild(names);
+    var badge = document.createElement('span');
+    badge.className = 'badge ' + statusClass(gateway.status);
+    badge.textContent = gateway.status || 'stopped';
+    header.appendChild(titleWrap);
+    header.appendChild(badge);
+    tile.appendChild(header);
+
+    if (gateway.lastError) {
+      var err = document.createElement('p');
+      err.className = 'notice notice-error';
+      err.textContent = gateway.lastError;
+      tile.appendChild(err);
+    }
+
     var info = document.createElement('div');
-    var title = document.createElement('div');
-    title.innerHTML = '<strong></strong> <span class="badge"></span>';
-    title.querySelector('strong').textContent = gateway.name;
-    title.querySelector('.badge').textContent = gateway.status || 'stopped';
-    title.querySelector('.badge').className = 'badge ' + (running ? 'badge-success' : 'badge-muted');
-    var meta = document.createElement('p');
-    meta.className = 'meta';
-    meta.textContent = 'Bedrock UDP ' + gateway.bedrock_udp_port
-      + ' → ' + gateway.target_host + ':' + gateway.target_tcp_port
-      + ' (' + gateway.authentication + ')'
-      + ' · ' + (gateway.compatibilityMode === 'viaproxy' ? 'ViaProxy' : 'Direct Geyser')
+    info.className = 'info-grid';
+    [
+      [String(gateway.bedrock_udp_port || '—'), 'UDP port'],
+      [authLabel(gateway.authentication), 'Auth'],
+      [modeLabel(gateway), 'Mode'],
+    ].forEach(function (row) {
+      var cell = document.createElement('div');
+      cell.className = 'info-cell';
+      var value = document.createElement('p');
+      value.className = 'value';
+      value.textContent = row[0];
+      var label = document.createElement('p');
+      label.className = 'label';
+      label.textContent = row[1];
+      cell.appendChild(value);
+      cell.appendChild(label);
+      info.appendChild(cell);
+    });
+    tile.appendChild(info);
+
+    var actions = document.createElement('div');
+    actions.className = 'tile-actions';
+    addLifecycleButtons(actions, gateway, true);
+    tile.appendChild(actions);
+    return tile;
+  }
+
+  function findGateway(id) {
+    return gatewaysCache.find(function (item) { return String(item.id) === String(id); }) || null;
+  }
+
+  function renderDetail() {
+    var gateway = findGateway(selectedId);
+    var root = $('detail');
+    root.innerHTML = '';
+    if (!gateway) {
+      setOverlay('detailOverlay', false);
+      selectedId = '';
+      return;
+    }
+    var running = isRunning(gateway);
+
+    var head = document.createElement('div');
+    head.className = 'detail-head';
+    var left = document.createElement('div');
+    var titleRow = document.createElement('div');
+    titleRow.style.display = 'flex';
+    titleRow.style.alignItems = 'center';
+    titleRow.style.flexWrap = 'wrap';
+    titleRow.style.gap = '0.5rem';
+    var title = document.createElement('h1');
+    title.id = 'detailTitle';
+    title.textContent = gateway.name;
+    var badge = document.createElement('span');
+    badge.className = 'badge ' + statusClass(gateway.status);
+    badge.textContent = gateway.status || 'stopped';
+    titleRow.appendChild(title);
+    titleRow.appendChild(badge);
+    var sub = document.createElement('p');
+    sub.className = 'meta';
+    sub.textContent = 'UDP ' + gateway.bedrock_udp_port + ' → ' + targetLabel(gateway)
       + (gateway.geyser_version ? ' · Geyser ' + gateway.geyser_version : '')
       + (gateway.viaproxyVersion ? ' · ViaProxy ' + gateway.viaproxyVersion : '');
+    left.appendChild(titleRow);
+    left.appendChild(sub);
+    var close = makeButton('', 'close-btn secondary', closeDetail, 'close');
+    close.setAttribute('aria-label', 'Close');
+    head.appendChild(left);
+    head.appendChild(close);
+    root.appendChild(head);
+
     if (gateway.unresolvedTarget) {
       var unresolved = document.createElement('p');
-      unresolved.className = 'notice';
-      unresolved.textContent = 'This gateway target could not be resolved. Choose a Java server or remote address before starting it. It is not attached to a dashboard server tile.';
-      info.appendChild(unresolved);
+      unresolved.className = 'notice notice-error';
+      unresolved.textContent = 'This gateway target could not be resolved. Choose a Java server or remote address before starting it.';
+      root.appendChild(unresolved);
     }
     if (gateway.dashboardAttachment && gateway.dashboardAttachment.primary === false) {
       var extra = document.createElement('p');
       extra.className = 'notice';
       extra.textContent = 'Another Geyser gateway is shown on this Java server tile. This gateway is managed only from this page.';
-      info.appendChild(extra);
+      root.appendChild(extra);
     }
     if (gateway.lastError) {
       var notice = document.createElement('p');
-      notice.className = 'notice';
+      notice.className = 'notice notice-error';
       notice.textContent = gateway.lastError;
-      info.appendChild(notice);
+      root.appendChild(notice);
     } else if (gateway.lastCompatibilityResult === 'viaproxy-recommended') {
       var viaNotice = document.createElement('p');
       viaNotice.className = 'notice';
       viaNotice.textContent = 'This Java server needs ViaProxy compatibility mode.';
-      info.appendChild(viaNotice);
+      root.appendChild(viaNotice);
     }
-    info.appendChild(title);
-    info.appendChild(meta);
+
     var actions = document.createElement('div');
-    actions.className = 'actions';
-    function addBtn(label, cls, fn) {
-      var btn = document.createElement('button');
-      btn.type = 'button';
-      btn.textContent = label;
-      if (cls) btn.className = cls;
-      btn.disabled = busy === String(gateway.id);
-      btn.addEventListener('click', fn);
-      actions.appendChild(btn);
-    }
-    if (running) addBtn('Stop', 'secondary', function () { act(gateway.id, 'stop'); });
-    else addBtn('Start', '', function () { act(gateway.id, 'start'); });
-    addBtn('Restart', 'secondary', function () { act(gateway.id, 'restart'); });
-    addBtn('Logs', 'secondary', function () { toggleLogs(gateway.id); });
-    addBtn('Check compatibility', 'secondary', function () { checkCompat(gateway.id); });
+    actions.className = 'page-actions';
+    addLifecycleButtons(actions, gateway, false);
+    root.appendChild(actions);
+
+    var dl = document.createElement('dl');
+    dl.className = 'detail-dl';
+    [
+      ['Bedrock UDP port', String(gateway.bedrock_udp_port || '—')],
+      ['Java target', targetLabel(gateway)],
+      ['Authentication', authLabel(gateway.authentication)],
+      ['Compatibility', gateway.compatibilityMode === 'viaproxy' ? 'ViaProxy' : 'Direct Geyser'],
+      ['Geyser version', gateway.geyser_version || '—'],
+      ['ViaProxy version', gateway.viaproxyVersion || 'not installed'],
+      ['Bedrock Connect', gateway.advertiseInBedrockConnect === false ? 'Hidden' : 'Advertised'],
+    ].forEach(function (row) {
+      var dt = document.createElement('dt');
+      dt.textContent = row[0];
+      var wrap = document.createElement('div');
+      var dd = document.createElement('dd');
+      dd.textContent = row[1];
+      wrap.appendChild(dt);
+      wrap.appendChild(dd);
+      dl.appendChild(wrap);
+    });
+    root.appendChild(dl);
+
+    var extras = document.createElement('div');
+    extras.className = 'extra-actions';
+    extras.appendChild(makeButton('Check compatibility', 'secondary', function () { checkCompat(gateway.id); }));
     if (gateway.compatibilityMode === 'viaproxy') {
-      addBtn('Upgrade ViaProxy', 'secondary', function () { installVia(gateway.id, running); });
-      addBtn('Remove ViaProxy', 'secondary', function () { removeVia(gateway.id); });
+      extras.appendChild(makeButton('Upgrade ViaProxy', 'secondary', function () { installVia(gateway.id, running); }));
+      extras.appendChild(makeButton('Remove ViaProxy', 'secondary', function () { removeVia(gateway.id); }));
     } else {
-      addBtn('Install ViaProxy', 'secondary', function () { installVia(gateway.id, running); });
+      extras.appendChild(makeButton('Install ViaProxy', 'secondary', function () { installVia(gateway.id, running); }));
     }
     if (gateway.authentication === 'floodgate' && gateway.target_type === 'local-server') {
-      addBtn('Install Floodgate on Java', 'secondary', function () { installFloodgate(gateway.id, running); });
+      extras.appendChild(makeButton('Install Floodgate on Java', 'secondary', function () { installFloodgate(gateway.id, running); }));
     }
-    addBtn(gateway.advertiseInBedrockConnect === false ? 'Advertise' : 'Hide from Bedrock Connect', 'secondary', function () {
-      toggleAdvertise(gateway);
-    });
+    extras.appendChild(makeButton(
+      gateway.advertiseInBedrockConnect === false ? 'Advertise in Bedrock Connect' : 'Hide from Bedrock Connect',
+      'secondary',
+      function () { toggleAdvertise(gateway); }
+    ));
     if (gateway.dashboardAttachment && gateway.dashboardAttachment.primary === false) {
-      addBtn('Show on dashboard tile', 'secondary', function () { setPrimary(gateway.id); });
+      extras.appendChild(makeButton('Show on dashboard tile', 'secondary', function () { setPrimary(gateway.id); }));
     }
-    top.appendChild(info);
-    top.appendChild(actions);
-    card.appendChild(top);
+    root.appendChild(extras);
+
+    var consoleCard = document.createElement('div');
+    var consoleTitle = document.createElement('h2');
+    consoleTitle.textContent = 'Console';
     var logs = document.createElement('pre');
-    logs.className = 'logs hidden';
-    logs.id = 'logs-' + gateway.id;
-    card.appendChild(logs);
-    return card;
+    logs.className = 'logs';
+    logs.id = 'detailLogs';
+    logs.textContent = 'Loading logs…';
+    consoleCard.appendChild(consoleTitle);
+    consoleCard.appendChild(logs);
+    root.appendChild(consoleCard);
+  }
+
+  function openDetail(id) {
+    selectedId = String(id);
+    renderDetail();
+    setOverlay('detailOverlay', true);
+    showLogs(id);
+  }
+
+  function closeDetail() {
+    selectedId = '';
+    setOverlay('detailOverlay', false);
+  }
+
+  function openCreate() {
+    setOverlay('createOverlay', true);
+    if ($('name')) $('name').focus();
+  }
+
+  function closeCreate() {
+    setOverlay('createOverlay', false);
   }
 
   async function loadGateways() {
     var list = $('list');
     var data = await MBM.get(API + '/gateways');
-    var gateways = data.gateways || [];
+    gatewaysCache = data.gateways || [];
+    renderStats(gatewaysCache);
     list.innerHTML = '';
-    if (!gateways.length) {
+    if (!gatewaysCache.length) {
       var empty = document.createElement('div');
-      empty.className = 'card';
-      var emptyText = document.createElement('p');
-      emptyText.textContent = 'No Geyser gateways yet. Standalone can target a local Java server on this manager or a remote Java host.';
-      empty.appendChild(emptyText);
+      empty.className = 'card empty';
+      var heading = document.createElement('h3');
+      heading.textContent = 'No gateways yet';
+      var text = document.createElement('p');
+      text.textContent = 'Create a standalone Geyser gateway to let Bedrock clients join a local or remote Java server.';
+      empty.appendChild(heading);
+      empty.appendChild(text);
       list.appendChild(empty);
-      return gateways;
+    } else {
+      gatewaysCache.forEach(function (gateway) {
+        list.appendChild(renderGateway(gateway));
+      });
     }
-    gateways.forEach(function (gateway) {
-      list.appendChild(renderGateway(gateway));
-    });
-    var wanted = selectedId || queryNumber('gatewayId');
-    if (wanted && gateways.some(function (item) { return String(item.id) === String(wanted); })) {
-      selectedId = String(wanted);
+    if (selectedId && findGateway(selectedId)) {
+      renderDetail();
       await showLogs(selectedId);
+    } else if (selectedId) {
+      closeDetail();
     }
-    return gateways;
+    return gatewaysCache;
   }
 
   async function showLogs(id) {
-    selectedId = String(id);
-    document.querySelectorAll('.logs').forEach(function (node) {
-      node.classList.toggle('hidden', node.id !== 'logs-' + id);
-    });
-    var panel = $('logs-' + id);
-    if (!panel) return;
+    var panel = $('detailLogs');
+    if (!panel || String(id) !== String(selectedId)) return;
     try {
       var data = await MBM.get(API + '/gateways/' + encodeURIComponent(id) + '/logs');
       panel.textContent = stripLog(data.logs || 'No log output yet.');
     } catch (err) {
       panel.textContent = err.message || 'Could not load logs.';
     }
-  }
-
-  function toggleLogs(id) {
-    if (selectedId === String(id)) {
-      selectedId = '';
-      var panel = $('logs-' + id);
-      if (panel) panel.classList.add('hidden');
-      return;
-    }
-    showLogs(id);
   }
 
   async function setPrimary(id) {
@@ -234,6 +483,11 @@
     }
   }
 
+  async function removeGateway(gateway) {
+    if (!window.confirm('Delete gateway "' + gateway.name + '"? This cannot be undone.')) return;
+    await act(gateway.id, 'remove');
+  }
+
   async function act(id, action) {
     busy = String(id);
     showError('');
@@ -241,6 +495,7 @@
     try {
       if (action === 'remove') {
         await MBM.del(API + '/gateways/' + encodeURIComponent(id));
+        if (String(selectedId) === String(id)) closeDetail();
       } else {
         await MBM.post(API + '/gateways/' + encodeURIComponent(id) + '/' + action);
       }
@@ -249,8 +504,7 @@
     } finally {
       busy = '';
       await loadGateways();
-      if (action === 'start' || action === 'restart') {
-        selectedId = String(id);
+      if ((action === 'start' || action === 'restart') && String(selectedId) === String(id)) {
         showLogs(id);
         setTimeout(function () {
           loadGateways();
@@ -373,7 +627,7 @@
           confirmModeSwitch: true,
         });
       }
-      $('create').classList.add('hidden');
+      closeCreate();
       $('create').reset();
       toggleAuthHints();
       await loadGateways();
@@ -386,12 +640,18 @@
 
   async function boot() {
     applyTheme();
-    $('add').addEventListener('click', function () {
-      $('create').classList.remove('hidden');
-      if ($('create').scrollIntoView) $('create').scrollIntoView({ block: 'nearest' });
+    $('add').addEventListener('click', openCreate);
+    $('cancel').addEventListener('click', closeCreate);
+    $('createOverlay').addEventListener('click', function (event) {
+      if (event.target === $('createOverlay')) closeCreate();
     });
-    $('cancel').addEventListener('click', function () {
-      $('create').classList.add('hidden');
+    $('detailOverlay').addEventListener('click', function (event) {
+      if (event.target === $('detailOverlay')) closeDetail();
+    });
+    document.addEventListener('keydown', function (event) {
+      if (event.key !== 'Escape') return;
+      if (!$('detailOverlay').classList.contains('hidden')) closeDetail();
+      else if (!$('createOverlay').classList.contains('hidden')) closeCreate();
     });
     $('targetType').addEventListener('change', toggleAuthHints);
     $('authentication').addEventListener('change', toggleAuthHints);
@@ -401,11 +661,13 @@
     try {
       var servers = await loadTargets();
       if (queryNumber('targetServerId') && servers.length) {
-        $('create').classList.remove('hidden');
+        openCreate();
         $('targetType').value = 'local-server';
         toggleAuthHints();
       }
       await loadGateways();
+      var wanted = queryNumber('gatewayId');
+      if (wanted && findGateway(wanted)) openDetail(wanted);
     } catch (err) {
       showError(err.message || 'Could not load Geyser gateways.');
     }

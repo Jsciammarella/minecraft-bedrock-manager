@@ -11,13 +11,19 @@
     <div class="header">
       <div>
         <h1>Geyser</h1>
-        <p>Powered by Geyser. Standalone gateways translate Bedrock UDP to a Java TCP server. Not affiliated with GeyserMC or Mojang. Geyser is not shipped with the manager; it downloads when you create a gateway. ViaProxy is optional and is never downloaded unless you choose compatibility mode.</p>
+        <p>Bedrock clients join Java servers through standalone Geyser gateways.</p>
+        <p class="sub">Powered by Geyser. Not affiliated with GeyserMC or Mojang. Geyser downloads when you create a gateway. ViaProxy is never downloaded unless you choose compatibility mode.</p>
       </div>
-      <button type="button" id="add">Add gateway</button>
+      <button type="button" id="add">+ Add Gateway</button>
     </div>
     <div id="error" class="error hidden"></div>
-    <form id="create" class="card hidden">
-      <h2>New Geyser Standalone gateway</h2>
+    <div id="stats" class="stats"></div>
+    <div id="list" class="tile-grid"></div>
+  </div>
+
+  <div id="createOverlay" class="overlay hidden" role="dialog" aria-labelledby="createTitle">
+    <form id="create" class="overlay-card">
+      <h2 id="createTitle">New Geyser Standalone gateway</h2>
       <p>The gateway stays stopped until you start it. Online authentication is recommended.</p>
       <label>Name <input id="name" required placeholder="Bedrock access" /></label>
       <label>Java target
@@ -75,7 +81,10 @@
         <button type="button" class="secondary" id="cancel">Cancel</button>
       </div>
     </form>
-    <div id="list"></div>
+  </div>
+
+  <div id="detailOverlay" class="overlay hidden" role="dialog" aria-labelledby="detailTitle">
+    <div class="overlay-panel" id="detail"></div>
   </div>
   <script src="geyser.js"></script>
 </body>

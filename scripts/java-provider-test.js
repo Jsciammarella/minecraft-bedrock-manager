@@ -542,6 +542,8 @@ versionRange="[13.0.8,)"
   assert.match(geyserUi, /\/api\/plugins\/gateway-geyser/);
   assert.match(geyserUi, /floodgateHint/);
   assert.match(geyserUi, /if \(gateway\.lastError\)/);
+  assert.match(geyserUi, /openDetail/);
+  assert.match(geyserUi, /Delete gateway/);
   assert.doesNotThrow(() => new Function(geyserUi), 'Geyser plugin UI script must parse');
   assert.doesNotMatch(geyserUi, /\/api\/gateways/);
   assert.equal(pluginHost.isAllowedPluginApiPath('hello-world', '/api/plugins/gateway-geyser/gateways'), false);
@@ -669,11 +671,13 @@ versionRange="[13.0.8,)"
     const uiHtml = await uiRes.text();
     assert.ok(uiRes.ok, 'Geyser plugin UI should be served as HTML');
     assert.match(String(uiRes.headers.get('content-type') || ''), /text\/html/i);
-    assert.match(uiHtml, /Add gateway/);
+    assert.match(uiHtml, /\+ Add Gateway/);
     assert.match(uiHtml, /16-byte key\.pem/);
     assert.match(uiHtml, /mc-manager-plugin-sdk/);
     assert.match(uiHtml, /class="page"/);
-    assert.match(uiHtml, /max-width:\s*48rem/);
+    assert.match(uiHtml, /max-width:\s*80rem/);
+    assert.match(uiHtml, /tile-grid/);
+    assert.match(uiHtml, /detailOverlay/);
     assert.match(uiHtml, /\.hidden\s*\{/);
     assert.match(uiHtml, /function applyTheme/);
     assert.doesNotMatch(uiHtml, /href=["']geyser\.css["']/);
