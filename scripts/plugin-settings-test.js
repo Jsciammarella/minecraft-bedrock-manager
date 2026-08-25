@@ -49,6 +49,15 @@ async function runPluginSettingsTests({ pluginHost, testRoot }) {
   assert.equal(cf.pages[0].renderer, 'native-settings');
   assert.equal(cf.pages[0].path, '/plugins/catalog-curseforge/settings');
   assert.ok(cf.menus.some((item) => item.path === '/plugins/catalog-curseforge/settings'));
+  assert.ok(
+    cf.menus.every((item) => item.renderer === 'native-settings'),
+    'native-settings menus must expose renderer',
+  );
+  assert.ok(
+    pluginHost.getMenuItems().some((item) => (
+      item.pluginId === 'catalog-curseforge' && item.renderer === 'native-settings'
+    ))
+  );
 
   const page = pluginSettings.publicPage('catalog-curseforge');
   assert.equal(page.renderer, 'native-settings');
@@ -223,6 +232,13 @@ async function runPluginSettingsTests({ pluginHost, testRoot }) {
   const pluginPageSrc = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/PluginPage.jsx'), 'utf8');
   assert.match(pluginPageSrc, /native-settings/);
   assert.match(pluginPageSrc, /NativePluginSettings/);
+  assert.match(
+    pluginPageSrc,
+    /renderer === 'native-settings'[\s\S]*overflow-y-auto overflow-x-hidden/,
+    'native plugin settings pages must be able to scroll'
+  );
+  const layoutSrc = fs.readFileSync(path.join(__dirname, '../frontend/src/components/Layout.jsx'), 'utf8');
+  assert.match(layoutSrc, /isPluginPage \? 'relative overflow-hidden'/);
   const catalogSrc = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/ModCatalog.jsx'), 'utf8');
   assert.doesNotMatch(catalogSrc, /Catalog Settings/);
   assert.doesNotMatch(catalogSrc, /\/mods\/catalog\/settings/);

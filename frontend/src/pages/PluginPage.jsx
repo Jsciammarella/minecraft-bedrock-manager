@@ -79,7 +79,7 @@ function PluginPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div className="absolute inset-0 flex items-center justify-center">
         <div className="w-8 h-8 border-2 border-mc-accent border-t-transparent rounded-full animate-spin" />
       </div>
     );
@@ -87,28 +87,36 @@ function PluginPage() {
 
   if (error || !page) {
     return (
-      <div className="p-6 max-w-xl mx-auto">
+      <div className="absolute inset-0 overflow-y-auto p-6">
+        <div className="max-w-xl mx-auto">
           <h1 className="text-xl font-bold text-white mb-2">Plugin unavailable</h1>
           <p className="text-mc-textMuted">{error || 'That plugin page does not exist.'}</p>
+        </div>
       </div>
     );
   }
 
   if (page.renderer === 'native-settings') {
-    return <NativePluginSettings pluginId={pluginId} />;
+    return (
+      <div className="absolute inset-0 overflow-y-auto overflow-x-hidden">
+        <NativePluginSettings pluginId={pluginId} />
+      </div>
+    );
   }
 
   return (
-    <iframe
-      ref={iframeRef}
-      key={src}
-      title={page.title || plugin.name}
-      src={src}
-      className="w-full h-full border-0 bg-mc-dark"
-      style={{ colorScheme: 'dark' }}
-      sandbox="allow-scripts allow-forms allow-modals allow-downloads"
-      referrerPolicy="no-referrer"
-    />
+    <div className="absolute inset-0">
+      <iframe
+        ref={iframeRef}
+        key={src}
+        title={page.title || plugin.name}
+        src={src}
+        className="w-full h-full border-0 bg-mc-dark"
+        style={{ colorScheme: 'dark' }}
+        sandbox="allow-scripts allow-forms allow-modals allow-downloads"
+        referrerPolicy="no-referrer"
+      />
+    </div>
   );
 }
 

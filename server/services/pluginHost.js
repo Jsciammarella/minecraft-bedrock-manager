@@ -208,6 +208,7 @@ function parseMenus(rawManifest, pluginId, pluginName, pages) {
       order: Number.isFinite(order) ? order : 100 + index,
       pageId: page.id,
       path: page.path,
+      renderer: page.renderer || 'iframe',
     });
   });
   if (!menus.length) {
@@ -218,6 +219,7 @@ function parseMenus(rawManifest, pluginId, pluginName, pages) {
       order: 100,
       pageId: pages[0].id,
       path: pages[0].path,
+      renderer: pages[0].renderer || 'iframe',
     });
   }
   return menus;

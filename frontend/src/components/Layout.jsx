@@ -301,7 +301,7 @@ function Layout() {
         </aside>
 
         <main className={`flex-1 min-w-0 min-h-0 bg-mc-dark pb-[env(safe-area-inset-bottom)] ${
-          isPluginPage ? 'overflow-hidden' : 'overflow-y-auto overflow-x-hidden'
+          isPluginPage ? 'relative overflow-hidden' : 'overflow-y-auto overflow-x-hidden'
         }`}>
           {loading && servers.length === 0 ? (
             <div className="flex items-center justify-center h-full">
