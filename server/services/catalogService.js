@@ -8,6 +8,7 @@ const { ALLOWED_CATALOG_EDITIONS } = require('./catalogEditions');
 const catalogDownloadPolicy = require('./catalogDownloadPolicy');
 const catalogModMeta = require('./catalogModMeta');
 const minecraftVersions = require('./minecraftVersions');
+const catalogFilterAvailability = require('./catalogFilterAvailability');
 
 const CATALOG_PAGE_SIZE = 40;
 const LOCAL_FETCH_SIZE = 10000;
@@ -165,6 +166,11 @@ async function searchMods(query = '', options = {}) {
   const source = options.source || 'all';
   const provider = options.provider || '';
   const edition = normalizeEdition(options.edition);
+  const validated = catalogFilterAvailability.assertSearchFilters({
+    edition,
+    loader: options.loader || '',
+    environment: options.environment || '',
+  });
   const page = parseInt(options.page, 10) || 1;
   const pageSize = clampPageSize(options.pageSize);
   options = {
@@ -175,8 +181,8 @@ async function searchMods(query = '', options = {}) {
     provider,
     source,
     gameVersions: minecraftVersions.parseRequestedGameVersions(options.gameVersions),
-    loader: options.loader || '',
-    environment: options.environment || '',
+    loader: validated.loader,
+    environment: validated.environment,
   };
   const available = sourceStatus();
   const errors = [];
@@ -540,6 +546,7 @@ function listProviders() {
   return {
     ...listed,
     editions: catalogProviderRegistry.availableEditions(),
+    filterAvailability: catalogFilterAvailability.listFilterAvailability(),
   };
 }
 
@@ -703,5 +710,6 @@ module.exports = {
   testFileConnection,
   sourceStatus,
   listProviders,
+  listFilterAvailability: catalogFilterAvailability.listFilterAvailability,
   ensureProviders,
 };

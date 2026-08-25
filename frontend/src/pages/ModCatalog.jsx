@@ -1,9 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { modApi, serverApi } from '../services/api';
+import { modApi } from '../services/api';
 import ModTileTags from '../components/ModTileTags';
 import CatalogVersionFilter from '../components/CatalogVersionFilter';
 import { loaderDisplayName, modLoaderIds, modVersionTags } from '../utils/modCompatibility';
+import {
+  EMPTY_FILTER_AVAILABILITY,
+  parseFilterAvailability,
+  reconcileCatalogQuery,
+} from '../utils/catalogFilters';
 import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
 import { useApi } from '../context/ApiContext';
 import {
@@ -13,7 +18,6 @@ import {
 
 const CATALOG_PAGE_SIZE = 40;
 const DOWNLOAD_ALL_CONFIRM_AFTER = 10;
-const ALLOWED_CATALOG_EDITIONS = ['bedrock', 'java'];
 const EDITION_LABELS = {
   bedrock: 'Bedrock',
   java: 'Java',
@@ -23,30 +27,22 @@ function sourceValue(provider) {
   return provider.id === 'curseforge-bedrock' ? 'curseforge' : provider.id;
 }
 
-function editionOptionsFromProviders(providers) {
-  const present = new Set();
-  for (const provider of providers || []) {
-    for (const edition of provider.editions || []) {
-      if (ALLOWED_CATALOG_EDITIONS.includes(edition)) present.add(edition);
-    }
-  }
-  return ALLOWED_CATALOG_EDITIONS.filter((id) => present.has(id));
-}
-
-function reconcileCatalogFilters({ providers = [], source = 'all', edition = 'all', category = '' } = {}) {
+function reconcileCatalogFilters({
+  providers = [],
+  availability = EMPTY_FILTER_AVAILABILITY,
+  source = 'all',
+  edition = 'all',
+  category = '',
+  loader = '',
+  environment = 'all',
+} = {}) {
   const ids = new Set((providers || []).map((item) => item.id));
-  const editions = editionOptionsFromProviders(providers);
   let nextSource = source || 'all';
-  let nextEdition = edition || 'all';
   let nextCategory = category || '';
   const sourceId = nextSource === 'curseforge' ? 'curseforge-bedrock' : nextSource;
   if (nextSource !== 'all' && !ids.has(sourceId)) {
     nextSource = 'all';
     nextCategory = '';
-  }
-  if (nextEdition !== 'all' && !editions.includes(nextEdition)) {
-    nextEdition = 'all';
-    if (String(nextCategory).includes(':')) nextCategory = '';
   }
   if (nextSource === 'all' && String(nextCategory).includes(':')) {
     nextCategory = '';
@@ -56,15 +52,19 @@ function reconcileCatalogFilters({ providers = [], source = 'all', edition = 'al
       nextCategory = '';
     }
   }
-  const changed = nextSource !== (source || 'all')
-    || nextEdition !== (edition || 'all')
-    || nextCategory !== (category || '');
-  return {
+  const next = reconcileCatalogQuery({
     source: nextSource,
-    edition: nextEdition,
+    edition,
     category: nextCategory,
-    changed,
-  };
+    loader,
+    environment,
+  }, availability);
+  const changed = next.source !== (source || 'all')
+    || next.edition !== (edition || 'all')
+    || next.category !== (category || '')
+    || next.loader !== (loader || '')
+    || next.environment !== (environment || 'all');
+  return { ...next, changed };
 }
 
 function isClientOnlyProject(mod) {
@@ -165,8 +165,8 @@ function ModCatalog() {
   const [total, setTotal] = useState(0);
   const [sortBy, setSortBy] = useState('relevancy');
   const [loader, setLoader] = useState('');
-  const [environment, setEnvironment] = useState('server-compatible');
-  const [javaProviders, setJavaProviders] = useState([]);
+  const [environment, setEnvironment] = useState('all');
+  const [filterAvailability, setFilterAvailability] = useState(EMPTY_FILTER_AVAILABILITY);
   const [downloadModal, setDownloadModal] = useState(null);
   const [filePicker, setFilePicker] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
@@ -176,21 +176,20 @@ function ModCatalog() {
   const [expandedMod, setExpandedMod] = useState(null);
   const { status, startSync } = useGitCatalogSync();
   const wasSyncing = useRef(false);
-  const filtersRef = useRef({ source: 'all', edition: 'all', category: '', gameVersions: '', loader: '', environment: 'server-compatible' });
+  const filtersRef = useRef({ source: 'all', edition: 'all', category: '', gameVersions: '', loader: '', environment: 'all' });
   const queryRef = useRef({ q: '', sortBy: 'relevancy' });
   const installedVersions = installedCatalogVersions(servers);
   const gameVersions = gameVersionsParam(versionAll, selectedVersionKeys);
   filtersRef.current = { source, edition, category, gameVersions, loader, environment };
   queryRef.current = { q: search, sortBy };
 
-  const availableEditions = editionOptionsFromProviders(providers);
+  const availableEditions = (filterAvailability.editions || []).map((item) => item.id);
+  const availableLoaders = filterAvailability.loaders || [];
+  const javaHostingAvailable = Boolean(filterAvailability.javaHostingAvailable);
 
   useEffect(() => {
     loadMultiFileMode();
     refreshProviders({ search: true });
-    serverApi.javaProviders()
-      .then((res) => setJavaProviders((res.data || []).filter((item) => item.id && item.id !== 'vanilla')))
-      .catch(() => setJavaProviders([]));
   }, []);
 
   useEffect(() => {
@@ -244,19 +243,27 @@ function ModCatalog() {
     try {
       const res = await modApi.catalogProviders();
       const nextProviders = res.data?.providers || [];
+      const nextAvailability = parseFilterAvailability(res.data?.filterAvailability);
       if (res.data?.sources) setSources(res.data.sources);
       setProviders(nextProviders);
+      setFilterAvailability(nextAvailability);
       const current = filtersRef.current;
       const reconciled = reconcileCatalogFilters({
         providers: nextProviders,
+        availability: nextAvailability,
         source: current.source,
         edition: current.edition,
         category: current.category,
+        loader: current.loader,
+        environment: current.environment,
       });
+      filtersRef.current = { ...current, ...reconciled };
       if (reconciled.changed) {
         setSource(reconciled.source);
         setEdition(reconciled.edition);
         setCategory(reconciled.category);
+        setLoader(reconciled.loader);
+        setEnvironment(reconciled.environment);
       }
       setPage(1);
       if (search) {
@@ -264,6 +271,12 @@ function ModCatalog() {
         await searchMods(1, reconciled.source, reconciled.edition, reconciled.category);
       }
     } catch {
+      setFilterAvailability(EMPTY_FILTER_AVAILABILITY);
+      const nextEdition = filtersRef.current.edition === 'java' ? 'all' : filtersRef.current.edition;
+      filtersRef.current = { ...filtersRef.current, edition: nextEdition, loader: '', environment: 'all' };
+      setEdition(nextEdition);
+      setLoader('');
+      setEnvironment('all');
       if (search) {
         await loadCategories();
         await searchMods();
@@ -634,7 +647,17 @@ function ModCatalog() {
               value={availableEditions.includes(edition) || edition === 'all' ? edition : 'all'}
               onChange={(e) => {
                 const next = e.target.value;
+                const nextLoader = next === 'java' ? loader : '';
+                const nextEnvironment = next === 'java' ? environment : 'all';
                 setEdition(next);
+                setLoader(nextLoader);
+                setEnvironment(nextEnvironment);
+                filtersRef.current = {
+                  ...filtersRef.current,
+                  edition: next,
+                  loader: nextLoader,
+                  environment: nextEnvironment,
+                };
                 setPage(1);
                 setCategory('');
                 loadCategories(source, next);
@@ -643,8 +666,8 @@ function ModCatalog() {
               className="input"
             >
               <option value="all">All editions</option>
-              {availableEditions.map((id) => (
-                <option key={id} value={id}>{EDITION_LABELS[id] || id}</option>
+              {(filterAvailability.editions || []).map((item) => (
+                <option key={item.id} value={item.id}>{item.name || EDITION_LABELS[item.id] || item.id}</option>
               ))}
             </select>
             <CatalogVersionFilter
@@ -661,23 +684,28 @@ function ModCatalog() {
                 searchMods(1, source, edition, category);
               }}
             />
+            {javaHostingAvailable && (
             <select
               aria-label="Loader"
-              value={loader}
+              value={availableLoaders.some((item) => item.id === loader) ? loader : ''}
               onChange={(e) => {
                 const next = e.target.value;
+                const nextEdition = next ? 'java' : edition;
                 setLoader(next);
-                filtersRef.current = { ...filtersRef.current, loader: next };
+                if (next) setEdition('java');
+                filtersRef.current = { ...filtersRef.current, loader: next, edition: nextEdition };
                 setPage(1);
-                searchMods(1, source, edition, category);
+                searchMods(1, source, nextEdition, category);
               }}
               className="input"
             >
               <option value="">All loaders</option>
-              {(javaProviders.length ? javaProviders : [{ id: 'fabric', name: 'Fabric' }, { id: 'neoforge', name: 'NeoForge' }]).map((item) => (
+              {availableLoaders.map((item) => (
                 <option key={item.id} value={item.id}>{item.name || loaderDisplayName(item.id)}</option>
               ))}
             </select>
+            )}
+            {javaHostingAvailable && (
             <select
               aria-label="Environment"
               value={environment}
@@ -690,13 +718,14 @@ function ModCatalog() {
               }}
               className="input"
             >
+              <option value="all">All Environments</option>
               <option value="server-compatible">Server Compatible</option>
-              <option value="all">All environments</option>
               <option value="server-only">Server Only</option>
               <option value="client-and-server">Client and Server</option>
               <option value="client-only">Client Only</option>
               <option value="unknown">Unknown</option>
             </select>
+            )}
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}

@@ -140,6 +140,7 @@ export const modApi = {
   
   catalogSearch: (params) => api.get('/mods/catalog/search', { params, timeout: 90000 }),
   catalogProviders: () => api.get('/mods/catalog/providers'),
+  catalogFilterAvailability: () => api.get('/mods/catalog/filter-availability'),
   catalogCategories: (params) => api.get('/mods/catalog/categories', { params }),
   catalogDownload: (mod, serverId, files, extra = {}) => api.post(`/mods/catalog/download/${encodeURIComponent(mod.slug)}`, {
     source: mod.source || 'curseforge',

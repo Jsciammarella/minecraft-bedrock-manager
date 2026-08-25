@@ -65,6 +65,8 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
   const fabric = require('../server/bundled-plugins/java-loader-fabric/backend');
   const neoforge = require('../server/bundled-plugins/java-loader-neoforge/backend');
   const geyser = require('../server/bundled-plugins/gateway-geyser/backend');
+  const catalogFilterAvailability = require('../server/services/catalogFilterAvailability');
+  const catalogService = require('../server/services/catalogService');
   const db = require('../server/db/connection');
 
   assert.equal(pluginCapabilities.parseCapabilities(['not-a-cap'], 'bundled').ok, false);
@@ -569,6 +571,28 @@ versionRange="[13.0.8,)"
   pluginHost.loadPlugins([pluginHost.BUNDLED_PLUGINS_DIR]);
   assert.ok(serverEditionRegistry.get('java'), 'Minecraft Java Hosting plugin should register the java edition');
   assert.equal(javaHostingPolicy.isJavaHostingAvailable(), true);
+  const hostingOn = catalogFilterAvailability.listFilterAvailability();
+  assert.equal(hostingOn.javaHostingAvailable, true);
+  assert.ok(hostingOn.editions.some((item) => item.id === 'java'));
+  assert.ok(hostingOn.loaders.some((item) => item.id === 'fabric'));
+  assert.ok(hostingOn.loaders.some((item) => item.id === 'neoforge'));
+  assert.equal(hostingOn.loaders.some((item) => item.id === 'vanilla'), false);
+  assert.ok(hostingOn.environments.some((item) => item.id === 'server'));
+  assert.ok(hostingOn.environments.some((item) => item.id === 'client'));
+  await pluginHost.setPluginEnabled('java-loader-fabric', false);
+  assert.equal(catalogFilterAvailability.listFilterAvailability().loaders.some((item) => item.id === 'fabric'), false);
+  assert.ok(catalogFilterAvailability.listFilterAvailability().loaders.some((item) => item.id === 'neoforge'));
+  await pluginHost.setPluginEnabled('java-loader-fabric', true);
+  assert.ok(catalogFilterAvailability.listFilterAvailability().loaders.some((item) => item.id === 'fabric'));
+  await pluginHost.setPluginEnabled('java-loader-fabric', false);
+  await pluginHost.setPluginEnabled('java-loader-neoforge', false);
+  const noModLoaders = catalogFilterAvailability.listFilterAvailability();
+  assert.equal(noModLoaders.javaHostingAvailable, true);
+  assert.ok(noModLoaders.editions.some((item) => item.id === 'java'));
+  assert.equal(noModLoaders.loaders.length, 0);
+  assert.ok(noModLoaders.environments.length >= 2);
+  await pluginHost.setPluginEnabled('java-loader-fabric', true);
+  await pluginHost.setPluginEnabled('java-loader-neoforge', true);
   assert.ok(javaHostingPolicy.listEditions().some((item) => item.id === 'java' && item.available));
   assert.ok(javaHostingPolicy.listEditions().some((item) => item.id === 'bedrock' && item.core));
   assert.equal(modCompatibility.compatibleWithServer(
@@ -609,6 +633,9 @@ versionRange="[13.0.8,)"
   assert.match(libraryUi, /Downloaded jars/);
   assert.match(libraryUi, /Add jar files/);
   assert.match(libraryUi, /environmentBadge/);
+  assert.match(libraryUi, /catalogFilterAvailability/);
+  assert.match(libraryUi, /libraryFilterOptions/);
+  assert.doesNotMatch(libraryUi, /<option value="fabric">Fabric<\/option>/);
   assert.match(libraryUi, /'Client'/);
   assert.match(libraryUi, /'Server'/);
   assert.match(libraryUi, /'Both'/);
@@ -1454,6 +1481,19 @@ versionRange="[13.0.8,)"
   assert.ok(firstGateway < firstJava, 'Geyser must stop before Java');
   assert.equal(pluginHost.getPlugin('server-edition-java').enabled, false);
   assert.equal(javaHostingPolicy.isJavaHostingAvailable(), false);
+  const hostingOff = catalogFilterAvailability.listFilterAvailability();
+  assert.equal(hostingOff.javaHostingAvailable, false);
+  assert.equal(hostingOff.editions.some((item) => item.id === 'java'), false);
+  assert.equal(hostingOff.loaders.length, 0);
+  assert.equal(hostingOff.environments.length, 0);
+  await assert.rejects(
+    () => catalogService.searchMods('x', { edition: 'java' }),
+    (err) => err.status === 409 && err.code === 'JAVA_HOSTING_DISABLED'
+  );
+  await assert.rejects(
+    () => catalogService.searchMods('x', { environment: 'client-only' }),
+    (err) => err.code === 'JAVA_HOSTING_DISABLED'
+  );
   assert.equal(javaHostingPolicy.listEditions().some((item) => item.id === 'java'), false);
   assert.ok(javaHostingPolicy.listEditions().some((item) => item.id === 'bedrock' && item.available));
   assert.ok(javaLoaderRegistry.get('vanilla'), 'loader plugins remain installed while hosting is disabled');

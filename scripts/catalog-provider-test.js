@@ -74,6 +74,10 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   const catalogDownloadPolicy = require('../server/services/catalogDownloadPolicy');
   const catalogHttp = require('../server/services/catalogHttp');
   const catalogService = require('../server/services/catalogService');
+  const catalogFilterAvailability = require('../server/services/catalogFilterAvailability');
+  const serverEditionRegistry = require('../server/services/serverEditionRegistry');
+  const javaHostingPolicy = require('../server/services/javaHostingPolicy');
+  const javaLoaderRegistry = require('../server/services/javaLoaderRegistry');
   const catalogLibrary = require('../server/services/catalogLibrary');
   const controlledDownload = require('../server/services/controlledDownload');
   const zipGuard = require('../server/services/zipGuard');
@@ -285,6 +289,34 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   pluginHost.resetForTests();
   catalogProviderRegistry.clear();
   catalogService.ensureProviders();
+
+  await assert.rejects(
+    () => catalogService.searchMods('x', { edition: 'java' }),
+    (err) => err.status === 409 && err.code === 'JAVA_HOSTING_DISABLED'
+  );
+  await assert.rejects(
+    () => catalogService.searchMods('x', { environment: 'server-compatible' }),
+    (err) => err.status === 409 && err.code === 'JAVA_HOSTING_DISABLED'
+  );
+
+  function ensureJavaHosting() {
+    if (javaHostingPolicy.isJavaHostingAvailable()) return;
+    serverEditionRegistry.register({
+      id: 'server-edition-java',
+      source: 'bundled',
+      capabilities: ['provider:server-edition'],
+    }, { getMetadata: () => ({ id: 'java', name: 'Java' }) });
+  }
+  ensureJavaHosting();
+  await assert.rejects(
+    () => catalogService.searchMods('x', { loader: 'fabric' }),
+    (err) => err.status === 409 && err.code === 'CATALOG_LOADER_UNAVAILABLE' && err.loaderId === 'fabric'
+  );
+  await assert.rejects(
+    () => catalogService.searchMods('x', { loader: '4' }),
+    (err) => err.code === 'CATALOG_LOADER_UNAVAILABLE' && err.loaderId === '4'
+  );
+
   catalogProviderRegistry.register({
     id: 'catalog-git',
     source: 'bundled',
@@ -879,6 +911,15 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   assert.match(frontendSource, /isClientOnlyProject/);
   assert.match(frontendSource, /modrinth-java/);
   assert.match(frontendSource, /Server Compatible/);
+  assert.match(frontendSource, /All Environments/);
+  assert.match(frontendSource, /const \[environment, setEnvironment\] = useState\('all'\)/);
+  assert.match(frontendSource, /filterAvailability/);
+  assert.match(frontendSource, /parseFilterAvailability/);
+  assert.match(frontendSource, /filtersRef\.current = \{ \.\.\.current, \.\.\.reconciled \}/);
+  assert.match(frontendSource, /mbm-plugins-changed/);
+  assert.doesNotMatch(frontendSource, /id: 'fabric', name: 'Fabric'/);
+  assert.doesNotMatch(frontendSource, /\(res\.data \|\| \[\]\)\.filter/);
+  assert.doesNotMatch(frontendSource, /serverApi\.javaProviders/);
   assert.match(frontendSource, /View on Modrinth/);
   assert.match(frontendSource, /mod\.license/);
   assert.match(frontendSource, /gameVersions: filtersRef\.current\.gameVersions/);
@@ -922,6 +963,89 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   });
   assert.equal(missingKeyProvider.isAvailable(), false);
   await assert.rejects(() => missingKeyProvider.search('x'), /API key/);
+
+  const catalogFiltersSrc = fs.readFileSync(path.join(__dirname, '../frontend/src/utils/catalogFilters.js'), 'utf8');
+  assert.match(catalogFiltersSrc, /reconcileCatalogQuery/);
+  assert.match(catalogFiltersSrc, /libraryFilterOptions/);
+  assert.match(catalogFiltersSrc, /modMatchesLibraryFilter/);
+  const libraryUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/ModLibrary.jsx'), 'utf8');
+  assert.match(libraryUi, /catalogFilterAvailability/);
+  assert.match(libraryUi, /libraryFilterOptions/);
+  assert.match(libraryUi, /mbm-plugins-changed/);
+  assert.doesNotMatch(libraryUi, /<option value="fabric">Fabric<\/option>/);
+  const socketUi = fs.readFileSync(path.join(__dirname, '../frontend/src/context/SocketContext.jsx'), 'utf8');
+  assert.match(socketUi, /mbm-plugins-changed/);
+
+  function stubLoader(id, { supportsMods = true, name } = {}) {
+    return {
+      getMetadata: () => ({ id, name: name || id, supportsMods, downloadHosts: ['example.test'] }),
+      listMinecraftVersions: async () => ['1.21.1'],
+      listLoaderVersions: async () => ['1.0.0'],
+      resolveInstallation: async () => ({ loader: id }),
+      planInstallation: async () => ({ downloads: [], result: {} }),
+      planUpdate: async () => ({ downloads: [], result: {} }),
+      getLaunchSpecification: () => ({ runtime: 'java', jar: 'server.jar', arguments: ['nogui'] }),
+      getModSupport: () => ({ supportsMods, modsDirectory: 'mods' }),
+      validateMod: () => ({ ok: true, warnings: [] }),
+      getBackupPaths: () => ['world'],
+      getHealthInformation: () => ({ ok: true }),
+    };
+  }
+  ensureJavaHosting();
+  javaLoaderRegistry.register(
+    { id: 'java-loader-quilt', source: 'bundled', capabilities: ['provider:java-loader'] },
+    stubLoader('quilt', { name: 'Quilt' })
+  );
+  const withQuilt = catalogFilterAvailability.listFilterAvailability();
+  assert.equal(withQuilt.javaHostingAvailable, true);
+  assert.ok(withQuilt.editions.some((item) => item.id === 'java'));
+  assert.ok(withQuilt.loaders.some((item) => item.id === 'quilt' && item.name === 'Quilt'));
+  javaLoaderRegistry.register(
+    { id: 'java-loader-vanilla-stub', source: 'bundled', capabilities: ['provider:java-loader'] },
+    stubLoader('vanilla', { supportsMods: false, name: 'Vanilla' })
+  );
+  assert.equal(catalogFilterAvailability.listFilterAvailability().loaders.some((item) => item.id === 'vanilla'), false);
+  assert.throws(
+    () => javaLoaderRegistry.register(
+      { id: 'java-loader-broken', source: 'bundled', capabilities: ['provider:java-loader'] },
+      { getMetadata: () => ({ id: 'broken', supportsMods: true }) }
+    ),
+    /missing/
+  );
+  assert.equal(catalogFilterAvailability.listFilterAvailability().loaders.some((item) => item.id === 'broken'), false);
+
+  const modsApp = require('express')();
+  modsApp.use('/api/mods', require('../server/routes/mods'));
+  const modsServer = modsApp.listen(0);
+  try {
+    const origin = `http://127.0.0.1:${modsServer.address().port}`;
+    const loaderRes = await fetch(`${origin}/api/mods/catalog/search?loader=fabric`);
+    const loaderBody = await loaderRes.json();
+    assert.equal(loaderRes.status, 409, loaderBody.error || 'disabled loader should 409');
+    assert.equal(loaderBody.code, 'CATALOG_LOADER_UNAVAILABLE');
+    assert.equal(loaderBody.loaderId, 'fabric');
+    const availRes = await fetch(`${origin}/api/mods/catalog/filter-availability`);
+    const availBody = await availRes.json();
+    assert.equal(availRes.status, 200);
+    assert.equal(availBody.javaHostingAvailable, true);
+    assert.ok(availBody.loaders.some((item) => item.id === 'quilt'));
+    serverEditionRegistry.unregisterPlugins(['server-edition-java']);
+    try {
+      const disabledRes = await fetch(`${origin}/api/mods/catalog/search?edition=java`);
+      const disabledBody = await disabledRes.json();
+      assert.equal(disabledRes.status, 409);
+      assert.equal(disabledBody.code, 'JAVA_HOSTING_DISABLED');
+      const envRes = await fetch(`${origin}/api/mods/catalog/search?environment=client-only`);
+      const envBody = await envRes.json();
+      assert.equal(envRes.status, 409);
+      assert.equal(envBody.code, 'JAVA_HOSTING_DISABLED');
+    } finally {
+      ensureJavaHosting();
+    }
+  } finally {
+    await new Promise((resolve) => modsServer.close(resolve));
+    javaLoaderRegistry.unregisterPlugins(['java-loader-quilt', 'java-loader-vanilla-stub']);
+  }
 
   catalogProviderRegistry.clear();
 }

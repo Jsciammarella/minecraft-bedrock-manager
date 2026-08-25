@@ -61,8 +61,12 @@ export function SocketProvider({ children }) {
       window.dispatchEvent(new CustomEvent('server-status-change', { detail: data }));
     });
 
-    socket.on('dashboard-refresh', () => {
+    socket.on('dashboard-refresh', (data) => {
       window.dispatchEvent(new CustomEvent('server-status-change', { detail: { source: 'dashboard' } }));
+      const type = String(data?.type || '');
+      if (/^plugin\.|^provider\./.test(type)) {
+        window.dispatchEvent(new Event('mbm-plugins-changed'));
+      }
     });
 
     return () => {

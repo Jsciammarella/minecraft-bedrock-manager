@@ -355,7 +355,18 @@ router.get('/catalog/search', async (req, res) => {
     });
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    const body = { error: err.message };
+    if (err.code) body.code = err.code;
+    if (err.loaderId) body.loaderId = err.loaderId;
+    res.status(err.status || 500).json(body);
+  }
+});
+
+router.get('/catalog/filter-availability', (req, res) => {
+  try {
+    res.json(catalog.listFilterAvailability());
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 });
 

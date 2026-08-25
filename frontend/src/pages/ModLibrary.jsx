@@ -5,6 +5,13 @@ import { useApi } from '../context/ApiContext';
 import ModTileTags from '../components/ModTileTags';
 import { isJavaLibraryMod, isModCompatibleWithServer, loaderDisplayName, modLoaderIds, modVersionTags } from '../utils/modCompatibility';
 import {
+  EMPTY_FILTER_AVAILABILITY,
+  libraryFilterAllowedIds,
+  libraryFilterOptions,
+  modMatchesLibraryFilter,
+  parseFilterAvailability,
+} from '../utils/catalogFilters';
+import {
   ArrowLeft, Package, Upload, Search, Trash2, Plus, X,
   AlertCircle, Check, Loader2, Server, Download, Settings, ImagePlus
 } from 'lucide-react';
@@ -67,17 +74,21 @@ function ModLibrary() {
   const [clearThumbnail, setClearThumbnail] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [javaProviders, setJavaProviders] = useState([]);
+  const [filterAvailability, setFilterAvailability] = useState(EMPTY_FILTER_AVAILABILITY);
 
   useEffect(() => {
     loadMods();
-    const loadProviders = () => {
+    const loadFilterState = () => {
       serverApi.javaProviders()
         .then((res) => setJavaProviders(res.data?.providers || []))
         .catch(() => setJavaProviders([]));
+      modApi.catalogFilterAvailability()
+        .then((res) => setFilterAvailability(parseFilterAvailability(res.data)))
+        .catch(() => setFilterAvailability(EMPTY_FILTER_AVAILABILITY));
     };
-    loadProviders();
-    window.addEventListener('mbm-plugins-changed', loadProviders);
-    return () => window.removeEventListener('mbm-plugins-changed', loadProviders);
+    loadFilterState();
+    window.addEventListener('mbm-plugins-changed', loadFilterState);
+    return () => window.removeEventListener('mbm-plugins-changed', loadFilterState);
   }, []);
 
   const loadMods = async () => {
@@ -423,13 +434,7 @@ function ModLibrary() {
   const filteredMods = mods.filter(mod => {
     const matchesSearch = !search || mod.name.toLowerCase().includes(search.toLowerCase());
     const matchesType = filterType === 'all' || mod.type === filterType;
-    const matchesEdition = filterEdition === 'all'
-      || (filterEdition === 'java' && (mod.edition === 'java' || modLoaderIds(mod).length > 0))
-      || (filterEdition === 'bedrock' && (mod.edition || 'bedrock') !== 'java')
-      || (filterEdition === 'fabric' && modLoaderIds(mod).includes('fabric'))
-      || (filterEdition === 'neoforge' && modLoaderIds(mod).includes('neoforge'))
-      || (filterEdition === 'server' && (mod.environment === 'server' || mod.environment === 'both'))
-      || (filterEdition === 'client' && (mod.environment === 'client' || mod.environment === 'both'));
+    const matchesEdition = modMatchesLibraryFilter(mod, filterEdition, filterAvailability);
     return matchesSearch && matchesType && matchesEdition;
   });
 
@@ -445,6 +450,17 @@ function ModLibrary() {
   const goToPage = (nextPage) => {
     setPage(Math.min(totalPages, Math.max(1, nextPage)));
   };
+
+  const libraryEditionOptions = libraryFilterOptions(filterAvailability);
+  const allowedLibraryFilters = libraryFilterAllowedIds(filterAvailability);
+  const libraryEditionValue = allowedLibraryFilters.has(filterEdition) ? filterEdition : 'all';
+
+  useEffect(() => {
+    if (!allowedLibraryFilters.has(filterEdition)) {
+      setFilterEdition('all');
+      setPage(1);
+    }
+  }, [filterEdition, filterAvailability]);
 
   useEffect(() => {
     setPage((current) => Math.min(current, totalPages));
@@ -582,20 +598,17 @@ function ModLibrary() {
             <option value="mod">Java mods</option>
           </select>
           <select
-            value={filterEdition}
+            aria-label="Edition"
+            value={libraryEditionValue}
             onChange={(e) => {
               setFilterEdition(e.target.value);
               setPage(1);
             }}
             className="input w-40"
           >
-            <option value="all">All editions</option>
-            <option value="bedrock">Bedrock</option>
-            <option value="java">Java</option>
-            <option value="fabric">Fabric</option>
-            <option value="neoforge">NeoForge</option>
-            <option value="server">Server-side</option>
-            <option value="client">Client-side</option>
+            {libraryEditionOptions.map((item) => (
+              <option key={item.id} value={item.id}>{item.name}</option>
+            ))}
           </select>
         </div>
       </div>
@@ -1454,11 +1467,9 @@ function JavaFileMetaFields({ files, meta, onChange, javaProviders = [], disable
               className="input text-sm"
             >
               <option value="">Detect from file</option>
-              {javaProviders.filter((item) => item.id !== 'vanilla').map((provider) => (
+              {javaProviders.filter((item) => item.id !== 'vanilla' && item.supportsMods !== false).map((provider) => (
                 <option key={provider.id} value={provider.id}>{provider.name}</option>
               ))}
-              {!javaProviders.some((item) => item.id === 'fabric') && <option value="fabric">Fabric</option>}
-              {!javaProviders.some((item) => item.id === 'neoforge') && <option value="neoforge">NeoForge</option>}
             </select>
             <label className="block text-xs text-mc-textMuted">Minecraft versions</label>
             <input
