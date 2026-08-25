@@ -440,8 +440,8 @@ function loadBackend(plugin) {
       dataDir,
       logger,
       can: (req, localKey) => {
-        const auth = require('./authService');
-        return auth.hasPermission(req.user, `plugin.${plugin.id}.${localKey}`);
+        const security = require('../security');
+        return security.authorize(req.principal || req.user, `plugin.${plugin.id}.${localKey}`);
       },
       permissionKey: (localKey) => `plugin.${plugin.id}.${localKey}`,
       trustLevel: plugin.trustLevel,
@@ -844,7 +844,7 @@ function getDynamicPermissions() {
 
 function syncAuthCatalog() {
   try {
-    require('./authService').syncDynamicPermissions();
+    require('../security').syncDynamicPermissions();
   } catch (err) {
     logger.warn(`Could not sync plugin permissions: ${err.message}`);
   }

@@ -9,6 +9,7 @@
     "frontend": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build",
     "test": "node scripts/smoke-test.js",
+    "test:security": "node scripts/security-provider-test.js",
     "seed": "node server/db/seed.js"
   },
   "dependencies": {

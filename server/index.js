@@ -24,32 +24,27 @@ const pluginRoutes = require('./routes/plugins');
 const dnsProxy = require('./services/dnsProxy');
 const authRoutes = require('./routes/auth');
 const userManagementRoutes = require('./routes/userManagement');
-const authService = require('./services/authService');
-const { attachUser } = require('./middleware/auth');
+const security = require('./security');
+const { attachPrincipal, isPublicApiPath } = require('./security/middleware');
 const catalog = require('./services/permissionCatalog');
 const pluginActions = require('./services/pluginActions');
 const pluginSettings = require('./services/pluginSettings');
 
+try {
+  security.ensureReady();
+} catch (err) {
+  logger.error(err.message);
+  process.exit(1);
+}
+
 pluginActions.setPermissionResolver((permission, context = {}) => {
-  const user = context.user;
-  if (permission === 'gateway:lifecycle') {
-    return authService.hasPermission(user, 'servers.start')
-      && authService.hasPermission(user, 'servers.stop');
-  }
-  if (String(permission || '').startsWith('plugin.')) {
-    return authService.hasPermission(user, permission);
-  }
-  return Boolean(user?.isAdmin);
+  const current = context.user || context.principal;
+  return security.authorize(current, permission, context.resource, context);
 });
 
-pluginSettings.setPermissionResolver((_permission, context = {}) => {
-  const keyByPlugin = {
-    'catalog-curseforge': 'catalog.set_curseforge_key',
-    'catalog-git': 'catalog.enable_git',
-    'catalog-file': 'catalog.enable_file',
-  };
-  const key = keyByPlugin[String(context.pluginId || '')];
-  return key ? authService.hasPermission(context.user, key) : Boolean(context.user?.isAdmin);
+pluginSettings.setPermissionResolver((permission, context = {}) => {
+  const current = context.user || context.principal;
+  return security.authorize(current, permission || 'catalog:settings:view', null, context);
 });
 
 const app = express();
@@ -86,17 +81,20 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api')) return next();
-  if (req.method === 'GET' && req.path === '/api/health') return next();
-  if (req.method === 'GET' && req.path === '/api/auth/password-policy') return next();
-  if (req.method === 'POST' && req.path === '/api/auth/login') return next();
-  if (req.method === 'POST' && req.path === '/api/auth/logout') return next();
-  return attachUser(req, res, next);
+  if (isPublicApiPath(req)) return next();
+  return attachPrincipal(req, res, next);
 });
 
 // ========== API ROUTES ==========
 
 app.use('/api/auth', authRoutes);
-app.use('/api/user-management', userManagementRoutes);
+if (security.supports('userManagement')) {
+  app.use('/api/user-management', userManagementRoutes);
+} else {
+  app.use('/api/user-management', (_req, res) => {
+    res.status(404).json({ error: 'User management is not available' });
+  });
+}
 app.use('/api/servers', serverRoutes);
 app.use('/api/mods', modRoutes);
 app.use('/api/players', playerRoutes);
@@ -104,7 +102,7 @@ app.use('/api/ports', portRoutes);
 app.use('/api/bedrock-connect', bedrockConnectRoutes);
 app.use('/api/v1', apiRoutes);
 pluginHost.loadPlugins();
-authService.syncDynamicPermissions();
+security.syncDynamicPermissions();
 app.use('/api/plugins', pluginRoutes);
 app.use('/api/java', require('./routes/java'));
 app.use('/api/gateways', require('./routes/gateways'));
@@ -122,6 +120,16 @@ app.get('/api/gateway-providers', (req, res) => {
 });
 logger.info(`Loaded ${pluginHost.getMenuItems().length} plugin menu item(s)`);
 
+app.get('/api/system', (_req, res) => {
+  const identity = require('./services/productIdentity');
+  res.json({
+    ...security.publicInfo(),
+    version: managerVersion,
+    hostname: connectHost.managerHostname(),
+    product: identity.PRODUCT_NAME,
+  });
+});
+
 // Health endpoint
 app.get('/api/health', (req, res) => {
   res.json({
@@ -130,6 +138,8 @@ app.get('/api/health', (req, res) => {
     hostname: connectHost.managerHostname(),
     lanIp: connectHost.detectLanIPv4() || null,
     version: managerVersion,
+    securityProfile: security.publicInfo().securityProfile,
+    authenticationRequired: security.publicInfo().authenticationRequired,
   });
 });
 
@@ -143,16 +153,20 @@ app.get('*', (req, res, next) => {
 // ========== WEBSOCKET HANDLERS ==========
 
 io.use((socket, next) => {
-  const token = authService.tokenFromRequest({
-    headers: {
-      cookie: socket.handshake.headers?.cookie || '',
-      authorization: socket.handshake.auth?.token ? `Bearer ${socket.handshake.auth.token}` : '',
-    },
-  });
-  const user = authService.getSessionUser(token);
-  if (!user) return next(new Error('Authentication required'));
-  socket.user = user;
-  next();
+  try {
+    const { principal } = security.authenticate({
+      headers: {
+        cookie: socket.handshake.headers?.cookie || '',
+        authorization: socket.handshake.auth?.token ? `Bearer ${socket.handshake.auth.token}` : '',
+      },
+    });
+    if (!principal) return next(new Error('Authentication required'));
+    socket.principal = principal;
+    socket.user = principal;
+    next();
+  } catch (err) {
+    next(err);
+  }
 });
 
 io.on('connection', (socket) => {
@@ -171,7 +185,7 @@ io.on('connection', (socket) => {
   // Send command to server
   socket.on('send-command', async ({ serverId, command }) => {
     try {
-      if (!authService.hasPermission(socket.user, 'servers.console')) {
+      if (!security.authorize(socket.user, 'servers.console')) {
         throw new Error('You do not have permission to send console commands');
       }
       await serverManager.sendCommand(serverId, command);
@@ -186,7 +200,7 @@ io.on('connection', (socket) => {
     try {
       const target = serverManager.getServer(serverId);
       if (!target) throw new Error('Server not found');
-      if (!authService.hasPermission(socket.user, catalog.startPermissionForKind(target.kind))) {
+      if (!security.authorize(socket.user, catalog.startPermissionForKind(target.kind), target)) {
         throw new Error('You do not have permission to start this server');
       }
       await serverManager.startServer(serverId);
@@ -202,7 +216,7 @@ io.on('connection', (socket) => {
     try {
       const target = serverManager.getServer(serverId);
       if (!target) throw new Error('Server not found');
-      if (!authService.hasPermission(socket.user, catalog.stopPermissionForKind(target.kind))) {
+      if (!security.authorize(socket.user, catalog.stopPermissionForKind(target.kind), target)) {
         throw new Error('You do not have permission to stop this server');
       }
       await serverManager.stopServer(serverId);
@@ -261,6 +275,7 @@ server.listen(PORT, '0.0.0.0', () => {
   logger.info(`Minecraft Bedrock Manager started on port ${PORT}`);
   logger.info(`API available at http://localhost:${PORT}/api`);
   logger.info(`Public API at http://localhost:${PORT}/api/v1`);
+  logger.info(`Security profile: ${security.publicInfo().securityProfile}`);
 
   // Setup PTY listeners for already-running servers
   setupPtyListeners();

@@ -1,12 +1,14 @@
 const router = require('express').Router();
 const javaLoaderRegistry = require('../services/javaLoaderRegistry');
 const pluginAudit = require('../services/pluginAudit');
+const { requirePermission } = require('../middleware/auth');
+const security = require('../security');
 
-router.get('/providers', (req, res) => {
+router.get('/providers', requirePermission('servers.view_details'), (req, res) => {
   res.json({ providers: javaLoaderRegistry.list() });
 });
 
-router.get('/providers/:providerId/versions', async (req, res) => {
+router.get('/providers/:providerId/versions', requirePermission('servers.view_details'), async (req, res) => {
   try {
     const entry = javaLoaderRegistry.requireLoader(req.params.providerId);
     const versions = await entry.provider.listMinecraftVersions();
@@ -16,7 +18,7 @@ router.get('/providers/:providerId/versions', async (req, res) => {
   }
 });
 
-router.get('/providers/:providerId/loader-versions', async (req, res) => {
+router.get('/providers/:providerId/loader-versions', requirePermission('servers.view_details'), async (req, res) => {
   try {
     const entry = javaLoaderRegistry.requireLoader(req.params.providerId);
     const minecraftVersion = req.query.minecraftVersion || req.query.version;
@@ -27,12 +29,17 @@ router.get('/providers/:providerId/loader-versions', async (req, res) => {
   }
 });
 
-router.post('/providers/:providerId/validate', async (req, res) => {
+router.post('/providers/:providerId/validate', requirePermission('servers.create_java'), async (req, res) => {
   try {
     require('../services/javaHostingPolicy').assertServerEditionAvailable('java', 'validate');
     const entry = javaLoaderRegistry.requireLoader(req.params.providerId);
     const resolved = await entry.provider.resolveInstallation(req.body || {});
-    pluginAudit.record('java.validate', { targetType: 'java-loader', targetId: entry.id, detail: resolved });
+    pluginAudit.record('java.validate', {
+      actor: security.actorName(req.principal || req.user),
+      targetType: 'java-loader',
+      targetId: entry.id,
+      detail: resolved,
+    });
     res.json({ ok: true, resolved, notices: entry.provider.getMetadata()?.notices || [] });
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message, code: err.code });

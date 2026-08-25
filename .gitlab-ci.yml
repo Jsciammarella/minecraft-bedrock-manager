@@ -16,6 +16,7 @@ verify:
     - docker build --tag "$CI_TEST_IMAGE" .
     - docker build --tag "$CI_TEST_IMAGE-cf-fetch" -f Dockerfile.curseforge-fetch .
     - docker run --rm --entrypoint node --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" "$CI_TEST_IMAGE" scripts/smoke-test.js
+    - docker run --rm --entrypoint node -e NODE_ENV=test -e MBM_SECURITY_PROFILE=no-auth --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" "$CI_TEST_IMAGE" scripts/security-provider-test.js
   after_script:
     - docker image rm --force "$CI_TEST_IMAGE" "$CI_TEST_IMAGE-cf-fetch" >/dev/null 2>&1 || true
 

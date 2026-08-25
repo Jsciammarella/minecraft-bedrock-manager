@@ -13,6 +13,7 @@ const {
   assertPermission,
 } = require('../middleware/auth');
 const pluginContributions = require('../services/pluginContributions');
+const catalog = require('../services/permissionCatalog');
 const javaHostingPolicy = require('../services/javaHostingPolicy');
 
 function sendServiceError(res, err) {
@@ -154,8 +155,14 @@ router.get('/:id', requirePermission('servers.view_details'), async (req, res) =
 // Create new server
 router.post('/', async (req, res) => {
   try {
-    const kind = req.body?.kind === 'remote' ? 'remote' : 'bedrock';
-    assertPermission(req, kind === 'remote' ? 'servers.create_remote' : 'servers.create');
+    const kind = req.body?.kind === 'remote'
+      ? 'remote'
+      : req.body?.kind === 'java'
+        ? 'java'
+        : req.body?.kind === 'bedrock_connect'
+          ? 'bedrock_connect'
+          : 'bedrock';
+    assertPermission(req, catalog.createPermissionForKind(kind));
     const result = await serverManager.createServer(req.body);
     res.status(201).json(result);
   } catch (err) {
@@ -350,7 +357,7 @@ router.put('/:id/lan-broadcast', requirePermission('servers.set_lan'), async (re
   }
 });
 
-router.post('/:id/java/dependencies/resolve', async (req, res) => {
+router.post('/:id/java/dependencies/resolve', requirePermission('servers.add_mods'), async (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -373,7 +380,7 @@ router.post('/:id/java/dependencies/resolve', async (req, res) => {
   }
 });
 
-router.get('/:id/java/mods', (req, res) => {
+router.get('/:id/java/mods', requirePermission('servers.view_details'), (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -385,7 +392,7 @@ router.get('/:id/java/mods', (req, res) => {
   }
 });
 
-router.get('/:id/java/mods/pending', (req, res) => {
+router.get('/:id/java/mods/pending', requirePermission('servers.view_details'), (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -396,7 +403,7 @@ router.get('/:id/java/mods/pending', (req, res) => {
   }
 });
 
-router.post('/:id/java/mods/validate', (req, res) => {
+router.post('/:id/java/mods/validate', requirePermission('servers.add_mods'), (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -409,7 +416,7 @@ router.post('/:id/java/mods/validate', (req, res) => {
   }
 });
 
-router.post('/:id/java/mods', (req, res) => {
+router.post('/:id/java/mods', requirePermission('servers.add_mods'), (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -427,7 +434,7 @@ router.post('/:id/java/mods', (req, res) => {
   }
 });
 
-router.delete('/:id/java/mods/:installationId', (req, res) => {
+router.delete('/:id/java/mods/:installationId', requirePermission('servers.remove_mods'), (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -442,7 +449,7 @@ router.delete('/:id/java/mods/:installationId', (req, res) => {
   }
 });
 
-router.post('/:id/java/dependencies/reevaluate', async (req, res) => {
+router.post('/:id/java/dependencies/reevaluate', requirePermission('servers.add_mods'), async (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });

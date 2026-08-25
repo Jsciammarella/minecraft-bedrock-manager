@@ -6,7 +6,7 @@ import { authApi } from '../services/api';
 import { DEFAULT_PASSWORD_POLICY, validateLogin } from '../utils/passwordPolicy';
 
 function Login() {
-  const { user, loading, login } = useAuth();
+  const { user, loading, login, authenticationRequired, securityError } = useAuth();
   const location = useLocation();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -15,10 +15,12 @@ function Login() {
   const [policy, setPolicy] = useState(DEFAULT_PASSWORD_POLICY);
 
   useEffect(() => {
+    if (!authenticationRequired) return undefined;
     authApi.passwordPolicy()
       .then((res) => setPolicy(res.data || DEFAULT_PASSWORD_POLICY))
       .catch(() => setPolicy(DEFAULT_PASSWORD_POLICY));
-  }, []);
+    return undefined;
+  }, [authenticationRequired]);
 
   if (loading) {
     return (
@@ -28,7 +30,18 @@ function Login() {
     );
   }
 
-  if (user) {
+  if (securityError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-mc-dark p-6">
+        <div className="card max-w-md text-center space-y-3">
+          <h1 className="text-xl font-bold text-white">Unable to load security configuration</h1>
+          <p className="text-sm text-mc-textMuted">{securityError}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!authenticationRequired || user) {
     const dest = location.state?.from || '/';
     return <Navigate to={dest} replace />;
   }

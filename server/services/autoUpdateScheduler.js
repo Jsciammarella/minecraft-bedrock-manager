@@ -53,6 +53,9 @@ class AutoUpdateScheduler {
    * Run a scheduled update check for all servers with auto-update enabled
    */
   async runScheduledCheck() {
+    const security = require('../security');
+    const principal = security.createSystemPrincipal('auto-update');
+    security.audit('system.auto-update.check', { principal });
     try {
       logger.info('Running scheduled auto-update check...');
 

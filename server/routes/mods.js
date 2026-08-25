@@ -159,7 +159,7 @@ router.put('/:id', requirePermission('library.change_settings'), (req, res) => {
   });
 });
 
-router.post('/:id/files', (req, res) => {
+router.post('/:id/files', requirePermission('library.change_settings'), (req, res) => {
   upload.fields([
     { name: 'files', maxCount: 20 },
     { name: 'file', maxCount: 20 },
@@ -182,7 +182,7 @@ router.post('/:id/files', (req, res) => {
   });
 });
 
-router.delete('/:id/files', async (req, res) => {
+router.delete('/:id/files', requirePermission('library.change_settings'), async (req, res) => {
   try {
     const uninstallFromServers = req.query.uninstallFromAll === '1' || req.query.uninstallFromAll === 'true'
       || req.body?.uninstallFromServers === true || req.body?.uninstallFromAll === true;

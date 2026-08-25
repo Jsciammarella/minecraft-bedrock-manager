@@ -8,6 +8,8 @@ not a hard-coded core screen.
 Trust is derived from **where the plugin is installed**, not from a field in
 `plugin.json`. Uploaded plugins can never become Java hosting, Java loader,
 gateway, or catalog-source providers by declaring privileged capabilities.
+Plugins also cannot register, replace, or disable the trusted security
+provider. See [security.md](security.md).
 
 The sidebar scrolls only when core items plus plugin items no longer fit. If
 they fit, there is no extra scrollbar.

@@ -3,7 +3,7 @@
 A one-stop self-hosted console for Minecraft Bedrock. One Linux host can run multiple dedicated servers, **forward play to a Bedrock server on another host** (LAN, Tailscale, or similar), keep add-ons and worlds in a library, let consoles join through [Bedrock Connect](https://github.com/Pugmatt/BedrockConnect), optionally rewrite featured-server DNS, and list games on the LAN — without a cloud panel.
 
 > [!IMPORTANT]
-> This application does not currently provide login or role-based access control. Keep it on a trusted LAN or behind an authenticated reverse proxy. Do not expose the management port or DNS port `53` to the internet.
+> Authentication depends on the product edition. Open-source (`.3`) builds use a no-auth profile with a local system principal and **must not** be exposed directly to an untrusted network. Pro (`.6`) and Enterprise (`.9`) builds require login and enforce permissions on the backend. See [docs/security.md](docs/security.md).
 
 Release development uses separate baseline, open-source, Pro, and Enterprise branches. See [docs/release-model.md](docs/release-model.md).
 

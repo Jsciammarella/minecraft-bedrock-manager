@@ -10,7 +10,7 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     const url = String(error.config?.url || '');
-    if (error.response?.status === 401 && !url.includes('/auth/login') && !url.includes('/auth/me') && !url.includes('/auth/password-policy')) {
+    if (error.response?.status === 401 && !url.includes('/auth/login') && !url.includes('/auth/me') && !url.includes('/auth/password-policy') && !url.includes('/auth/security') && !url.includes('/system')) {
       window.dispatchEvent(new Event('mbm-auth-expired'));
     }
     return Promise.reject(error);
@@ -256,6 +256,7 @@ export const authApi = {
   login: (username, password) => api.post('/auth/login', { username, password }),
   logout: () => api.post('/auth/logout'),
   me: () => api.get('/auth/me'),
+  security: () => api.get('/auth/security'),
   changePassword: (data) => api.put('/auth/password', data),
   passwordPolicy: () => api.get('/auth/password-policy'),
 };

@@ -24,7 +24,7 @@ import AccountSettings from './pages/AccountSettings';
 import { useAuth } from './context/AuthContext';
 
 function RequireAuth() {
-  const { user, loading } = useAuth();
+  const { user, loading, authenticationRequired, securityError } = useAuth();
   const location = useLocation();
   if (loading) {
     return (
@@ -33,15 +33,42 @@ function RequireAuth() {
       </div>
     );
   }
-  if (!user) {
+  if (securityError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-mc-dark p-6">
+        <div className="card max-w-md text-center space-y-3">
+          <h1 className="text-xl font-bold text-white">Unable to load security configuration</h1>
+          <p className="text-sm text-mc-textMuted">{securityError}</p>
+          <p className="text-sm text-mc-textMuted">The manager will not assume an open, unauthenticated mode after a security error.</p>
+        </div>
+      </div>
+    );
+  }
+  if (authenticationRequired && !user) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-mc-dark">
+        <Loader2 className="w-8 h-8 text-mc-accent animate-spin" />
+      </div>
+    );
   }
   return <Outlet />;
 }
 
 function RequireUserManagement() {
-  const { canAccessUserManagement, canViewUsers, canViewGroups, canViewPermissions } = useAuth();
+  const {
+    canAccessUserManagement,
+    canViewUsers,
+    canViewGroups,
+    canViewPermissions,
+    features,
+  } = useAuth();
   const location = useLocation();
+  if (!features.userManagement && !features.passwordManagement) {
+    return <Navigate to="/" replace />;
+  }
   if (location.pathname === '/users/settings') return <Outlet />;
   if (!canAccessUserManagement) return <Navigate to="/users/settings" replace />;
   if (location.pathname === '/users' && !canViewUsers) {

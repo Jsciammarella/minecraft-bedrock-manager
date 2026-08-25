@@ -21,7 +21,7 @@ function Layout() {
   const [pluginMenus, setPluginMenus] = useState([]);
   const { servers, loading } = useApi();
   const { connected } = useSocket();
-  const { user, logout, can, refresh } = useAuth();
+  const { user, logout, can, refresh, features, authenticationRequired, networkWarning } = useAuth();
 
   useEffect(() => {
     publicApi.health()
@@ -91,7 +91,9 @@ function Layout() {
     { icon: Users, label: 'Players', path: '/players', menuKey: 'menu.view.players' },
     { icon: Globe, label: 'BedrockConnect', path: '/bedrock-connect', menuKey: 'menu.view.bedrock_connect' },
     { icon: Network, label: 'Ports', path: '/ports', menuKey: 'menu.view.ports' },
-    { icon: UserCog, label: 'Users', path: '/users', menuKey: 'menu.view.users' },
+    ...(features.userManagement
+      ? [{ icon: UserCog, label: 'Users', path: '/users', menuKey: 'menu.view.users' }]
+      : []),
   ].filter((item) => !item.menuKey || can(item.menuKey));
 
   const visiblePluginMenus = pluginMenus.filter((item) => can(pluginMenuKey(item.pluginId, item.id)));
@@ -285,16 +287,18 @@ function Layout() {
           {showLabels && <span>Collapse</span>}
         </button>
 
-        <button
-          type="button"
-          onClick={logout}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs
-            text-mc-textMuted hover:text-mc-text hover:bg-mc-surfaceLight transition-all"
-          title="Sign out"
-        >
-          <LogOut className="w-4 h-4" />
-          {showLabels && <span>Sign out</span>}
-        </button>
+        {authenticationRequired && (
+          <button
+            type="button"
+            onClick={logout}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs
+              text-mc-textMuted hover:text-mc-text hover:bg-mc-surfaceLight transition-all"
+            title="Sign out"
+          >
+            <LogOut className="w-4 h-4" />
+            {showLabels && <span>Sign out</span>}
+          </button>
+        )}
       </div>
     </>
   );
@@ -349,6 +353,11 @@ function Layout() {
         <main className={`flex-1 min-w-0 min-h-0 bg-mc-dark pb-[env(safe-area-inset-bottom)] ${
           isPluginPage ? 'relative overflow-hidden' : 'overflow-y-auto overflow-x-hidden'
         }`}>
+          {networkWarning && (
+            <div className="mx-4 mt-4 md:mx-6 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-sm text-amber-200">
+              This no-auth edition has no login or user permissions. Do not expose it directly to an untrusted network.
+            </div>
+          )}
           {loading && servers.length === 0 ? (
             <div className="flex items-center justify-center h-full">
               <div className="flex flex-col items-center gap-3">

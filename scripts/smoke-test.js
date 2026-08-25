@@ -134,6 +134,7 @@ function testUserManagement() {
     'servers.change_game_settings',
     'servers.change_server_options',
     'servers.change_player_permissions',
+    'servers.change_java_settings',
   ]));
 
   const renamed = auth.updateUser(operator.id, { username: 'hacked-name' }, login.user);
@@ -1698,6 +1699,9 @@ async function run() {
 
   await runBedrockConnectLifecycleTests({ testRoot, db, serverManager });
 
+  const { runAllSecurityTests } = require('./security-provider-test');
+  await runAllSecurityTests();
+
   console.log(JSON.stringify({
     databaseMigration: 'ok',
     udpPortDetection: 'ok',
@@ -1714,6 +1718,7 @@ async function run() {
     windowsPlatformAdapter: 'ok',
     pluginHost: 'ok',
     userManagement: 'ok',
+    securityProviders: 'ok',
     javaProviders: 'ok',    curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));

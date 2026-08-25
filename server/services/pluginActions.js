@@ -8,8 +8,13 @@ const LOCK_MS = 60 * 1000;
 
 let permissionResolver = defaultPermissionResolver;
 
-function defaultPermissionResolver(_permission, _ctx) {
-  return true;
+function defaultPermissionResolver(permission, ctx = {}) {
+  try {
+    const security = require('../security');
+    return security.authorize(ctx.user || ctx.principal, permission, ctx.resource, ctx);
+  } catch {
+    return false;
+  }
 }
 
 function setPermissionResolver(fn) {
@@ -91,7 +96,10 @@ function reject(action, ctx, status, message) {
 async function invoke(input = {}) {
   const pluginId = String(input.pluginId || input.pluginId || '').trim();
   const actionId = String(input.actionId || input.actionId || '').trim();
-  const actor = String(input.actor || 'local').slice(0, 80);
+  const principal = input.user || input.principal || null;
+  const actor = String(
+    input.actor || (principal && require('../security').actorName(principal)) || 'local'
+  ).slice(0, 80);
   if (input.url || input.href || input.command || input.endpoint || input.shell) {
     reject({ actionId }, { pluginId, actionId, actor }, 400, 'Plugin actions cannot supply URLs or commands');
   }
@@ -128,7 +136,7 @@ async function invoke(input = {}) {
     actor,
     serverId: resolved.serverId,
     resourceId: resolved.resourceId,
-    user: input.user || null,
+    user: input.user || principal,
   })) {
     reject(spec, {
       pluginId, actionId, actor, serverId: resolved.serverId, resourceId: resolved.resourceId,

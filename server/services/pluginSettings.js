@@ -15,14 +15,23 @@ const RATE_LIMITED_ACTIONS = new Set([
   'test-nfs-path',
 ]);
 
-let permissionResolver = () => true;
+function defaultPermissionResolver(permission, ctx = {}) {
+  try {
+    const security = require('../security');
+    return security.authorize(ctx.user || ctx.principal, permission || 'catalog:settings:view', null, ctx);
+  } catch {
+    return false;
+  }
+}
+
+let permissionResolver = defaultPermissionResolver;
 
 function setPermissionResolver(fn) {
-  permissionResolver = typeof fn === 'function' ? fn : () => true;
+  permissionResolver = typeof fn === 'function' ? fn : defaultPermissionResolver;
 }
 
 function resetPermissionResolver() {
-  permissionResolver = () => true;
+  permissionResolver = defaultPermissionResolver;
 }
 
 function fail(status, message, code) {

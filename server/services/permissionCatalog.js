@@ -85,10 +85,76 @@ const PERMISSIONS = [
   { key: 'users.add_groups', category: 'users', name: 'Add groups', description: 'Allow user to create groups' },
   { key: 'users.delete_groups', category: 'users', name: 'Delete group', description: 'Allow user to delete groups (deleting groups with users just removes the user from that group)' },
 
-  { key: 'plugins.upload', category: 'plugins', name: 'Upload a plugin', description: 'Allow the user to upload plugins' },
+  { key: 'plugins.upload', category: 'plugins', name: 'Upload a plugin', description: 'Allow the user to upload plugins', administrative: true },
+
+  {
+    key: 'servers.create_java',
+    category: 'servers',
+    edition: 'java',
+    name: 'Create a Java server',
+    description: 'Allow the user to create a Minecraft Java Edition server',
+  },
+  {
+    key: 'servers.start_java',
+    category: 'servers',
+    edition: 'java',
+    name: 'Start a Java server',
+    description: 'Allow the user to start a Minecraft Java Edition server',
+  },
+  {
+    key: 'servers.stop_java',
+    category: 'servers',
+    edition: 'java',
+    name: 'Stop a Java server',
+    description: 'Allow the user to stop a Minecraft Java Edition server',
+  },
+  {
+    key: 'servers.change_java_settings',
+    category: 'servers',
+    edition: 'java',
+    name: 'Change Java-only settings',
+    description: 'Allow the user to change Java Edition-only server properties (PvP, simulation distance, RCON, ops, and related options)',
+  },
 
   ...MENU_PERMISSIONS,
 ];
+
+const ADMINISTRATIVE_PREFIXES = ['users.'];
+const DESTRUCTIVE_KEYS = new Set([
+  'servers.delete',
+  'library.delete',
+  'users.delete_groups',
+  'players.ban_all',
+  'plugins.upload',
+]);
+
+function resourceTypeFor(item) {
+  if (item.resourceType) return item.resourceType;
+  if (item.category === 'servers' || String(item.key).startsWith('servers.')) return 'server';
+  if (item.category === 'plugins' || String(item.key).startsWith('plugin.')) return 'plugin';
+  if (item.category === 'users') return 'user';
+  return null;
+}
+
+function annotatePermission(item) {
+  const administrative = Boolean(
+    item.administrative
+    || ADMINISTRATIVE_PREFIXES.some((prefix) => item.key.startsWith(prefix))
+    || item.key === 'plugins.upload'
+    || item.key === 'catalog.set_curseforge_key'
+  );
+  return {
+    ...item,
+    administrative,
+    destructive: Boolean(item.destructive || DESTRUCTIVE_KEYS.has(item.key)),
+    resourceType: resourceTypeFor(item),
+    defaultRoles: item.defaultRoles || null,
+  };
+}
+
+for (let i = 0; i < PERMISSIONS.length; i += 1) {
+  PERMISSIONS[i] = annotatePermission(PERMISSIONS[i]);
+}
 
 const ALL_KEYS = PERMISSIONS.map((item) => item.key);
 
@@ -96,9 +162,13 @@ const STANDARD_KEYS = [
   'servers.create',
   'servers.create_remote',
   'servers.create_bedrock_connect',
+  'servers.create_java',
   'servers.view_details',
   'servers.start',
   'servers.stop',
+  'servers.start_java',
+  'servers.stop_java',
+  'servers.change_java_settings',
   'servers.start_bedrock_connect',
   'servers.stop_bedrock_connect',
   'servers.start_remote',
@@ -161,13 +231,22 @@ function isPluginPermission(key) {
 function startPermissionForKind(kind) {
   if (kind === 'bedrock_connect') return 'servers.start_bedrock_connect';
   if (kind === 'remote') return 'servers.start_remote';
+  if (kind === 'java') return 'servers.start_java';
   return 'servers.start';
 }
 
 function stopPermissionForKind(kind) {
   if (kind === 'bedrock_connect') return 'servers.stop_bedrock_connect';
   if (kind === 'remote') return 'servers.stop_remote';
+  if (kind === 'java') return 'servers.stop_java';
   return 'servers.stop';
+}
+
+function createPermissionForKind(kind) {
+  if (kind === 'bedrock_connect') return 'servers.create_bedrock_connect';
+  if (kind === 'remote') return 'servers.create_remote';
+  if (kind === 'java') return 'servers.create_java';
+  return 'servers.create';
 }
 
 const SERVER_UPDATE_FIELDS = {
@@ -192,6 +271,17 @@ const SERVER_UPDATE_FIELDS = {
     'enforce_secure_profile', 'network_compression_threshold',
     'entity_broadcast_range_percentage', 'query_port', 'rcon_port', 'rcon_password',
     'resource_pack', 'resource_pack_sha1', 'level_type', 'max_world_size',
+  ],
+  java: [
+    'pvp', 'allow_nether', 'allow_flight', 'enable_command_block', 'hardcore',
+    'force_gamemode', 'spawn_animals', 'spawn_npcs', 'spawn_monsters',
+    'generate_structures', 'hide_online_players', 'enforce_whitelist',
+    'require_resource_pack', 'broadcast_console_to_ops', 'enable_status',
+    'enable_query', 'enable_rcon', 'sync_chunk_writes', 'prevent_proxy_connections',
+    'enforce_secure_profile', 'network_compression_threshold',
+    'entity_broadcast_range_percentage', 'query_port', 'rcon_port', 'rcon_password',
+    'resource_pack', 'resource_pack_sha1', 'level_type', 'max_world_size',
+    'simulation_distance', 'spawn_protection', 'op_permission_level', 'function_permission_level',
   ],
   playerPermissions: ['default_player_permission', 'default_1st_person', 'op_permission_level', 'function_permission_level'],
   remoteLocal: ['port', 'ipv6Port', 'ipv6_port'],
@@ -218,7 +308,26 @@ function requiredServerUpdatePermissions(server, body) {
   if (bodyHasAny(body, SERVER_UPDATE_FIELDS.game)) needed.add('servers.change_game_settings');
   if (bodyHasAny(body, SERVER_UPDATE_FIELDS.options)) needed.add('servers.change_server_options');
   if (bodyHasAny(body, SERVER_UPDATE_FIELDS.playerPermissions)) needed.add('servers.change_player_permissions');
+  if (server?.kind === 'java' && bodyHasAny(body, SERVER_UPDATE_FIELDS.java)) {
+    needed.add('servers.change_java_settings');
+  }
   return [...needed];
+}
+
+function listKeys() {
+  const keys = [...ALL_KEYS];
+  try {
+    const pluginHost = require('./pluginHost');
+    const extra = typeof pluginHost.getDynamicPermissions === 'function'
+      ? pluginHost.getDynamicPermissions()
+      : [];
+    for (const item of extra) {
+      if (item?.key && !keys.includes(item.key)) keys.push(item.key);
+    }
+  } catch {
+    /* plugin host may not be loaded yet */
+  }
+  return keys;
 }
 
 module.exports = {
@@ -235,5 +344,7 @@ module.exports = {
   isPluginPermission,
   startPermissionForKind,
   stopPermissionForKind,
+  createPermissionForKind,
   requiredServerUpdatePermissions,
+  listKeys,
 };

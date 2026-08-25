@@ -33,6 +33,9 @@ class GitCatalogScheduler {
 
   async syncSafe(reason) {
     if (!gitCatalog.isConfigured()) return;
+    const security = require('../security');
+    const principal = security.createSystemPrincipal(`git-catalog:${reason}`);
+    security.audit('system.git-catalog.sync', { principal, detail: { reason } });
     try {
       const result = await gitCatalog.startSync(reason);
       logger.info(`Git catalog ${reason} sync complete (${result.modCount} mods)`);
