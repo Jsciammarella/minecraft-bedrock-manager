@@ -1,4 +1,7 @@
 const db = require('../db/connection');
+const { AsyncLocalStorage } = require('async_hooks');
+
+const secretOverlay = new AsyncLocalStorage();
 
 const KEYS = {
   CURSEFORGE_API_KEY: 'curseforge_api_key',
@@ -19,6 +22,8 @@ const KEYS = {
   FILE_NFS_ENABLED: 'file_catalog_nfs_enabled',
   FILE_NFS_PATH: 'file_catalog_nfs_path',
   MULTI_FILE_MODE: 'catalog_multi_file_mode',
+  CF_BEDROCK_ENABLED: 'curseforge_bedrock_enabled',
+  CF_JAVA_ENABLED: 'curseforge_java_enabled',
   BEDROCK_CONNECT_PENDING: 'bedrock_connect_pending',
   LAN_BROADCAST_PENDING: 'lan_broadcast_pending',
   BEDROCK_DNS_ENABLED: 'bedrock_dns_enabled',
@@ -55,7 +60,16 @@ function fromEnv(name) {
 }
 
 function getSecret(key, envFallback = '') {
+  const active = secretOverlay.getStore();
+  if (active && Object.prototype.hasOwnProperty.call(active, key)) {
+    return String(active[key] || '');
+  }
   return get(key) || envFallback || '';
+}
+
+function runWithSecretOverlay(map, fn) {
+  const current = secretOverlay.getStore() || {};
+  return secretOverlay.run({ ...current, ...(map || {}) }, fn);
 }
 
 function getCurseForgeApiKey() {
@@ -176,4 +190,5 @@ module.exports = {
   getMultiFileMode,
   setMultiFileMode,
   publicCatalogSettings,
+  runWithSecretOverlay,
 };

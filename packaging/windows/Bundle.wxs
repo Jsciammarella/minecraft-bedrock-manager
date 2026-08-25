@@ -1,5 +1,5 @@
 <?ifndef Version ?>
-  <?define Version = "0.3.9" ?>
+  <?define Version = "0.3.6" ?>
 <?endif ?>
 <?ifndef BundleVersion ?>
   <?define BundleVersion = $(var.Version) ?>

@@ -10,6 +10,7 @@ process.env.MC_MANAGER_DB_PATH = path.join(testRoot, 'mc_manager.db');
 process.env.MC_MANAGER_USER_PLUGINS_DIR = path.join(testRoot, 'plugins');
 process.env.MC_MANAGER_PLUGIN_DATA_DIR = path.join(testRoot, 'plugin-data');
 process.env.MC_MANAGER_PLUGIN_STATE_PATH = path.join(testRoot, 'plugin-state.json');
+process.env.MC_MANAGER_MODS_DIR = path.join(testRoot, 'mods');
 const db = require('../server/db/connection');
 const serverManager = require('../server/services/serverManager');
 const curseforge = require('../server/services/curseforgeClient');
@@ -27,6 +28,11 @@ const connectHost = require('../server/services/connectHost');
 const portRanges = require('../server/services/portRanges');
 const pluginHost = require('../server/services/pluginHost');
 const pluginRoutes = require('../server/routes/plugins');
+const { runJavaProviderTests } = require('./java-provider-test');
+const { runCatalogProviderTests } = require('./catalog-provider-test');
+const { runPluginSettingsTests } = require('./plugin-settings-test');
+const { runModrinthProviderTests } = require('./modrinth-provider-test');
+const { runBedrockConnectLifecycleTests } = require('./bedrock-connect-lifecycle-test');
 
 function zipStore(files) {
   const locals = [];
@@ -115,6 +121,20 @@ function testUserManagement() {
   assert.equal(operator.permissions.includes('library.delete'), true);
   assert.equal(reader.permissions.includes('library.delete'), false);
   assert.equal(reader.permissions.includes('catalog.enable_file'), false);
+  const javaUpdatePermissions = new Set(catalog.requiredServerUpdatePermissions(
+    { kind: 'java' },
+    {
+      simulation_distance: 10,
+      pvp: true,
+      op_permission_level: 4,
+      network_compression_threshold: 256,
+    },
+  ));
+  assert.deepEqual(javaUpdatePermissions, new Set([
+    'servers.change_game_settings',
+    'servers.change_server_options',
+    'servers.change_player_permissions',
+  ]));
 
   const renamed = auth.updateUser(operator.id, { username: 'hacked-name' }, login.user);
   assert.equal(renamed.username, 'operator');
@@ -247,10 +267,36 @@ async function testPluginHost() {
   assert(helloPlugin.permissions.some((item) => item.key === 'plugin.hello-world.greet'));
   assert(pluginHost.getDynamicPermissions().some((item) => item.key === 'menu.view.plugin.hello-world.main'));
   assert(pluginHost.resolveUiFile(helloPlugin, 'index.html'));
+  assert.equal(pluginHost.publicPlugin(helloPlugin).pages[0].file, 'index.html');
   assert.equal(pluginHost.resolveUiFile(helloPlugin, '../backend.js'), null);
   assert.equal(pluginHost.resolveUiFile(helloPlugin, '..\\backend.js'), null);
   const injected = pluginHost.injectHtmlSdk('<html><head></head><body></body></html>');
-  assert(injected.includes('/api/plugins/sdk.js'));
+  assert(injected.includes('mc-manager-plugin-sdk'), 'plugin HTML should inline the SDK');
+  assert(injected.includes('data-mbm-plugin-chrome'));
+
+  const fsMove = require('../server/services/fsMove');
+  const moveSrc = path.join(testRoot, 'move-src.bin');
+  const moveDest = path.join(testRoot, 'move-dest.bin');
+  fs.writeFileSync(moveSrc, 'catalog');
+  fsMove.moveFile(moveSrc, moveDest);
+  assert.equal(fs.readFileSync(moveDest, 'utf8'), 'catalog');
+  assert.equal(fs.existsSync(moveSrc), false);
+  const moveSrc2 = path.join(testRoot, 'move-src2.bin');
+  const moveDest2 = path.join(testRoot, 'move-dest2.bin');
+  fs.writeFileSync(moveSrc2, 'exdev');
+  const originalRename = fs.renameSync;
+  fs.renameSync = () => {
+    const err = new Error('EXDEV: cross-device link not permitted');
+    err.code = 'EXDEV';
+    throw err;
+  };
+  try {
+    fsMove.moveFile(moveSrc2, moveDest2);
+    assert.equal(fs.readFileSync(moveDest2, 'utf8'), 'exdev');
+    assert.equal(fs.existsSync(moveSrc2), false);
+  } finally {
+    fs.renameSync = originalRename;
+  }
 
   const pluginApp = require('express')();
   pluginApp.use('/api/servers', (req, res) => res.json({ core: true }));
@@ -267,7 +313,15 @@ async function testPluginHost() {
     const uiRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/index.html`);
     const uiHtml = await uiRes.text();
     assert(uiRes.ok, 'example plugin UI should be served');
-    assert(uiHtml.includes('/api/plugins/sdk.js'), 'plugin HTML should receive the SDK');
+    assert(uiHtml.includes('mc-manager-plugin-sdk'), 'plugin HTML should receive the SDK');
+    const uiDirRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/`);
+    assert.ok(uiDirRes.ok, 'plugin UI directory should serve index.html');
+    assert.match(await uiDirRes.text(), /mc-manager-plugin-sdk/);
+    const metaRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/meta`);
+    const metaBody = await metaRes.json();
+    assert.equal(metaBody.pages[0].file, 'index.html');
+    const missingFileRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/undefined`);
+    assert.equal(missingFileRes.status, 404);
     const theftRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/../backend.js`);
     assert.equal(theftRes.status, 404, 'plugin UI must not serve files outside ui/');
     const backendRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/hello`);
@@ -341,7 +395,11 @@ async function run() {
   assert(accessTable, 'server_player_access migration was not created');
   await testPluginHost();
   testUserManagement();
-
+  await runJavaProviderTests({ pluginHost, testRoot });
+  await runCatalogProviderTests({ pluginHost, testRoot });
+  await runPluginSettingsTests({ pluginHost, testRoot });
+  await runModrinthProviderTests({ pluginHost, testRoot });
+  pluginHost.loadPlugins([pluginHost.BUNDLED_PLUGINS_DIR]);
   const blocker = dgram.createSocket('udp4');
   await new Promise((resolve, reject) => {
     blocker.once('error', reject);
@@ -629,6 +687,17 @@ async function run() {
   fs.writeFileSync(path.join(oceanDir, 'Oceanic Delight V5.0.4 1.26.0+.mcaddon'), 'pack');
   fs.writeFileSync(path.join(oceanDir, 'thumbnail.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 
+  const javaModDir = path.join(gitRoot, 'addons', 'fabric-sample');
+  fs.mkdirSync(javaModDir, { recursive: true });
+  fs.writeFileSync(path.join(javaModDir, 'mod.json'), JSON.stringify({
+    name: 'Fabric Sample',
+    type: 'mod',
+    edition: 'java',
+    loader: 'fabric',
+    file: 'fabric-sample.jar',
+  }));
+  fs.writeFileSync(path.join(javaModDir, 'fabric-sample.jar'), 'jar');
+
   const gitMods = gitCatalog.parseCatalogFromDir(gitRoot);
   assert(gitMods.some(mod => mod.slug === 'indexed-pack'), 'catalog.json entry was not parsed');
   assert(gitMods.some(mod => mod.slug === 'smoke-pack'), 'mod.json entry was not parsed');
@@ -638,7 +707,12 @@ async function run() {
   assert.equal(oceanEntries[0].name, 'Oceanic Delight');
   const smokePack = gitMods.find(mod => mod.slug === 'smoke-pack');
   assert(smokePack, 'smoke-pack was not parsed');
+  assert.equal(smokePack.edition, 'bedrock');
   assert.equal((smokePack.filePaths || []).length, 2, 'mod.json file array should keep both pack file types');
+  const fabricSample = gitMods.find(mod => mod.slug === 'fabric-sample');
+  assert(fabricSample, 'java mod.json entry was not parsed');
+  assert.equal(fabricSample.edition, 'java');
+  assert.equal(fabricSample.loader, 'fabric');
   const declaredCombo = gitMods.find(mod => mod.slug === 'declared-combo');
   assert(declaredCombo, 'catalog.json file array was not parsed');
   assert.equal((declaredCombo.filePaths || []).length, 2, 'catalog.json file array should include both archives');
@@ -1235,6 +1309,7 @@ async function run() {
   assert(listed.some((item) => item.name === `aaa-${suffix}` && item.port === 40120));
   assert(!listed.some((item) => item.name === 'Bedrock Connect'));
   assert(bedrockConnectList.spawnArgs(bcPath).includes('featured_servers=false'));
+  assert(bedrockConnectList.spawnArgs(bcPath).includes('server_limit=100'));
   assert(bedrockConnectList.spawnArgs(bcPath).some((arg) => arg.startsWith('custom_servers=')));
   await assert.rejects(
     () => serverManager.setLanBroadcast(bc.lastInsertRowid, true),
@@ -1271,6 +1346,92 @@ async function run() {
     'Player disconnected: Alpha, xuid: 1',
   ].join('\n'));
   assert.deepEqual(inferred.map((event) => event.username), ['Beta']);
+
+  const javaJoin = playerPresence.parsePresenceEvents(
+    '[12:00:00] [Server thread/INFO]: Steve joined the game\n[12:00:01] [Server thread/INFO]: Alex left the game'
+  );
+  assert.equal(javaJoin[0].type, 'join');
+  assert.equal(javaJoin[0].username, 'Steve');
+  assert.equal(javaJoin[1].type, 'leave');
+  assert.equal(javaJoin[1].username, 'Alex');
+  assert.deepEqual(
+    playerPresence.parseListOutput('There are 1 of a max of 20 players online:\nSteve'),
+    ['Steve']
+  );
+
+  const javaEdition = require('../server/services/javaEdition');
+  const javaCatalog = require('../server/services/javaPermissionCatalog');
+  assert.equal(javaEdition.isJava({ kind: 'java' }), true);
+  assert.equal(javaEdition.isJava({ kind: 'bedrock' }), false);
+  assert(javaCatalog.PERMISSIONS.some((item) => item.key === 'servers.create_java'));
+  assert(javaCatalog.PERMISSIONS.every((item) => item.edition === 'java'));
+  const javaProps = javaEdition.runtimeProperties({
+    name: 'JavaWorld',
+    port: 25565,
+    max_players: 20,
+    difficulty: 'easy',
+    gamemode: 'survival',
+    whitelist_mode: 0,
+    server_motd: 'Hello Java',
+  }, {}, { pvp: 1, simulation_distance: '8', op_permission_level: '4' });
+  assert.equal(javaProps['server-port'], '25565');
+  assert.equal(javaProps.motd, 'Hello Java');
+  assert.equal(javaProps.pvp, 'true');
+  assert.equal(javaProps['simulation-distance'], '8');
+  assert.equal(javaProps['white-list'], 'false');
+  assert.ok(!Object.prototype.hasOwnProperty.call(javaProps, 'server-portv6'));
+
+  const javaRuntime = require('../server/services/javaRuntime');
+  assert.equal(javaRuntime.parseJavaMajor('openjdk version "17.0.12" 2024-07-16'), 17);
+  assert.equal(javaRuntime.parseJavaMajor('openjdk version "25.0.1" 2025-10-21'), 25);
+  assert.equal(javaRuntime.parseJavaMajor('java version "1.8.0_402"'), 8);
+  assert.equal(javaRuntime.componentForMajor(25), 'java-runtime-epsilon');
+  assert.equal(javaRuntime.componentForMajor(21), 'java-runtime-delta');
+  assert.equal(javaRuntime.componentForMajor(17), 'java-runtime-gamma');
+  if (process.platform === 'win32' && process.arch === 'x64') {
+    assert.equal(javaRuntime.mojangPlatformKey(), 'windows-x64');
+  }
+
+  const prevStub = process.env.ALLOW_STUB_SERVER;
+  process.env.ALLOW_STUB_SERVER = '1';
+  const javaCreated = await serverManager.createServer({
+    kind: 'java',
+    name: `java-${suffix}`,
+    port: 25600,
+    version: 'latest',
+    maxPlayers: 12,
+    acceptEula: true,
+    description: 'Java smoke',
+  });
+  assert.equal(javaCreated.kind, 'java');
+  assert.equal(javaCreated.status, 'creating');
+  const javaJob = serverManager.provisionJobs.get(Number(javaCreated.id));
+  if (javaJob) await javaJob;
+  const storedJava = serverManager.getServer(javaCreated.id);
+  assert.equal(storedJava.kind, 'java');
+  assert.equal(storedJava.loader_provider_id, 'vanilla');
+  assert.equal(storedJava.status, 'stopped');
+  assert.equal(Number(storedJava.max_players), 12);
+  assert.equal(storedJava.pvp, 1);
+  const javaFiles = fs.readdirSync(storedJava.data_path);
+  assert(javaFiles.includes('server.jar') || javaFiles.includes('eula.txt'));
+  assert(fs.existsSync(path.join(storedJava.data_path, 'eula.txt')));
+  assert.match(fs.readFileSync(path.join(storedJava.data_path, 'eula.txt'), 'utf8'), /eula=true/);
+  await assert.rejects(
+    () => serverManager.setLanBroadcast(javaCreated.id, true),
+    /do not use the Bedrock console LAN proxy/
+  );
+  await assert.rejects(
+    () => serverManager.createServer({
+      kind: 'java',
+      name: `java-eula-${suffix}`,
+      port: 25601,
+      acceptEula: false,
+    }),
+    /EULA/
+  );
+  if (prevStub == null) delete process.env.ALLOW_STUB_SERVER;
+  else process.env.ALLOW_STUB_SERVER = prevStub;
 
   const created = serverManager.ensurePlayer('SmokeNewPlayer');
   assert.equal(created.created, true);
@@ -1522,7 +1683,7 @@ async function run() {
     db.prepare(`
       INSERT INTO servers (name, version, port, data_path, kind, remote_host, remote_ipv4_port)
       VALUES (?, 'N/A', ?, ?, 'remote', '127.0.0.1', 19132)
-    `).run(`remote-cap-${suffix}-${i}`, 25580 + i, capPath);
+    `).run(`remote-cap-${suffix}-${i}`, 25680 + i, capPath);
   }
   await assert.rejects(
     () => serverManager.createServer({
@@ -1535,21 +1696,25 @@ async function run() {
     /At most 10 remote servers/
   );
 
+  await runBedrockConnectLifecycleTests({ testRoot, db, serverManager });
+
   console.log(JSON.stringify({
     databaseMigration: 'ok',
     udpPortDetection: 'ok',
     playerAccessFiles: 'ok',
     playerPresence: 'ok',
+    javaHosting: 'ok',
     packInstall: 'ok',
     dnsProxy: 'ok',
     bedrockConnectList: 'ok',
+    bedrockConnectLifecycle: 'ok',
     curseforgeUrlImport: 'ok',
     remoteGateway: 'ok',
     mcpedlUrlImport: 'ok',
     windowsPlatformAdapter: 'ok',
     pluginHost: 'ok',
     userManagement: 'ok',
-    curseforgeProjects: catalog.results.map(item => item.name),
+    javaProviders: 'ok',    curseforgeProjects: catalog.results.map(item => item.name),
     gitCatalogMods: gitMods.map(item => item.slug),
   }, null, 2));
 }

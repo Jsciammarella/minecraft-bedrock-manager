@@ -72,6 +72,9 @@ class CurseForgeClient {
 
     if (query) params.searchFilter = query;
     await this.applyCategoryFilter(params, options.category);
+    const versions = Array.isArray(options.minecraftVersions) ? options.minecraftVersions.filter(Boolean) : [];
+    if (versions.length === 1) params.gameVersion = versions[0];
+    else if (options.version) params.gameVersion = options.version;
 
     const headers = { 'X-API-Key': this.apiKey };
     const response = await axios.get(`${CURSEFORGE_API}/v1/mods/search`, { params, headers, timeout: 10000 });

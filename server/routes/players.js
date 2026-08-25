@@ -28,6 +28,7 @@ router.get('/whitelisted', async (req, res) => {
 // Get players for a specific server
 router.get('/server/:serverId', async (req, res) => {
   try {
+    require('../services/javaHostingPolicy').assertServerVisible(serverManager.getServer(req.params.serverId));
     const online = await serverManager.getOnlinePlayers(req.params.serverId, { refresh: false });
     const players = serverManager.getPlayerAccess(req.params.serverId);
     res.json({
@@ -37,7 +38,7 @@ router.get('/server/:serverId', async (req, res) => {
       banned: players.filter(player => player.is_banned === 1),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 });
 

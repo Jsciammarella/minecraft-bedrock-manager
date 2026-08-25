@@ -2,10 +2,62 @@
 
 Plugins add **their own left-hand menu items and pages**. They cannot change how
 core screens look or behave: Dashboard, server details, New Server, Mod Library,
-Mod Catalog, Players, BedrockConnect, or Ports.
+Mod Catalog, Players, BedrockConnect, or Ports. Geyser is a bundled plugin page,
+not a hard-coded core screen.
+
+Trust is derived from **where the plugin is installed**, not from a field in
+`plugin.json`. Uploaded plugins can never become Java hosting, Java loader,
+gateway, or catalog-source providers by declaring privileged capabilities.
 
 The sidebar scrolls only when core items plus plugin items no longer fit. If
 they fit, there is no extra scrollbar.
+
+## Trust levels
+
+| Source | Trust | What it can do |
+| --- | --- | --- |
+| `server/bundled-plugins/` | `system-provider` | Register server editions, Java loaders, gateways, and catalog sources; use core download, filesystem, Java, and port services |
+| `data/plugins/` (upload) | `ui` (default) | Sandboxed pages only. Optional `backend.js` stays **disabled** until an administrator enables it |
+| Extra/example dirs | `external` | Same UI model as uploads; example backends load so developers can test |
+
+Privileged capabilities (`provider:server-edition`, `provider:java-loader`, `provider:gateway`,
+`provider:catalog-source`, `download:official-sources`, `runtime:java`,
+`filesystem:server-java`, `ports:udp`, …) are rejected for anything outside
+`server/bundled-plugins/`. Unknown capabilities fail plugin load.
+
+Uploaded `backend.js` still runs in the manager Node process if enabled. Treat
+that as trusted code. Isolated workers are a follow-up.
+
+**Minecraft Java Hosting** (`server-edition-java`) is the bundled first-party
+plugin that registers the Java server edition. Java servers cannot be created,
+started, restarted, updated, or given mods, and Geyser/ViaProxy cannot start,
+unless this plugin is installed, enabled, loaded, and registered as healthy.
+Bedrock hosting stays in core and is always available. Vanilla, Fabric, and
+NeoForge loaders, and Java catalog sources, are separate plugins; they do not
+independently enable Java hosting. Existing Java permissions such as
+`servers.create_java` still apply in addition to the plugin gate.
+
+Disabling Minecraft Java Hosting is a coordinated lifecycle operation: the
+Plugins page asks for confirmation, then core stops Geyser/ViaProxy, stops local
+Java servers, removes Bedrock Connect/LAN advertisements, and hides Java and
+Geyser tiles. Server files, worlds, mods, backups, settings, ports, and Geyser
+configuration are preserved. Re-enabling restores visibility without
+automatically restarting anything. Geyser itself is not uninstalled.
+
+First-party Java loaders, Geyser, the CurseForge catalog, the Git catalog, the
+File catalog, and the Modrinth Java catalog live under `server/bundled-plugins/`
+and are documented in [`java-providers.md`](./java-providers.md)
+and [`catalog-providers.md`](./catalog-providers.md). Geyser is opt-in: enabling
+the `gateway-geyser` plugin registers the provider and sidebar entry. Creating a
+Java server does not download Geyser, open a Bedrock UDP port, or start a
+gateway. A gateway must be created and started from the plugin page. The core
+owns ports, downloads, processes, secrets, and audit logging; the plugin owns
+Geyser-specific UI and configuration. Disabling the plugin safely stops running
+Geyser processes, keeps gateway records, and leaves a read-only dashboard tile
+labeled Plugin disabled. Bedrock Connect advertisements are removed until the
+plugin is enabled again. Offline authentication is insecure. Floodgate needs
+extra Java-server setup. No Geyser, ViaProxy, or ViaVersion binaries are shipped
+with the manager.
 
 ## Install
 
@@ -126,11 +178,30 @@ Uploading a plugin requires the platform permission **Upload a plugin**
 
 ## Pages and isolation
 
-Plugin pages are HTML/CSS/JS under `ui/`. The manager opens them in a sandboxed
-iframe so plugin CSS and JavaScript cannot restyle or patch Dashboard, catalog,
-library, or the other core pages.
+Plugin pages are HTML/CSS/JS under `ui/` unless a bundled first-party plugin
+declares `"renderer": "native-settings"`. Sandboxed pages open in an iframe so
+plugin CSS and JavaScript cannot restyle or patch Dashboard, catalog, library,
+or the other core pages.
 
-The manager injects `/api/plugins/sdk.js`, which exposes `window.MBM`:
+Uploaded plugins must keep using sandboxed iframe pages. Only bundled
+first-party plugins may request native settings. Native pages are React
+components owned by the manager. The plugin supplies a validated settings
+descriptor (plain-text sections, field types, and registered action ids) and
+never HTML, JSX, CSS, JavaScript, or secret values.
+
+Native catalog settings routes look like `/plugins/catalog-curseforge/settings`.
+Secrets such as the CurseForge API key, Git token, and SMB password are posted
+to core, stored in existing settings keys, and returned only as
+`{ "configured": true }`.
+
+The manager injects `/api/plugins/sdk.js` and a versioned `/api/plugins/ui.css`
+theme kit for sandboxed iframe pages, which exposes `window.MBM`. Native
+first-party settings pages do not use that iframe kit; they render core React
+components with the same cards, toggles, inputs, and buttons as the rest of the
+application. Named settings actions (`save`, `test-connection`, `sync-now`,
+path tests, and template downloads) run through core with plugin ownership
+checks, CSRF origin checks, rate limits, audit logs, and sanitized errors.
+Secret values never go to the plugin backend or back to the browser.
 
 | Call | Purpose |
 | --- | --- |
@@ -146,9 +217,21 @@ backend. A plugin cannot call another plugin’s API or load another plugin’s 
 
 ## Backend (optional)
 
-`backend.js` may export `register({ id, router, dataDir, logger })`. The router
+`backend.js` may export `register({ id, router, dataDir, logger, services,
+registerJavaLoader, registerGateway, registerCatalogSource,
+unregisterCatalogSource, registerPluginSettings, registerPluginAction })`. The router
 is mounted only at `/api/plugins/<id>/`. It cannot replace `/api/servers` or any
-other core route.
+other core route. `registerCatalogSource`, `unregisterCatalogSource`,
+`registerPluginSettings`, `registerJavaLoader`,
+`registerGateway`, and `registerPluginAction` are only provided to bundled
+plugins. Bundled gateway plugins also receive `services.gateways`, a
+provider-scoped wrapper around core gateway lifecycle. They can manage only
+their own records and cannot read Floodgate private keys or bind ports directly.
+Trusted plugins may attach a resource to a managed Java server and return
+plain-text tags, indicators, and actions. Core validates and renders those
+contributions. Plugins cannot inject HTML, CSS, JavaScript, URLs, or commands.
+Local Geyser gateways augment the existing Java tile; remote targets stay as
+projected dashboard entries.
 
 ```js
 module.exports = {
@@ -163,5 +246,20 @@ module.exports = {
 Private files belong in `data/plugin-data/<id>/` (`dataDir`). Do not write into
 core application folders.
 
-First-party edition features can ship later as folders under
-`server/bundled-plugins/` using the same manifest.
+Catalog-source providers reuse core credential brokers. They never receive raw
+API keys. Enabling or disabling a bundled catalog plugin registers or unregisters
+its source without deleting Mod Library files. Catalog providers declare
+`bedrock` or `java` edition identifiers; the core validates them and renders the
+Mod Catalog edition dropdown. Plugins cannot inject that dropdown’s labels or
+markup. `all` is a core-only option.
+
+Catalog plugins classify file compatibility. The core enforces download policy,
+including blocking Java files marked client-only. Plugins cannot inject catalog
+buttons, colors, or labels. A yellow disabled **Client Side Only** button means
+every inspected Java JAR for that project is client-only. Unknown files are not
+treated as client-only. Uploaded and catalog Java mods are executable code;
+loader compatibility is checked again when installing to a Fabric or NeoForge
+server.
+
+First-party edition features ship as folders under `server/bundled-plugins/`
+using the same manifest.

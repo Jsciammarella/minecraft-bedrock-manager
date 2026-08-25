@@ -24,15 +24,29 @@ export const serverApi = {
   getById: (id) => api.get(`/servers/${id}`),
   create: (data) => api.post('/servers', data, { timeout: 60000 }),
   update: (id, data) => api.put(`/servers/${id}`, data),
-  delete: (id) => api.delete(`/servers/${id}`),
-  start: (id) => api.post(`/servers/${id}/start`),
+  delete: (id, opts = {}) => api.delete(`/servers/${id}`, { params: opts }),
+  start: (id) => api.post(`/servers/${id}/start`, undefined, { timeout: 10 * 60 * 1000 }),
   stop: (id) => api.post(`/servers/${id}/stop`),
-  restart: (id) => api.post(`/servers/${id}/restart`),
+  restart: (id) => api.post(`/servers/${id}/restart`, undefined, { timeout: 10 * 60 * 1000 }),
   restartWithWarning: (id) => api.post(`/servers/${id}/restart-with-warning`),
   cancelWarnedRestart: (id) => api.delete(`/servers/${id}/restart-with-warning`),
   command: (id, cmd) => api.post(`/servers/${id}/command`, { command: cmd }),
   updateVersion: (id, version) => api.post(`/servers/${id}/update`, { version }, { timeout: 120000 }),
   checkUpdates: () => api.get('/servers/check-updates'),
+  javaVersions: () => api.get('/servers/java/versions'),
+  editions: () => api.get('/editions'),
+  javaProviders: () => api.get('/java/providers'),
+  javaProviderVersions: (providerId) => api.get(`/java/providers/${encodeURIComponent(providerId)}/versions`),
+  javaLoaderVersions: (providerId, minecraftVersion) => api.get(`/java/providers/${encodeURIComponent(providerId)}/loader-versions`, { params: { minecraftVersion } }),
+  javaValidate: (providerId, data) => api.post(`/java/providers/${encodeURIComponent(providerId)}/validate`, data),
+  javaMods: (id) => api.get(`/servers/${id}/java/mods`),
+  installJavaMod: (id, modId) => api.post(`/servers/${id}/java/mods`, { modId }),
+  removeJavaMod: (id, installationId) => api.delete(`/servers/${id}/java/mods/${installationId}`),
+  pendingJavaMods: (id) => api.get(`/servers/${id}/java/mods/pending`),
+  resolveJavaDependencies: (id, ids, overrides) => api.post(`/servers/${id}/java/dependencies/resolve`, { ids, overrides }, { timeout: 10 * 60 * 1000 }),
+  reevaluateJavaDependencies: (id) => api.post(`/servers/${id}/java/dependencies/reevaluate`, undefined, { timeout: 10 * 60 * 1000 }),
+  runPluginActionForServer: (id, data) => api.post(`/servers/${id}/plugin-actions`, data, { timeout: 10 * 60 * 1000 }),
+  runPluginAction: (data) => api.post('/plugin-actions', data, { timeout: 10 * 60 * 1000 }),
   previewBedrockConnect: () => api.get('/servers/bedrock-connect/preview'),
   createBedrockConnect: (data) => api.post('/servers/bedrock-connect', data, { timeout: 120000 }),
   bedrockConnectVersions: () => api.get('/servers/bedrock-connect/versions'),
@@ -60,7 +74,12 @@ export const modApi = {
     } else {
       list.forEach((file) => formData.append('files', file));
     }
-    if (metadata) Object.entries(metadata).forEach(([k, v]) => formData.append(k, v));
+    if (metadata) {
+      Object.entries(metadata).forEach(([k, v]) => {
+        if (v == null || v === '') return;
+        formData.append(k, typeof v === 'object' ? JSON.stringify(v) : v);
+      });
+    }
     return api.post('/mods/upload', formData, {
       timeout: 10 * 60 * 1000,
       onUploadProgress: (event) => {
@@ -83,10 +102,42 @@ export const modApi = {
     params: uninstallFromAll ? { uninstallFromAll: '1' } : undefined,
     timeout: 10 * 60 * 1000,
   }),
-  update: (id, { description, thumbnailFile, clearThumbnail }) => {
+  addFiles: (id, files, metadata, onProgress) => {
+    const list = (Array.isArray(files) ? files : [files]).filter(Boolean);
+    const formData = new FormData();
+    list.forEach((file) => formData.append('files', file));
+    if (metadata) {
+      Object.entries(metadata).forEach(([k, v]) => {
+        if (v == null || v === '') return;
+        formData.append(k, typeof v === 'object' ? JSON.stringify(v) : v);
+      });
+    }
+    return api.post(`/mods/${id}/files`, formData, {
+      timeout: 10 * 60 * 1000,
+      onUploadProgress: (event) => {
+        if (typeof onProgress !== 'function') return;
+        if (!event.total) {
+          onProgress(null);
+          return;
+        }
+        onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      },
+    });
+  },
+  deleteFile: (id, { sha256, name, uninstallFromAll } = {}) => api.delete(`/mods/${id}/files`, {
+    params: {
+      sha256: sha256 || undefined,
+      name: name || undefined,
+      uninstallFromAll: uninstallFromAll ? '1' : undefined,
+    },
+    data: { sha256, name, uninstallFromServers: Boolean(uninstallFromAll) },
+    timeout: 10 * 60 * 1000,
+  }),
+  update: (id, { description, thumbnailFile, clearThumbnail, loader }) => {
     const formData = new FormData();
     if (description != null) formData.append('description', description);
     if (clearThumbnail) formData.append('clearThumbnail', '1');
+    if (loader != null) formData.append('loader', loader);
     if (thumbnailFile) formData.append('thumbnail', thumbnailFile);
     return api.put(`/mods/${id}`, formData);
   },
@@ -100,24 +151,28 @@ export const modApi = {
   }),
   
   catalogSearch: (params) => api.get('/mods/catalog/search', { params, timeout: 90000 }),
-  catalogCategories: () => api.get('/mods/catalog/categories'),
-  catalogDownload: (mod, serverId, files) => api.post(`/mods/catalog/download/${encodeURIComponent(mod.slug)}`, {
+  catalogProviders: () => api.get('/mods/catalog/providers'),
+  catalogFilterAvailability: () => api.get('/mods/catalog/filter-availability'),
+  catalogCategories: (params) => api.get('/mods/catalog/categories', { params }),
+  catalogDownload: (mod, serverId, files, extra = {}) => api.post(`/mods/catalog/download/${encodeURIComponent(mod.slug)}`, {
     source: mod.source || 'curseforge',
+    provider: mod.providerId,
+    edition: mod.edition,
     projectClass: mod.projectClass,
     curseforgeId: mod.curseforgeId,
+    modrinthId: mod.modrinthId || extra.modrinthId,
     fileId: mod.fileId,
     fileKind: mod.fileKind,
     serverId,
     files,
+    loader: extra.loader,
+    gameVersions: extra.gameVersions,
   }, { timeout: 10 * 60 * 1000 }),
   setCatalogMultiFileMode: (mode) => api.put('/mods/catalog/multi-file-mode', { mode }),
   catalogDetails: (slug, projectClass, source) => api.get(`/mods/catalog/${encodeURIComponent(slug)}`, {
     params: { projectClass, source },
   }),
-  catalogSettings: () => api.get('/mods/catalog/settings'),
-  saveCatalogSettings: (data) => api.put('/mods/catalog/settings', data),
-  testGitCatalog: (data) => api.post('/mods/catalog/git/test', data, { timeout: 45000 }),
-  testFileCatalog: (data) => api.post('/mods/catalog/file/test', data, { timeout: 45000 }),
+  catalogMultiFileMode: () => api.get('/mods/catalog/multi-file-mode'),
   gitCatalogSyncStatus: () => api.get('/mods/catalog/git/status'),
   syncGitCatalog: () => api.post('/mods/catalog/git/sync'),
 };
@@ -153,11 +208,42 @@ export const bedrockConnectApi = {
 
 // ========== PUBLIC API ==========
 
+export const gatewayApi = {
+  providers: () => api.get('/gateway-providers'),
+  list: () => api.get('/gateways'),
+  create: (data) => api.post('/gateways', data, { timeout: 10 * 60 * 1000 }),
+  get: (id) => api.get(`/gateways/${id}`),
+  update: (id, data) => api.patch(`/gateways/${id}`, data),
+  remove: (id) => api.delete(`/gateways/${id}`),
+  start: (id) => api.post(`/gateways/${id}/start`, undefined, { timeout: 10 * 60 * 1000 }),
+  stop: (id) => api.post(`/gateways/${id}/stop`),
+  restart: (id) => api.post(`/gateways/${id}/restart`, undefined, { timeout: 10 * 60 * 1000 }),
+  logs: (id) => api.get(`/gateways/${id}/logs`),
+};
+
+export const dashboardApi = {
+  list: () => api.get('/dashboard'),
+  gateways: () => api.get('/dashboard/gateways'),
+  gateway: (id) => api.get(`/dashboard/gateways/${encodeURIComponent(id)}`),
+};
+
 export const pluginApi = {
   list: () => api.get('/plugins'),
   meta: (id) => api.get(`/plugins/${encodeURIComponent(id)}/meta`),
-  setEnabled: (id, enabled) => api.put(`/plugins/${encodeURIComponent(id)}/enabled`, { enabled }),
+  setEnabled: (id, enabled, extra = {}) => api.put(
+    `/plugins/${encodeURIComponent(id)}/enabled`,
+    { enabled, ...extra },
+    enabled === false ? { timeout: 10 * 60 * 1000 } : undefined,
+  ),
+  disableImpact: (id) => api.get(`/plugins/${encodeURIComponent(id)}/disable-impact`),
+  setBackendEnabled: (id, enabled) => api.put(`/plugins/${encodeURIComponent(id)}/backend-enabled`, { enabled }),
   upload: (formData) => api.post('/plugins/upload', formData, { timeout: 120000 }),
+  settings: (id) => api.get(`/plugins/${encodeURIComponent(id)}/settings`),
+  settingsAction: (id, actionId, data) => api.post(
+    `/plugins/${encodeURIComponent(id)}/settings/actions/${encodeURIComponent(actionId)}`,
+    data,
+    { timeout: 120000 },
+  ),
 };
 
 export const publicApi = {

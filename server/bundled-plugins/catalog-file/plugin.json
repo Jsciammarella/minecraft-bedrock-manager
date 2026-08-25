@@ -1,0 +1,34 @@
+{
+  "id": "catalog-file",
+  "name": "File Catalog",
+  "version": "1.0.0",
+  "author": "Minecraft Bedrock Manager",
+  "description": "Adds a local folder, SMB share, or NFS mount of Bedrock and Java packs to the Mod Catalog.",
+  "pages": [
+    {
+      "id": "settings",
+      "title": "File Catalog",
+      "renderer": "native-settings"
+    }
+  ],
+  "menu": {
+    "label": "File Catalog",
+    "icon": "folder",
+    "order": 42,
+    "page": "settings"
+  },
+  "backend": "backend.js",
+  "capabilities": [
+    "provider:catalog-source",
+    "catalog:metadata",
+    "download:catalog-sources"
+  ],
+  "providers": [
+    {
+      "type": "catalog-source",
+      "id": "file",
+      "name": "File Catalog",
+      "editions": ["bedrock", "java"]
+    }
+  ]
+}

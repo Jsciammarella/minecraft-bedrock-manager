@@ -9,7 +9,7 @@ const connectHost = require('../services/connectHost');
 // Get overview of all servers
 router.get('/overview', async (req, res) => {
   try {
-    const servers = serverManager.getAllServers();
+    const servers = require('../services/javaHostingPolicy').filterVisibleServers(serverManager.getAllServers());
     const result = [];
     
     for (const server of servers) {
@@ -52,8 +52,7 @@ router.get('/overview', async (req, res) => {
 // Get single server status
 router.get('/server/:id', async (req, res) => {
   try {
-    const server = serverManager.getServer(req.params.id);
-    if (!server) return res.status(404).json({ error: 'Server not found' });
+    const server = require('../services/javaHostingPolicy').assertServerVisible(serverManager.getServer(req.params.id));
     
     const stats = await serverManager.getServerStats(req.params.id);
     const players = await serverManager.getOnlinePlayers(req.params.id);
@@ -78,7 +77,7 @@ router.get('/server/:id', async (req, res) => {
       startedAt: server.started_at,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 });
 

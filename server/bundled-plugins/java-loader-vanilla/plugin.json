@@ -1,0 +1,30 @@
+{
+  "id": "java-loader-vanilla",
+  "name": "Vanilla Java Loader",
+  "version": "1.0.0",
+  "author": "Minecraft Bedrock Manager",
+  "description": "Installs official Mojang vanilla dedicated servers on demand.",
+  "pages": [],
+  "menus": [],
+  "backend": "backend.js",
+  "capabilities": [
+    "provider:java-loader",
+    "download:official-sources",
+    "filesystem:server-java",
+    "runtime:java"
+  ],
+  "downloadHosts": [
+    "piston-meta.mojang.com",
+    "piston-data.mojang.com",
+    "launcher.mojang.com",
+    "launchermeta.mojang.com"
+  ],
+  "providers": [
+    {
+      "type": "java-loader",
+      "id": "vanilla",
+      "name": "Vanilla",
+      "edition": "java"
+    }
+  ]
+}

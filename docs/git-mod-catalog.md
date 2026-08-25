@@ -8,7 +8,7 @@ Use any Git host that speaks HTTPS or SSH. GitLab is the primary target; GitHub,
 
 1. Create the Git project (public or private).
 2. Commit packs using the layout below.
-3. In the manager, open **Mod Catalog** and click the settings gear.
+3. In the manager, open **Git Catalog** in the plugin sidebar.
 4. Enable **Git catalog** and paste the clone URL, branch, and an access token. **Sync Now** stays disabled until the catalog is enabled and a token has been saved.
 5. Use **Test Connection**, then **Save Settings**. Save returns immediately. If Git is enabled and a token is saved, a background sync starts (the **Sync Now** button and catalog refresh icon spin until it finishes). Wait for that spinner before downloading packs.
 
@@ -28,7 +28,7 @@ The host running the manager needs a `git` binary. The production Docker image i
 ## GitLab setup
 
 1. Create a project, for example `bedrock-mod-catalog`.
-2. Use `main` as the default branch, or set the branch name in Catalog Settings.
+2. Use `main` as the default branch, or set the branch name in Git Catalog plugin settings.
 3. For a **private** project, create a token that can **download repository code**:
    - Personal access token with `read_repository` checked
    - Project access token with the Guest (or higher) role and `read_repository`
@@ -36,7 +36,7 @@ The host running the manager needs a `git` binary. The production Docker image i
    - Do **not** use a token that only has `read_user`. GitLab will accept that token for login, then reject the clone with "You are not allowed to download code."
 4. Paste the HTTPS clone URL, such as `https://gitlab.example.com/group/bedrock-mod-catalog.git`.
 5. Username may be left blank. The manager authenticates as `oauth2` with the token, which GitLab accepts. You can also set username to your GitLab username.
-6. Paste the token in Catalog Settings. Do not commit it or send it in chat.
+6. Paste the token in Git Catalog plugin settings. Do not commit it or send it in chat.
 
 SSH URLs such as `git@gitlab.example.com:group/bedrock-mod-catalog.git` are converted to HTTPS when a token is provided. Passwordless SSH keys inside the manager container are not required.
 
@@ -131,6 +131,7 @@ Each pack folder may include `mod.json` (or `addon.json`):
   "name": "Example Addon",
   "slug": "example-addon",
   "type": "addon",
+  "edition": "bedrock",
   "version": "1.2.0",
   "description": "Adds extra survival tools for Bedrock servers.",
   "author": "Your Team",
@@ -138,6 +139,21 @@ Each pack folder may include `mod.json` (or `addon.json`):
   "file": "example-addon.mcaddon"
 }
 ```
+
+Java mods use `"edition": "java"` and a launcher (`loader` or `launcher`):
+
+```json
+{
+  "name": "Example Fabric Mod",
+  "slug": "example-fabric-mod",
+  "type": "mod",
+  "edition": "java",
+  "loader": "fabric",
+  "file": "example-fabric-mod.jar"
+}
+```
+
+`edition` is `bedrock` or `java` (default `bedrock`). `loader` is `vanilla`, `fabric`, `neoforge`, or `any`. Java entries without a loader are stored as `unknown` until you pick a launcher in the catalog download dialog.
 
 `file` may be a single filename or an array of archives. A string keeps the previous catalog format. An array stores every listed pack as one library mod, the same way a CurseForge project with both a `.mcworld` and a `.mcpack` is saved:
 
@@ -162,6 +178,8 @@ The Mod Catalog search box, category dropdown, sort dropdown, and source dropdow
 | `slug` | Recommended | Stable id used when downloading. Use lowercase kebab-case. |
 | `type` | Recommended | `addon`, `texture_pack`, `world`, or `skin`. |
 | `file` | Recommended | Pack path as a string, or an array of pack paths for a multi-file library entry. |
+| `edition` | Optional | `bedrock` or `java`. Defaults to `bedrock`. |
+| `loader` | Optional | Java launcher: `vanilla`, `fabric`, `neoforge`, or `any`. `launcher` is accepted as an alias. |
 | `description` | Optional | Shown on the catalog card and matched by search. |
 | `author` | Optional | Shown on the card and matched by search. |
 | `categories` | Optional | Matched by the category filter. |

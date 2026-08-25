@@ -14,12 +14,23 @@ function parseExtraFiles(raw) {
 }
 
 function serializeExtraFiles(files = []) {
-  return JSON.stringify((files || []).map((item) => ({
-    path: item.path,
-    name: item.name || path.basename(item.path),
-    kind: item.kind || packFiles.typeFromExt(item.path),
-    size: Number(item.size) || 0,
-  })));
+  return JSON.stringify((files || []).map((item) => {
+    const record = {
+      path: item.path,
+      name: item.name || path.basename(item.path),
+      kind: item.kind || packFiles.typeFromExt(item.path),
+      size: Number(item.size) || 0,
+    };
+    if (item.sha256) record.sha256 = item.sha256;
+    if (item.loader) record.loader = item.loader;
+    if (Array.isArray(item.minecraftVersions) && item.minecraftVersions.length) {
+      record.minecraftVersions = item.minecraftVersions;
+    }
+    if (item.environment) record.environment = item.environment;
+    if (item.curseforgeFileId || item.fileId) record.curseforgeFileId = item.curseforgeFileId || item.fileId;
+    if (item.version) record.version = item.version;
+    return record;
+  }));
 }
 
 function archiveList(mod) {

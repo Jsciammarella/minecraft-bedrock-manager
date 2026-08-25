@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const pluginHost = require('../services/pluginHost');
-const { requireAdmin, requirePermission } = require('../middleware/auth');
+const { requireAdmin, requirePermission, assertPermission } = require('../middleware/auth');
 
 const router = require('express').Router();
 const sdkPath = path.join(__dirname, '../static/plugin-sdk.js');
@@ -33,13 +33,91 @@ router.get('/', (req, res) => {
   sendPluginState(res);
 });
 
-router.get('/sdk.js', (req, res) => {
-  res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+function setPluginAssetHeaders(res) {
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'no-cache');
+}
+
+router.get('/sdk.js', (req, res) => {
+  setPluginAssetHeaders(res);
+  res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
   res.sendFile(sdkPath);
 });
 
+router.get('/ui.css', (req, res) => {
+  setPluginAssetHeaders(res);
+  res.setHeader('Content-Type', 'text/css; charset=utf-8');
+  res.sendFile(path.join(__dirname, '../static/plugin-ui.css'));
+});
+
+function sendSettingsError(res, err) {
+  return res.status(err.status || 400).json({
+    error: err.message,
+    code: err.code,
+  });
+}
+
+router.get('/:pluginId/settings', (req, res) => {
+  const plugin = pluginHost.getPlugin(req.params.pluginId);
+  if (!plugin || !plugin.enabled) return res.status(404).json({ error: 'Plugin not found' });
+  try {
+    const pluginSettings = require('../services/pluginSettings');
+    pluginSettings.assertSameOrigin(req);
+    res.json(pluginSettings.publicPage(plugin.id, { actor: req.user?.username || 'local', user: req.user }));
+  } catch (err) {
+    return sendSettingsError(res, err);
+  }
+});
+
+router.post('/:pluginId/settings/actions/:actionId', async (req, res) => {
+  const plugin = pluginHost.getPlugin(req.params.pluginId);
+  if (!plugin || !plugin.enabled) return res.status(404).json({ error: 'Plugin not found' });
+  try {
+    const pluginSettings = require('../services/pluginSettings');
+    pluginSettings.assertSameOrigin(req);
+    const result = await pluginSettings.invokeAction(
+      plugin.id,
+      req.params.actionId,
+      req.body || {},
+      { actor: req.user?.username || 'local', user: req.user }
+    );
+    if (result && result.download && Buffer.isBuffer(result.buffer)) {
+      const filename = String(result.filename || 'download.bin').replace(/[^a-zA-Z0-9._-]/g, '_');
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      return res.send(result.buffer);
+    }
+    res.json(result);
+  } catch (err) {
+    return sendSettingsError(res, err);
+  }
+});
+
+router.get('/:pluginId/settings/download/:actionId', async (req, res) => {
+  const plugin = pluginHost.getPlugin(req.params.pluginId);
+  if (!plugin || !plugin.enabled) return res.status(404).json({ error: 'Plugin not found' });
+  try {
+    const result = await require('../services/pluginSettings').invokeAction(
+      plugin.id,
+      req.params.actionId,
+      {},
+      { actor: req.user?.username || 'local', user: req.user }
+    );
+    if (!result || !result.download || !Buffer.isBuffer(result.buffer)) {
+      return res.status(400).json({ error: 'That action does not provide a download' });
+    }
+    const filename = String(result.filename || 'download.bin').replace(/[^a-zA-Z0-9._-]/g, '_');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.send(result.buffer);
+  } catch (err) {
+    return sendSettingsError(res, err);
+  }
+});
+
 router.post('/upload', requirePermission('plugins.upload'), (req, res) => {
+
   upload.fields([
     { name: 'archive', maxCount: 1 },
     { name: 'files', maxCount: 400 },
@@ -60,18 +138,50 @@ router.post('/upload', requirePermission('plugins.upload'), (req, res) => {
   });
 });
 
-router.put('/:pluginId/enabled', requireAdmin, (req, res) => {
+router.put('/:pluginId/backend-enabled', requireAdmin, (req, res) => {
+  const value = req.body?.enabled ?? req.body?.backendEnabled;
+  let enabled;
+  if (value === true || value === 'true' || value === 1 || value === '1') enabled = true;
+  else if (value === false || value === 'false' || value === 0 || value === '0') enabled = false;
+  else return res.status(400).json({ error: 'enabled must be true or false' });
+  try {
+    const plugin = pluginHost.setPluginBackendEnabled(req.params.pluginId, enabled);
+    sendPluginState(res, { plugin });
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+router.put('/:pluginId/enabled', requireAdmin, async (req, res) => {
+
   const value = req.body?.enabled;
   let enabled;
   if (value === true || value === 'true' || value === 1 || value === '1') enabled = true;
   else if (value === false || value === 'false' || value === 0 || value === '0') enabled = false;
   else return res.status(400).json({ error: 'enabled must be true or false' });
   try {
-    const plugin = pluginHost.setPluginEnabled(req.params.pluginId, enabled);
+    const confirm = req.body?.confirm === true || req.body?.confirm === 'true' || req.body?.confirm === 1 || req.body?.confirm === '1';
+    const plugin = await pluginHost.setPluginEnabled(req.params.pluginId, enabled, { confirm });
     sendPluginState(res, { plugin });
   } catch (err) {
-    return res.status(err.status || 400).json({ error: err.message });
+    return res.status(err.status || 400).json({
+      error: err.message,
+      code: err.code,
+      message: err.message,
+      impact: err.impact,
+      failures: err.failures,
+    });
   }
+});
+
+router.get('/:pluginId/disable-impact', (req, res) => {
+  const plugin = pluginHost.getPlugin(req.params.pluginId);
+  if (!plugin) return res.status(404).json({ error: 'Plugin not found' });
+  if (!(plugin.capabilities || []).includes('provider:server-edition')) {
+    return res.json({ required: false, pluginId: plugin.id });
+  }
+  const impact = require('../services/javaHostingPolicy').disableImpact();
+  res.json({ required: true, ...impact });
 });
 
 router.get('/:pluginId/meta', (req, res) => {
@@ -85,26 +195,49 @@ router.get('/:pluginId/meta', (req, res) => {
 router.use('/:pluginId/ui', (req, res, next) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next();
   const plugin = pluginHost.getPlugin(req.params.pluginId);
-  const rel = String(req.path || '/').replace(/^\/+/, '');
+  const prefix = `/${req.params.pluginId}/ui`;
+  let rel = String(req.path || '/');
+  if (rel.startsWith(prefix)) rel = rel.slice(prefix.length);
+  rel = rel.replace(/^\/+/, '') || 'index.html';
   const file = pluginHost.resolveUiFile(plugin, rel);
   if (!file) {
     return res.status(404).json({ error: 'Plugin page not found' });
   }
+  setPluginAssetHeaders(res);
   res.setHeader('Content-Type', file.mime);
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
   if (file.ext === '.html' || file.ext === '.htm') {
     const html = fs.readFileSync(file.filePath, 'utf8');
-    return res.send(pluginHost.injectHtmlSdk(html));
+    return res.send(pluginHost.injectHtmlSdk(html, plugin));
   }
   return res.sendFile(file.filePath);
 });
 
+function gatewayPermissionsFor(req) {
+  const routePath = String(req.url || '').split('?')[0];
+  if (req.method === 'GET') {
+    if (/\/logs$/.test(routePath)) return ['servers.console'];
+    if (/\/floodgate\/key$/.test(routePath)) return ['servers.change_server_options'];
+    return ['servers.view_details'];
+  }
+  if (req.method === 'DELETE') return ['servers.delete'];
+  if (/\/start$/.test(routePath)) return ['servers.start'];
+  if (/\/stop$/.test(routePath)) return ['servers.stop'];
+  if (/\/restart$/.test(routePath)) return ['servers.start', 'servers.stop'];
+  if (req.method === 'POST' && /^\/gateways\/?$/.test(routePath)) return ['servers.create'];
+  return ['servers.change_server_options'];
+}
 router.use('/:pluginId', (req, res, next) => {
   const plugin = pluginHost.getPlugin(req.params.pluginId);
   if (!plugin || !plugin.enabled || !plugin.router) {
     return res.status(404).json({ error: 'Plugin API not found' });
+  }
+  if (plugin.id === 'gateway-geyser') {
+    try {
+      for (const key of gatewayPermissionsFor(req)) assertPermission(req, key);
+    } catch (err) {
+      return res.status(err.status || 403).json({ error: err.message });
+    }
   }
   return plugin.router(req, res, next);
 });

@@ -1,9 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { serverApi, modApi, playerApi } from '../services/api';
+import GatewayDetail from './GatewayDetail';
 import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
 import { startPermissionForKind, stopPermissionForKind, useAuth } from '../context/AuthContext';
+
+import { isModCompatibleWithServer, loaderDisplayName, missingModDependenciesOf, serverLoaderId } from '../utils/modCompatibility';
+import { PluginDetailSummary, runPluginAction } from '../components/PluginAugmentations';
+
 import {
   ArrowLeft, Play, Square, RotateCcw, Terminal, Send, Users,
   Settings, ArrowUpRight, Clock, Package, ChevronDown, ChevronUp,
@@ -64,6 +69,14 @@ function PlayerCombobox({ value, onChange, options, disabled, placeholder, onEnt
 
 function ServerDetail() {
   const { id } = useParams();
+  if (String(id || '').startsWith('gateway:')) {
+    return <GatewayDetail />;
+  }
+  return <ManagedServerDetail />;
+}
+
+function ManagedServerDetail() {
+  const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
   const { refresh, servers } = useApi();
@@ -104,6 +117,13 @@ function ServerDetail() {
   const [lanMessage, setLanMessage] = useState('');
   const [lanConflict, setLanConflict] = useState(null);
   const [lanRestartMode, setLanRestartMode] = useState('immediate');
+  const [selectedDepIds, setSelectedDepIds] = useState([]);
+  const [resolvingDeps, setResolvingDeps] = useState(false);
+  const [depMessage, setDepMessage] = useState('');
+  const [depOverrides, setDepOverrides] = useState({});
+  const [depMismatches, setDepMismatches] = useState({});
+  const [reevaluatingDeps, setReevaluatingDeps] = useState(false);
+  const depsRef = useRef(null);
   const terminalRef = useRef(null);
   const terminalOutput = (serverOutputs[String(id)] || []).slice(-200);
 
@@ -130,6 +150,28 @@ function ServerDetail() {
     window.addEventListener('server-status-change', handleStatusChange);
     return () => window.removeEventListener('server-status-change', handleStatusChange);
   }, [id]);
+
+  const missingDepKey = (missingModDependenciesOf(server)?.required || [])
+    .concat(missingModDependenciesOf(server)?.optional || [])
+    .map((item) => item.id)
+    .join(',');
+
+  useEffect(() => {
+    const required = missingModDependenciesOf(server)?.required || [];
+    setSelectedDepIds(required.map((item) => item.id));
+    setDepMessage(missingModDependenciesOf(server)?.message || '');
+  }, [id, missingDepKey]);
+
+  useEffect(() => {
+    setDepMismatches({});
+    setDepOverrides({});
+  }, [id]);
+
+  useEffect(() => {
+    if (location.hash === '#dependencies' && depsRef.current) {
+      depsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [location.hash, missingDepKey]);
 
   // Auto-scroll terminal
   useEffect(() => {
@@ -254,8 +296,8 @@ function ServerDetail() {
 
   const beginLanToggle = async () => {
     const lan = server?.stats?.lan || server?.lan || {};
-    if (server?.kind === 'bedrock_connect' || lan.native || server?.status === 'creating') return;
-    if (servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting'))) return;
+    if (server?.kind === 'bedrock_connect' || server?.kind === 'java' || lan.native || server?.status === 'creating') return;
+    if (servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting' || item.status === 'stopping'))) return;
     setLanError('');
     setLanMessage('');
     if (lan.enabled) {
@@ -283,6 +325,21 @@ function ServerDetail() {
     }
   };
 
+  const handlePluginAction = async (action) => {
+    const key = `${id}-${action.pluginId}-${action.id}`;
+    setActions((prev) => ({ ...prev, [key]: true }));
+    setError('');
+    try {
+      await runPluginAction({ server, action });
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Plugin action failed');
+    } finally {
+      setActions((prev) => ({ ...prev, [key]: false }));
+      refresh();
+      await loadServer();
+    }
+  };
+
   const handleAction = async (action) => {
     setActions(prev => ({ ...prev, [action]: true }));
     setError('');
@@ -307,6 +364,49 @@ function ServerDetail() {
       setError(err.response?.data?.error || err.message || `Failed to ${action} server`);
     } finally {
       setActions(prev => ({ ...prev, [action]: false }));
+    }
+  };
+
+  const handleResolveDependencies = async () => {
+    if (resolvingDeps) return;
+    setResolvingDeps(true);
+    setDepMessage('');
+    setError('');
+    try {
+      const res = await serverApi.resolveJavaDependencies(id, selectedDepIds, depOverrides);
+      const mismatches = {};
+      for (const item of res.data?.results || []) {
+        if (item.status === 'mismatch' && item.files?.length) {
+          mismatches[item.id] = item;
+        }
+      }
+      setDepMismatches(mismatches);
+      setDepMessage(res.data?.message || (res.data?.unresolved?.length
+        ? `Could not install: ${res.data.unresolved.join(', ')}`
+        : 'Dependencies installed. Start the server again.'));
+      await loadServer();
+      await refresh();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Could not resolve dependencies');
+    } finally {
+      setResolvingDeps(false);
+    }
+  };
+
+  const handleReevaluateDependencies = async () => {
+    if (reevaluatingDeps) return;
+    setReevaluatingDeps(true);
+    setDepMessage('');
+    setError('');
+    try {
+      await serverApi.reevaluateJavaDependencies(id);
+      setDepMessage('Re-evaluating dependencies. The server is starting.');
+      await loadServer();
+      await refresh();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Could not re-evaluate dependencies');
+    } finally {
+      setReevaluatingDeps(false);
     }
   };
 
@@ -356,7 +456,7 @@ function ServerDetail() {
   };
 
   const handleRemoveMod = (mod) => {
-    if (!mod?.id || gameplayLocked || busyModId) return;
+    if (!mod?.id || modsLocked || busyModId) return;
     setRemoveModModal(mod);
   };
 
@@ -396,7 +496,7 @@ function ServerDetail() {
   };
 
   const handleInstallMod = async (mod) => {
-    if (busyModId) return;
+    if (busyModId || server?.kind === 'bedrock_connect' || server?.kind === 'remote') return;
     setBusyModId(mod.id);
     setModMessage(null);
     try {
@@ -431,6 +531,15 @@ function ServerDetail() {
       try {
         const res = await serverApi.bedrockConnectVersions();
         setUpdateVersions((res.data?.stored || []).map(item => item.tag).filter(Boolean));
+      } catch {
+        setUpdateVersions([]);
+      }
+      return;
+    }
+    if (server?.kind === 'java') {
+      try {
+        const res = await serverApi.javaVersions();
+        setUpdateVersions((res.data?.versions || []).filter((id) => id && id !== 'latest'));
       } catch {
         setUpdateVersions([]);
       }
@@ -473,8 +582,12 @@ function ServerDetail() {
         return <span className="badge badge-success"><span className="w-1.5 h-1.5 bg-green-400 rounded-full mr-1.5" />Online</span>;
       case 'starting':
         return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Starting</span>;
+      case 'stopping':
+        return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Stopping</span>;
       case 'stopped':
         return <span className="badge badge-danger"><span className="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5" />Offline</span>;
+      case 'failed':
+        return <span className="badge badge-danger"><span className="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5" />Failed</span>;
       default:
         return <span className="badge badge-info">{status}</span>;
     }
@@ -523,8 +636,17 @@ function ServerDetail() {
     );
   }
 
+  const missingDeps = missingModDependenciesOf(server);
+  const missingDepItems = [
+    ...(missingDeps?.required || []).map((item) => ({ ...item, optional: false })),
+    ...(missingDeps?.optional || []).map((item) => ({ ...item, optional: true })),
+  ];
   const isBC = server.kind === 'bedrock_connect';
   const isRemote = server.kind === 'remote';
+  const isJava = server.kind === 'java';
+  const visibleLibraryMods = libraryMods
+    .filter((mod) => isModCompatibleWithServer(mod, server))
+    .filter((mod) => !librarySearch || mod.name.toLowerCase().includes(librarySearch.toLowerCase()));
   const gameplayLocked = isBC || isRemote;
   const canStart = can(startPermissionForKind(server.kind));
   const canStop = can(stopPermissionForKind(server.kind));
@@ -538,12 +660,15 @@ function ServerDetail() {
   const canPlayerPerms = can('servers.change_player_permissions');
   const canAddMods = can('servers.add_mods');
   const canRemoveMods = can('servers.remove_mods');
+
+  const modsLocked = gameplayLocked;
+
   const isBuilding = server.status === 'creating';
   const createFailed = String(server.pending_restart_reason || '').startsWith('Create failed');
   const lan = server.stats?.lan || server.lan || {};
   const lanOn = Boolean(lan.native || lan.enabled);
-  const bcRunning = servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting'));
-  const lanLocked = isBC || lan.native || bcRunning || isBuilding;
+  const bcRunning = servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting' || item.status === 'stopping'));
+  const lanLocked = isBC || isJava || lan.native || bcRunning || isBuilding;
   const connectLabel = server.connectAddress || `Port ${server.port}`;
   const onlinePlayers = Array.isArray(server.onlinePlayers) ? server.onlinePlayers : [];
 
@@ -560,6 +685,50 @@ function ServerDetail() {
           This is a UDP gateway to another Bedrock host. Start/stop, LAN listing, and local/remote ports can be changed. Console, players, mods, and updates are not available.
         </div>
       )}
+      {isJava && (
+        <div className="mb-4 p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg text-sm text-mc-textMuted">
+          <p>
+            Java {server.minecraftVersion || server.version}
+            {server.loaderProviderId ? ` · ${server.loaderProviderId}` : ''}
+            {server.loaderVersion ? ` ${server.loaderVersion}` : ''}
+            {server.javaMajor ? ` · Java ${server.javaMajor}` : ''}
+          </p>
+          <p className="mt-1">Bedrock addons and the console LAN proxy stay visible but are disabled. Bedrock clients can join through an optional gateway plugin.</p>
+        </div>
+      )}
+      {isJava && (
+        <PluginDetailSummary
+          server={server}
+          pending={actions}
+          onAction={handlePluginAction}
+          onManage={(href) => navigate(href)}
+        />
+      )}
+      {isJava && (server.optionalIntegrations || []).length > 0 && (
+        <div className="mb-4 p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg">
+          <h2 className="text-sm font-semibold text-white mb-2">Optional integrations</h2>
+          <div className="space-y-2">
+            {(server.optionalIntegrations || []).map((item) => (
+              <div key={`${item.id}-${item.href}`} className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm text-white">{item.name}</p>
+                  <p className="text-xs text-mc-textMuted">
+                    {item.summary}
+                    {item.status ? ` · ${item.status}` : ''}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary text-xs"
+                  onClick={() => navigate(item.href)}
+                >
+                  {item.action === 'manage' ? 'Manage' : 'Configure'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {location.state?.message && (
         <div className="mb-4 p-3 bg-green-500/10 border border-green-500/30 rounded-lg flex items-center gap-2 text-sm text-green-400">
           <Check className="w-4 h-4" /> {location.state.message}
@@ -568,6 +737,11 @@ function ServerDetail() {
       {error && (
         <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-2 text-sm text-red-400">
           <AlertCircle className="w-4 h-4" /> {error}
+        </div>
+      )}
+      {isJava && missingDepItems.length > 0 && (
+        <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg flex items-center gap-2 text-sm text-yellow-300">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0" /> There are missing dependencies.
         </div>
       )}
       {lanError && (
@@ -585,7 +759,11 @@ function ServerDetail() {
           <Loader2 className="w-4 h-4 mt-0.5 flex-shrink-0 animate-spin" />
           <div>
             <p className="font-medium">Building Server</p>
-            <p className="text-xs mt-1">Downloading Minecraft Bedrock Dedicated Server. Start and LAN unlock when this finishes.</p>
+            <p className="text-xs mt-1">
+              {isJava
+                ? 'Downloading Minecraft Java Edition server.jar. Start unlocks when this finishes.'
+                : 'Downloading Minecraft Bedrock Dedicated Server. Start and LAN unlock when this finishes.'}
+            </p>
           </div>
         </div>
       )}
@@ -641,6 +819,22 @@ function ServerDetail() {
               {isRemote && (
                 <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30">
                   Remote
+                </span>
+              )}
+              {isJava ? (
+                <>
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    JAVA
+                  </span>
+                  {loaderDisplayName(serverLoaderId(server)) && (
+                    <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                      {loaderDisplayName(serverLoaderId(server))}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                  Bedrock
                 </span>
               )}
               {lan.active && !lan.native && !isBC && (
@@ -733,6 +927,8 @@ function ServerDetail() {
               title={lanLocked
                 ? (isBC
                   ? 'Bedrock Connect is not a LAN game'
+                  : isJava
+                    ? 'Java Edition does not use the Bedrock console LAN proxy'
                   : isBuilding
                     ? 'Wait until this server finishes building'
                     : lan.native
@@ -809,8 +1005,26 @@ function ServerDetail() {
           <button disabled className="btn btn-primary">
             <Loader2 className="w-4 h-4 animate-spin" /> Starting...
           </button>
+        ) : server.status === 'stopping' ? (
+          <button disabled className="btn btn-danger">
+            <Loader2 className="w-4 h-4 animate-spin" /> Stopping...
+          </button>
         ) : server.status !== 'running' ? (
           canStart ? (
+          isJava && missingDepItems.length > 0 ? (
+            <button
+              onClick={() => {
+                depsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                handleResolveDependencies();
+              }}
+              disabled={resolvingDeps}
+              className="btn btn-warning"
+            >
+              {resolvingDeps ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              {resolvingDeps ? 'Resolving...' : 'Resolve dependencies'}
+            </button>
+          ) : (
+
           <button
             onClick={() => handleAction('start')}
             disabled={actions.start}
@@ -819,6 +1033,7 @@ function ServerDetail() {
             <Play className="w-4 h-4" />
             {actions.start ? 'Starting...' : 'Start Server'}
           </button>
+          )
           ) : null
         ) : (
           <>
@@ -939,6 +1154,111 @@ function ServerDetail() {
               </div>
             )}
           </div>
+
+          {isJava && missingDepItems.length > 0 && (
+            <div id="dependencies" ref={depsRef} className="card">
+              <h2 className="font-semibold text-white mb-1">Missing dependencies</h2>
+              <p className="text-sm text-mc-textMuted mb-3">
+                Required mods must be installed before this Java server can start. Optional mods can stay unchecked.
+              </p>
+              {depMessage && (
+                <p className="text-sm text-yellow-300 mb-3">{depMessage}</p>
+              )}
+              {!missingDeps?.catalogAvailable && (
+                <p className="text-sm text-yellow-300 mb-3">
+                  The catalog is unavailable. Download these files into the Mod Library, then install them on this server.
+                </p>
+              )}
+              <div className={`space-y-2 ${missingDepItems.length > 10 ? 'max-h-[22rem] overflow-y-auto pr-1' : ''}`}>
+                {missingDepItems.map((dep) => {
+                  const checked = selectedDepIds.includes(dep.id);
+                  const mismatch = depMismatches[dep.id] || dep.mismatch;
+                  const override = depOverrides[dep.id];
+                  return (
+                    <div key={`${dep.optional ? 'opt' : 'req'}-${dep.id}`} className="p-2 rounded-lg bg-mc-darker space-y-2">
+                      <label className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={checked}
+                          onChange={() => {
+                            setSelectedDepIds((current) => (
+                              current.includes(dep.id)
+                                ? current.filter((item) => item !== dep.id)
+                                : [...current, dep.id]
+                            ));
+                          }}
+                        />
+                        <span>
+                          <span className="text-sm text-white">{dep.displayName || dep.id}</span>
+                          <span className="block text-xs text-mc-textMuted">
+                            {dep.optional ? 'Optional' : 'Required'}
+                            {dep.version && dep.version !== '*' ? ` • ${dep.version}` : ''}
+                          </span>
+                        </span>
+                      </label>
+                      {mismatch?.files?.length > 0 && (
+                        <div className="ml-7 space-y-2">
+                          <p className="text-xs text-yellow-300">
+                            {mismatch.warning || 'No matching version/launcher file was found. Installing one anyway may not work.'}
+                          </p>
+                          <select
+                            className="input text-sm"
+                            value={override?.sha256 || override?.fileId || override?.id || ''}
+                            onChange={(e) => {
+                              const chosen = mismatch.files.find((file) => (
+                                String(file.sha256 || file.fileId || file.id) === e.target.value
+                              ));
+                              setDepOverrides((current) => ({
+                                ...current,
+                                [dep.id]: chosen ? {
+                                  ...chosen,
+                                  source: chosen.source || mismatch.source,
+                                  modId: chosen.modId || mismatch.modId,
+                                  project: chosen.project || mismatch.project,
+                                  fileId: chosen.fileId || chosen.id,
+                                  allowMismatch: true,
+                                } : undefined,
+                              }));
+                            }}
+                          >
+                            <option value="">Select a file to install anyway</option>
+                            {mismatch.files.map((file) => (
+                              <option key={file.sha256 || file.fileId || file.id || file.name} value={file.sha256 || file.fileId || file.id}>
+                                {file.name}
+                                {file.loader ? ` • ${file.loader}` : ''}
+                                {(file.minecraftVersions || []).length ? ` • ${(file.minecraftVersions || []).join(', ')}` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap items-center gap-3 mt-4">
+                <button
+                  type="button"
+                  onClick={handleResolveDependencies}
+                  disabled={resolvingDeps || selectedDepIds.length === 0}
+                  className="btn btn-warning"
+                >
+                  {resolvingDeps ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                  {resolvingDeps ? 'Resolving...' : 'Resolve dependencies'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleReevaluateDependencies}
+                  disabled={reevaluatingDeps || resolvingDeps || server.status === 'creating'}
+                  className="btn btn-secondary"
+                >
+                  {reevaluatingDeps ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
+                  {reevaluatingDeps ? 'Re-evaluating...' : 'Re-evaluate'}
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className={`card ${gameplayLocked ? 'opacity-60' : ''}`}>
             <h2 className="font-semibold text-white flex items-center gap-2 mb-2">
@@ -1106,7 +1426,7 @@ function ServerDetail() {
           </div>
 
           {/* Installed Mods */}
-          <div className={`card ${gameplayLocked ? 'opacity-60' : ''}`}>
+          <div className={`card ${modsLocked ? 'opacity-60' : ''}`}>
             <button
               onClick={() => setShowMods(!showMods)}
               className="w-full flex items-center justify-between"
@@ -1132,8 +1452,9 @@ function ServerDetail() {
                 ) : (
                   server.installedMods.map(mod => {
                     const thumb = modThumbnailSrc(mod);
+                    const overridden = Boolean(mod.compatibilityOverride || mod.compatibility_override);
                     return (
-                    <div key={mod.id} className="flex items-center gap-3 p-2 bg-mc-darker rounded-lg">
+                    <div key={mod.id} className={`flex items-center gap-3 p-2 rounded-lg ${overridden ? 'bg-yellow-500/15 border border-yellow-500/40' : 'bg-mc-darker'}`}>
                       <div className="w-8 h-8 bg-mc-surfaceLight rounded flex items-center justify-center flex-shrink-0 overflow-hidden">
                         {thumb ? (
                           <img src={thumb} alt="" className="mod-thumbnail-img" />
@@ -1143,11 +1464,13 @@ function ServerDetail() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-white truncate">{mod.name}</p>
-                        <p className="text-xs text-mc-textMuted capitalize">{mod.type}</p>
+                        <p className={`text-xs capitalize ${overridden ? 'text-yellow-300' : 'text-mc-textMuted'}`}>
+                          {overridden ? 'Wrong version / launcher' : (mod.type || '').replace('_', ' ')}
+                        </p>
                       </div>
                       <button
                         onClick={() => handleRemoveMod(mod)}
-                        disabled={gameplayLocked || removingModId === mod.id || Boolean(busyModId)}
+                        disabled={modsLocked || removingModId === mod.id || Boolean(busyModId)}
                         className="p-2 text-mc-textMuted hover:text-red-400 hover:bg-red-500/10 rounded transition-colors disabled:opacity-50"
                         title="Remove from this server only"
                         aria-label={`Remove ${mod.name} from this server`}
@@ -1162,7 +1485,7 @@ function ServerDetail() {
                 )}
                 <button
                   onClick={openManageMods}
-                  disabled={gameplayLocked}
+                  disabled={modsLocked}
                   className="w-full btn btn-secondary text-sm mt-2"
                 >
                   Manage Mods
@@ -1188,7 +1511,7 @@ function ServerDetail() {
                   <InfoRow label="Remote IPv6 Port" value={server.remote_ipv6_port || 'N/A'} />
                 </>
               )}
-              <InfoRow label="LAN listing" value={isBC ? 'n/a' : (lan.native ? 'Native (19132)' : (lan.active && lan.enabled) ? 'On' : (lan.enabled && bcRunning) ? 'Paused' : 'Off')} />
+              <InfoRow label="LAN listing" value={isBC || isJava ? 'n/a' : (lan.native ? 'Native (19132)' : (lan.active && lan.enabled) ? 'On' : (lan.enabled && bcRunning) ? 'Paused' : 'Off')} />
               {!isRemote && (
                 <>
                   <InfoRow label="Max Players" value={server.max_players} />
@@ -1211,6 +1534,8 @@ function ServerDetail() {
             <p className="text-sm text-mc-textMuted mb-4">
               {isBC
                 ? 'This will update the Bedrock Connect JAR. Choose Latest or a stored version. Older JARs stay on disk if they drop off this list.'
+                : isJava
+                  ? 'This will download the official Java server.jar for the selected version and keep your world folders.'
                 : 'This will update the server binary while preserving your addons, worlds, and configuration.'}
             </p>
             {updateError && (
@@ -1326,9 +1651,16 @@ function ServerDetail() {
                 </div>
               ) : libraryMods.length === 0 ? (
                 <p className="text-sm text-mc-textMuted text-center py-8">No mods in the library yet.</p>
+              ) : visibleLibraryMods.length === 0 ? (
+                <p className="text-sm text-mc-textMuted text-center py-8">
+                  {librarySearch
+                    ? 'No matching mods for this server.'
+                    : isJava
+                      ? 'No compatible Java mods for this Minecraft version and launcher.'
+                      : 'No compatible Bedrock packs in the library.'}
+                </p>
               ) : (
-                libraryMods
-                  .filter((mod) => !librarySearch || mod.name.toLowerCase().includes(librarySearch.toLowerCase()))
+                visibleLibraryMods
                   .map((mod) => {
                     const installed = Boolean(server.installedMods?.some((row) => row.id === mod.id));
                     const thumb = modThumbnailSrc(mod);
@@ -1365,7 +1697,7 @@ function ServerDetail() {
                           <button
                             type="button"
                             onClick={() => handleRemoveMod(mod)}
-                            disabled={Boolean(busyModId)}
+                            disabled={Boolean(busyModId) || modsLocked}
                             className="btn btn-danger text-xs px-3 py-1.5"
                           >
                             Remove
@@ -1374,7 +1706,7 @@ function ServerDetail() {
                           <button
                             type="button"
                             onClick={() => handleInstallMod(mod)}
-                            disabled={Boolean(busyModId)}
+                            disabled={Boolean(busyModId) || modsLocked}
                             className="btn text-xs px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white"
                           >
                             <Plus className="w-3.5 h-3.5" />

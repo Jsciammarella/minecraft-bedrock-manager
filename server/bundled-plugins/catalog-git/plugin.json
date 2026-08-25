@@ -1,0 +1,34 @@
+{
+  "id": "catalog-git",
+  "name": "Git Catalog",
+  "version": "1.0.0",
+  "author": "Minecraft Bedrock Manager",
+  "description": "Adds a private or public Git repository of Bedrock and Java packs to the Mod Catalog.",
+  "pages": [
+    {
+      "id": "settings",
+      "title": "Git Catalog",
+      "renderer": "native-settings"
+    }
+  ],
+  "menu": {
+    "label": "Git Catalog",
+    "icon": "cloud",
+    "order": 41,
+    "page": "settings"
+  },
+  "backend": "backend.js",
+  "capabilities": [
+    "provider:catalog-source",
+    "catalog:metadata",
+    "download:catalog-sources"
+  ],
+  "providers": [
+    {
+      "type": "catalog-source",
+      "id": "git",
+      "name": "Git Repository",
+      "editions": ["bedrock", "java"]
+    }
+  ]
+}

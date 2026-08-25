@@ -40,7 +40,7 @@ Download the latest `MinecraftBedrockManager-*.exe` from [GitHub Releases](https
 - Create a Bedrock server from the dashboard. The tile shows **Building Server** while the official Linux zip downloads.
 - Use the **Remote** toggle on Create Server to advertise a Bedrock world that already runs on another pingable host.
 - Use **Bedrock Connect** on the dashboard if consoles need a custom server list, then open **BedrockConnect** in the sidebar for DNS instructions.
-- Optional: **Mod Catalog → Settings** for CurseForge, a Git catalog, or a file catalog.
+- Optional: **CurseForge Catalog**, **Git Catalog**, and **File Catalog** plugin pages in the sidebar.
 - Later updates: use `upgrade.sh` below. Never run `docker compose down -v`.
 
 ### Update (keep production data)
@@ -124,7 +124,7 @@ An upgrade or restart should not require recreating a remote. Start it again fro
 
 ### Plugins
 
-Drop-in folders can add their own sidebar items and pages. Open **Plugins** next to the version label at the top of the left-hand menu to upload a folder or zip and to turn plugins on or off. They cannot change Dashboard, server details, catalog, library, players, BedrockConnect, or ports. See [docs/plugins.md](docs/plugins.md) and the [hello-world example](examples/plugins/hello-world).
+Drop-in folders can add their own sidebar items and pages. Open **Plugins** next to the version label at the top of the left-hand menu to upload a folder or zip and to turn plugins on or off. They cannot change Dashboard, server details, catalog, library, players, BedrockConnect, or ports. **Geyser** is a bundled plugin: enable it to add the sidebar entry and management page. Creating a Java server does not download or start Geyser. See [docs/plugins.md](docs/plugins.md), [docs/java-providers.md](docs/java-providers.md), and the [hello-world example](examples/plugins/hello-world).
 
 ### Players and access
 
@@ -134,7 +134,7 @@ Per-server allowlists, operator permissions, and bans. Scan running servers (Bed
 
 Upload `.mcpack`, `.mcaddon`, `.mcworld`, `.mctemplate`, `.mcstructure`, and `.zip` files into the mod library, then install them onto a server. Archives are extracted: behavior/resource packs go into the correct folders and world pack JSON is updated; worlds and templates replace `level-name`; structure files go into the world's `structures/` folder.
 
-**Mod Catalog** can search CurseForge (an API key is recommended), an optional Git repository of packs, and optional local or network folders. Configure those on **Mod Catalog → Settings**. Git URL, branch, token, and Test stay disabled until **Enable Git catalog** is on. **Sync Now** stays disabled until the Git catalog is enabled and an access token has been saved. See [docs/git-mod-catalog.md](docs/git-mod-catalog.md) and [docs/file-mod-catalog.md](docs/file-mod-catalog.md).
+**Mod Catalog** can search CurseForge (an API key is recommended), an optional Git repository of packs, and optional local or network folders. Configure those on the **CurseForge Catalog**, **Git Catalog**, and **File Catalog** plugin pages in the sidebar. Git URL, branch, token, and Test stay disabled until **Enable Git catalog** is on. **Sync Now** stays disabled until the Git catalog is enabled and an access token has been saved. See [docs/git-mod-catalog.md](docs/git-mod-catalog.md) and [docs/file-mod-catalog.md](docs/file-mod-catalog.md).
 
 ### Ports
 
@@ -195,9 +195,9 @@ Each server detail page has a live console capped at the last **200** lines, plu
 | `LOG_LEVEL` | `info` | Application logging level |
 | `TZ` | unset | Leave unset to follow the host timezone (`/etc/localtime`). Set only to override |
 | `AUTO_UPDATE_CHECK_INTERVAL` | `86400` | Update-check interval in seconds |
-| `CURSEFORGE_API_KEY` | empty | Optional; can also be set in Catalog Settings |
-| `GIT_CATALOG_*` | empty | Optional Git catalog; preferred configuration is **Mod Catalog → Settings** |
-| `FILE_CATALOG_*` | empty | Optional file catalog (local / SMB / NFS); preferred configuration is **Mod Catalog → Settings** |
+| `CURSEFORGE_API_KEY` | empty | Optional; can also be set in CurseForge Catalog plugin settings |
+| `GIT_CATALOG_*` | empty | Optional Git catalog; preferred configuration is **Git Catalog** plugin settings |
+| `FILE_CATALOG_*` | empty | Optional file catalog (local / SMB / NFS); preferred configuration is **File Catalog** plugin settings |
 
 Never commit `.env`. Values saved in the UI override these environment variables.
 

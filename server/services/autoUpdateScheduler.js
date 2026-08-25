@@ -139,6 +139,47 @@ class AutoUpdateScheduler {
             continue;
           }
 
+          if (server.kind === 'java') {
+            if (!require('./javaHostingPolicy').isJavaHostingAvailable()) {
+              skipped++;
+              this.updateLastCheck(server.id);
+              continue;
+            }
+            const javaEdition = require('./javaEdition');
+            let latestJava = server.version;
+            try {
+              const listed = await javaEdition.listReleaseVersions();
+              latestJava = listed.latest || latestJava;
+            } catch (err) {
+              logger.warn(`Java version check failed: ${err.message}`);
+            }
+            if (server.version === latestJava) {
+              logger.info(`Java server ${server.name} already on ${server.version}`);
+              skipped++;
+              this.updateLastCheck(server.id);
+              continue;
+            }
+            if (server.status === 'running' || server.status === 'starting') {
+              logger.info(`Java server ${server.name} is running, skipping auto-update`);
+              skipped++;
+              this.updateLastCheck(server.id);
+              continue;
+            }
+            logger.info(`Auto-updating Java server ${server.name} from ${server.version} to ${latestJava}`);
+            await serverManager.updateServer(server.id, latestJava);
+            updated++;
+            this.updateLastCheck(server.id);
+            if (global.io) {
+              global.io.emit('server-updated', {
+                serverId: server.id,
+                name: server.name,
+                fromVersion: server.version,
+                toVersion: latestJava,
+              });
+            }
+            continue;
+          }
+
           // Skip if already on latest version
           if (server.version === latestVersion) {
             logger.info(`Server ${server.name} already on latest version (${server.version})`);
