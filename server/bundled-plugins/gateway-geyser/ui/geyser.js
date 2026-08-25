@@ -76,7 +76,17 @@
   function detailIsDirty(gateway) {
     if (!detailDraft) return false;
     return detailDraft.authentication !== (gateway.authentication || 'online')
-      || detailDraft.advertise !== advertiseValue(gateway);
+      || detailDraft.advertise !== advertiseValue(gateway)
+      || Boolean(detailDraft.confirmOffline)
+      || Boolean(detailDraft.confirmFloodgate)
+      || Boolean(detailDraft.confirmFloodgateInstall)
+      || Boolean(detailDraft.confirmJavaRestart);
+  }
+
+  function syncSaveButton(gateway) {
+    var saveBtn = $('detailSave');
+    if (!saveBtn) return;
+    saveBtn.disabled = busy === String(gateway.id) || !detailIsDirty(gateway);
   }
 
   function applyBanner(el, message, kind) {
@@ -192,6 +202,57 @@
     return servers;
   }
 
+  function askConfirm(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      var existing = $('confirmOverlay');
+      if (existing) existing.remove();
+      var hadModal = document.body.classList.contains('modal-open');
+      document.body.classList.add('modal-open');
+      var overlay = document.createElement('div');
+      overlay.id = 'confirmOverlay';
+      overlay.className = 'overlay confirm-overlay';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-labelledby', 'confirmTitle');
+      var card = document.createElement('div');
+      card.className = 'overlay-card confirm-card';
+      var title = document.createElement('h2');
+      title.id = 'confirmTitle';
+      title.textContent = opts.title || 'Confirm';
+      var message = document.createElement('p');
+      message.textContent = opts.message || '';
+      var actions = document.createElement('div');
+      actions.className = 'form-actions';
+      function finish(value) {
+        overlay.remove();
+        document.removeEventListener('keydown', onKey);
+        if (!hadModal) document.body.classList.remove('modal-open');
+        resolve(value);
+      }
+      function onKey(event) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          finish(false);
+        }
+      }
+      var ok = makeButton(opts.confirmLabel || 'Continue', opts.danger ? 'danger' : '', function () { finish(true); });
+      var cancel = makeButton('Cancel', 'secondary', function () { finish(false); });
+      actions.appendChild(ok);
+      actions.appendChild(cancel);
+      card.appendChild(title);
+      card.appendChild(message);
+      card.appendChild(actions);
+      overlay.appendChild(card);
+      overlay.addEventListener('click', function (event) {
+        if (event.target === overlay) finish(false);
+      });
+      document.addEventListener('keydown', onKey);
+      document.body.appendChild(overlay);
+      ok.focus();
+    });
+  }
+
   function makeButton(label, cls, onClick, glyph) {
     var btn = document.createElement('button');
     btn.type = 'button';
@@ -210,10 +271,10 @@
     var running = isRunning(gateway);
     var disabled = busy === String(gateway.id);
     var startStop = running
-      ? makeButton(busy === String(gateway.id) ? 'Stopping...' : 'Stop', 'danger' + (growStart ? ' grow' : ''), function () { act(gateway.id, 'stop'); }, 'stop')
-      : makeButton(busy === String(gateway.id) ? 'Starting...' : 'Start', (growStart ? 'grow' : ''), function () { act(gateway.id, 'start'); }, 'play');
+      ? makeButton(busy === String(gateway.id) ? 'Stopping...' : 'Stop', 'danger' + (growStart ? ' grow' : ''), function () { confirmAct(gateway, 'stop'); }, 'stop')
+      : makeButton(busy === String(gateway.id) ? 'Starting...' : 'Start', (growStart ? 'grow' : ''), function () { confirmAct(gateway, 'start'); }, 'play');
     startStop.disabled = disabled;
-    var restart = makeButton('Restart', 'outlined', function () { act(gateway.id, 'restart'); }, 'restart');
+    var restart = makeButton('Restart', 'outlined', function () { confirmAct(gateway, 'restart'); }, 'restart');
     restart.disabled = disabled;
     var remove = makeButton('Delete', 'secondary danger', function () { removeGateway(gateway); }, 'trash');
     remove.title = 'Delete gateway';
@@ -376,7 +437,11 @@
     input.type = 'checkbox';
     input.id = id;
     input.checked = Boolean(checked);
-    input.addEventListener('change', readDetailDraft);
+    input.addEventListener('change', function () {
+      readDetailDraft();
+      var gateway = findGateway(selectedId);
+      if (gateway) syncSaveButton(gateway);
+    });
     var span = document.createElement('span');
     span.textContent = text;
     label.appendChild(input);
@@ -403,11 +468,9 @@
     var head = document.createElement('div');
     head.className = 'detail-head';
     var left = document.createElement('div');
+    left.className = 'detail-head-left';
     var titleRow = document.createElement('div');
-    titleRow.style.display = 'flex';
-    titleRow.style.alignItems = 'center';
-    titleRow.style.flexWrap = 'wrap';
-    titleRow.style.gap = '0.5rem';
+    titleRow.className = 'detail-title-row';
     var title = document.createElement('h1');
     title.id = 'detailTitle';
     title.textContent = gateway.name;
@@ -423,10 +486,24 @@
       + (gateway.viaproxyVersion ? ' · ViaProxy ' + gateway.viaproxyVersion : '');
     left.appendChild(titleRow);
     left.appendChild(sub);
+
+    var right = document.createElement('div');
+    right.className = 'detail-head-right';
+    var toolbar = document.createElement('div');
+    toolbar.className = 'detail-toolbar';
+    addLifecycleButtons(toolbar, gateway, false);
+    var save = makeButton(busy === String(gateway.id) ? 'Saving...' : 'Save Changes', '', function () {
+      saveChanges(gateway);
+    }, 'save');
+    save.id = 'detailSave';
+    save.disabled = busy === String(gateway.id) || !detailIsDirty(gateway);
+    toolbar.appendChild(save);
     var close = makeButton('', 'close-btn secondary', closeDetail, 'close');
     close.setAttribute('aria-label', 'Close');
+    right.appendChild(toolbar);
+    right.appendChild(close);
     head.appendChild(left);
-    head.appendChild(close);
+    head.appendChild(right);
     root.appendChild(head);
 
     if (gateway.unresolvedTarget) {
@@ -455,43 +532,37 @@
 
     var fields = document.createElement('div');
     fields.className = 'detail-fields';
-    fields.appendChild(detailField('Bedrock UDP port', String(gateway.bedrock_udp_port || '—')));
-    fields.appendChild(detailField('Java target', targetLabel(gateway)));
-
-    var toolbar = document.createElement('div');
-    toolbar.className = 'detail-toolbar';
-    addLifecycleButtons(toolbar, gateway, false);
-    var save = makeButton(busy === String(gateway.id) ? 'Saving...' : 'Save Changes', '', function () {
-      saveChanges(gateway);
-    }, 'save');
-    save.id = 'detailSave';
-    save.disabled = busy === String(gateway.id) || !detailIsDirty(gateway);
-    toolbar.appendChild(save);
-    fields.appendChild(toolbar);
-
-    fields.appendChild(detailField('Authentication', detailSelect('detailAuth', [
-      { value: 'online', label: 'Online (recommended)' },
-      { value: 'offline', label: 'Offline (insecure)' },
-      { value: 'floodgate', label: 'Floodgate' },
-    ], detailDraft.authentication)));
-    fields.appendChild(detailField(
+    var info = document.createElement('div');
+    info.className = 'detail-info';
+    info.appendChild(detailField('Bedrock UDP port', String(gateway.bedrock_udp_port || '—')));
+    info.appendChild(detailField('Java target', targetLabel(gateway)));
+    info.appendChild(detailField('Geyser version', gateway.geyser_version || '—'));
+    info.appendChild(detailField(
       'Compatibility',
       gateway.compatibilityMode === 'viaproxy' ? 'ViaProxy' : 'Direct Geyser'
     ));
-    fields.appendChild(detailField('Geyser version', gateway.geyser_version || '—'));
-    fields.appendChild(detailField('ViaProxy version', gateway.viaproxyVersion || 'not installed'));
-    fields.appendChild(detailField('Bedrock Connect', detailSelect('detailAdvertise', [
+    info.appendChild(detailField('ViaProxy version', gateway.viaproxyVersion || 'not installed'));
+    fields.appendChild(info);
+
+    var dropdowns = document.createElement('div');
+    dropdowns.className = 'detail-dropdowns';
+    dropdowns.appendChild(detailField('Bedrock Connect', detailSelect('detailAdvertise', [
       { value: 'advertised', label: 'Advertised' },
       { value: 'hidden', label: 'Hidden' },
     ], detailDraft.advertise)));
-    var rightHint = document.createElement('div');
+    var authField = detailField('Authentication', detailSelect('detailAuth', [
+      { value: 'online', label: 'Online (recommended)' },
+      { value: 'offline', label: 'Offline (insecure)' },
+      { value: 'floodgate', label: 'Floodgate' },
+    ], detailDraft.authentication));
     if (detailDraft.authentication === 'online' && gateway.compatibilityMode === 'viaproxy') {
       var viaAuth = document.createElement('p');
       viaAuth.className = 'notice notice-error';
       viaAuth.textContent = 'ViaProxy cannot use online authentication. Choose Floodgate or Offline.';
-      rightHint.appendChild(viaAuth);
+      authField.appendChild(viaAuth);
     }
-    fields.appendChild(rightHint);
+    dropdowns.appendChild(authField);
+    fields.appendChild(dropdowns);
 
     var confirms = document.createElement('div');
     confirms.className = 'detail-confirms';
@@ -652,6 +723,12 @@
   }
 
   async function setPrimary(id) {
+    var ok = await askConfirm({
+      title: 'Show on dashboard tile',
+      message: 'Show this gateway on the Java server tile?',
+      confirmLabel: 'Show on tile',
+    });
+    if (!ok) return;
     busy = String(id);
     showError('');
     try {
@@ -664,8 +741,25 @@
     }
   }
 
+  async function confirmAct(gateway, action) {
+    var specs = {
+      start: { title: 'Start gateway', message: 'Start "' + gateway.name + '"?', confirmLabel: 'Start' },
+      stop: { title: 'Stop gateway', message: 'Stop "' + gateway.name + '"?', confirmLabel: 'Stop', danger: true },
+      restart: { title: 'Restart gateway', message: 'Restart "' + gateway.name + '"?', confirmLabel: 'Restart' },
+    };
+    var spec = specs[action];
+    if (spec && !(await askConfirm(spec))) return;
+    await act(gateway.id, action);
+  }
+
   async function removeGateway(gateway) {
-    if (!window.confirm('Delete gateway "' + gateway.name + '"? This cannot be undone.')) return;
+    var ok = await askConfirm({
+      title: 'Delete gateway',
+      message: 'Delete gateway "' + gateway.name + '"? This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     await act(gateway.id, 'remove');
   }
 
@@ -696,6 +790,12 @@
   }
 
   async function checkCompat(id) {
+    var ok = await askConfirm({
+      title: 'Check compatibility',
+      message: 'Check whether this Java server needs ViaProxy compatibility mode?',
+      confirmLabel: 'Check',
+    });
+    if (!ok) return;
     showError('');
     try {
       var result = await MBM.get(API + '/gateways/' + encodeURIComponent(id) + '/compatibility');
@@ -708,13 +808,20 @@
   }
 
   async function installFloodgate(id, running) {
-    if (running && !window.confirm('The Java server must restart after Floodgate is installed. Continue?')) return;
-    if (!window.confirm('Download Floodgate from official sources into this Java server\'s mods or plugins folder, copy the Geyser key.pem, and restart the Java server if it is running?')) return;
+    var message = 'Download Floodgate from official sources into this Java server\'s mods or plugins folder, copy the Geyser key.pem, and restart the Java server if it is running?';
+    if (running) message = 'The Java server must restart after Floodgate is installed. ' + message;
+    var ok = await askConfirm({
+      title: 'Install Floodgate',
+      message: message,
+      confirmLabel: 'Install Floodgate',
+    });
+    if (!ok) return;
     busy = String(id);
     showError('');
     await loadGateways();
     try {
       await MBM.post(API + '/gateways/' + encodeURIComponent(id) + '/floodgate/install', { confirm: true });
+      showError('Floodgate was installed on the Java server.', 'info');
     } catch (err) {
       showError(err.message || 'Floodgate install failed');
     } finally {
@@ -724,8 +831,14 @@
   }
 
   async function installVia(id, running) {
-    if (running && !window.confirm('This gateway is running. Stop it, install ViaProxy, then start it again?')) return;
-    if (!window.confirm('Download ViaProxy and Geyser-ViaProxy from official sources into this gateway folder?')) return;
+    var message = 'Download ViaProxy and Geyser-ViaProxy from official sources into this gateway folder?';
+    if (running) message = 'This gateway is running. It will be stopped, ViaProxy will be installed, then the gateway will start again. ' + message;
+    var ok = await askConfirm({
+      title: 'Install ViaProxy',
+      message: message,
+      confirmLabel: 'Install ViaProxy',
+    });
+    if (!ok) return;
     busy = String(id);
     showError('');
     await loadGateways();
@@ -734,6 +847,7 @@
         confirmViaProxy: true,
         confirmModeSwitch: true,
       });
+      showError('ViaProxy was installed.', 'info');
     } catch (err) {
       showError(err.message || 'ViaProxy install failed');
     } finally {
@@ -743,12 +857,19 @@
   }
 
   async function removeVia(id) {
-    if (!window.confirm('Remove ViaProxy from this gateway and return to direct Geyser?')) return;
+    var ok = await askConfirm({
+      title: 'Remove ViaProxy',
+      message: 'Remove ViaProxy from this gateway and return to direct Geyser?',
+      confirmLabel: 'Remove ViaProxy',
+      danger: true,
+    });
+    if (!ok) return;
     busy = String(id);
     showError('');
     await loadGateways();
     try {
       await MBM.post(API + '/gateways/' + encodeURIComponent(id) + '/viaproxy/remove', { confirm: true });
+      showError('ViaProxy was removed.', 'info');
     } catch (err) {
       showError(err.message || 'ViaProxy remove failed');
     } finally {
@@ -758,7 +879,12 @@
   }
 
   async function downloadFloodgateKey(id) {
-    showError('');
+    var ok = await askConfirm({
+      title: 'Download Floodgate key',
+      message: 'Download this gateway\'s Floodgate key.pem? Place the same file in the remote Java Floodgate folder.',
+      confirmLabel: 'Download',
+    });
+    if (!ok) return;
     try {
       var data = await MBM.get(API + '/gateways/' + encodeURIComponent(id) + '/floodgate/key');
       var raw = atob(data.contentBase64 || '');
@@ -781,6 +907,20 @@
   async function saveChanges(gateway) {
     readDetailDraft();
     if (!detailIsDirty(gateway)) return;
+    var checkedInstall = Boolean(detailDraft.confirmFloodgateInstall);
+    var checkedJavaRestart = Boolean(detailDraft.confirmJavaRestart);
+    var checkedOffline = Boolean(detailDraft.confirmOffline);
+    var checkedRemoteFloodgate = Boolean(detailDraft.confirmFloodgate);
+    var configChanged = detailDraft.authentication !== (gateway.authentication || 'online')
+      || detailDraft.advertise !== advertiseValue(gateway);
+    var ok = await askConfirm({
+      title: 'Save changes',
+      message: configChanged
+        ? 'Save these gateway settings? The gateway will restart if it is running.'
+        : 'Perform the selected actions for this gateway?',
+      confirmLabel: 'Save Changes',
+    });
+    if (!ok) return;
     busy = String(gateway.id);
     showError('');
     var saveBtn = $('detailSave');
@@ -789,20 +929,31 @@
       var result = await MBM.post(API + '/gateways/' + encodeURIComponent(gateway.id) + '/apply-settings', {
         authentication: detailDraft.authentication,
         advertiseInBedrockConnect: detailDraft.advertise === 'advertised',
-        confirmOffline: Boolean(detailDraft.confirmOffline),
-        confirmFloodgate: Boolean(detailDraft.confirmFloodgate),
-        confirmFloodgateInstall: Boolean(detailDraft.confirmFloodgateInstall),
-        confirmJavaRestart: Boolean(detailDraft.confirmJavaRestart),
-        restartGateway: isRunning(gateway),
+        confirmOffline: checkedOffline,
+        confirmFloodgate: checkedRemoteFloodgate,
+        confirmFloodgateInstall: checkedInstall,
+        confirmJavaRestart: checkedJavaRestart,
+        restartGateway: isRunning(gateway) && configChanged,
       });
-      var message = 'Changes have been saved.';
-      if (result && result.gatewayRestarted) message += ' The gateway was restarted.';
-      if (result && result.javaRestarted) message += ' The Java server was restarted.';
-      else if (result && result.javaRestartRequired) message += ' Restart the Java server so Floodgate can load the new key.';
-      if (result && result.warnings && result.warnings.length) {
-        message += ' ' + result.warnings.join(' ');
+      var parts = [];
+      if (configChanged) parts.push('Changes have been saved.');
+      if (checkedInstall || checkedJavaRestart || checkedOffline || checkedRemoteFloodgate) {
+        parts.push('The selected actions have been performed.');
       }
-      detailNotice = { message: message, kind: 'info' };
+      if (result && result.floodgateInstall && result.floodgateInstall.installed) {
+        parts.push('Floodgate was installed on the Java server.');
+      } else if (checkedInstall && result && result.floodgateInstall && result.floodgateInstall.alreadyPresent) {
+        parts.push('Floodgate was already installed. The matching key was copied.');
+      }
+      if (result && result.javaRestarted) parts.push('The Java server was restarted.');
+      if (result && result.gatewayRestarted) parts.push('The gateway was restarted.');
+      else if (result && result.javaRestartRequired && checkedInstall && !result.javaRestarted) {
+        parts.push('Restart the Java server so Floodgate can load the new key.');
+      }
+      if (result && result.warnings && result.warnings.length) {
+        parts.push(result.warnings.join(' '));
+      }
+      detailNotice = { message: parts.join(' ') || 'The selected actions have been performed.', kind: 'info' };
       resetDetailDraft(result || gateway);
     } catch (err) {
       if (err.data && err.data.code === 'CONFIRMATION_REQUIRED') {
@@ -875,6 +1026,7 @@
     });
     document.addEventListener('keydown', function (event) {
       if (event.key !== 'Escape') return;
+      if ($('confirmOverlay')) return;
       if (!$('detailOverlay').classList.contains('hidden')) closeDetail();
       else if (!$('createOverlay').classList.contains('hidden')) closeCreate();
     });

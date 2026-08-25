@@ -519,6 +519,8 @@ function planSettingsChange(row, config = {}) {
     keyExportAvailable: nextAuth === 'floodgate' && row.target_type === 'remote-address',
     missingConfirmations,
     changed: nextAuth !== row.authentication || nextAdvertise !== (Number(row.advertise_in_bedrock_connect) !== 0),
+    wantsFloodgateInstall: nextAuth === 'floodgate' && row.target_type === 'local-server' && Boolean(config.confirmFloodgateInstall),
+    wantsJavaRestart: nextAuth === 'floodgate' && row.target_type === 'local-server' && Boolean(config.confirmJavaRestart),
   };
 }
 
@@ -915,13 +917,14 @@ async function applySettings(id, config = {}) {
     }
 
     const wasRunning = row.status === 'running' || row.status === 'starting' || ptySessions.has(String(id));
-    if (wasRunning && !config.restartGateway) {
+    const actionOnly = !plan.changed && (plan.wantsFloodgateInstall || plan.wantsJavaRestart);
+    if (plan.changed && wasRunning && !config.restartGateway) {
       throw Object.assign(
         new Error('Stop the gateway before changing its configuration, or set restartGateway to apply the change as one operation'),
         { status: 409, code: 'GATEWAY_RUNNING' }
       );
     }
-    if (!plan.changed) {
+    if (!plan.changed && !actionOnly) {
       return {
         ...publicRecord(get(id)),
         authentication: plan.authentication,
@@ -932,6 +935,54 @@ async function applySettings(id, config = {}) {
         keySynchronized: false,
         preservedInactive: [],
         warnings: [],
+        errors: [],
+      };
+    }
+
+    if (actionOnly) {
+      const warnings = [];
+      let floodgateInstall = { installed: false, alreadyPresent: false, restarted: false };
+      let keySynchronized = false;
+      let javaRestarted = false;
+      if (plan.authentication === 'floodgate' && row.target_type === 'local-server') {
+        const latest = get(id);
+        if (plan.wantsFloodgateInstall) {
+          floodgateInstall = await ensureFloodgateOnLocalServer(latest, {
+            restartJava: plan.wantsJavaRestart,
+          });
+          javaRestarted = Boolean(floodgateInstall.restarted);
+          keySynchronized = true;
+        }
+        if (plan.wantsJavaRestart && !javaRestarted) {
+          const server = db.prepare('SELECT * FROM servers WHERE id = ? AND kind = ?').get(row.target_server_id, 'java');
+          if (server && (server.status === 'running' || server.status === 'starting')) {
+            await require('./serverManager').restartServer(server.id);
+            javaRestarted = true;
+          }
+        }
+      }
+      pluginAudit.record('gateway.update', {
+        targetType: 'gateway',
+        targetId: String(id),
+        detail: {
+          authentication: plan.authentication,
+          floodgateInstall: Boolean(floodgateInstall.installed),
+          javaRestarted,
+        },
+      });
+      pluginEvents.emit('gateway.updated', { gatewayId: id });
+      require('./pluginDashboard').snapshotAllGateways();
+      return {
+        ...publicRecord(get(id)),
+        authentication: plan.authentication,
+        gatewayRestarted: false,
+        javaRestartRequired: plan.javaRestartRequired && !javaRestarted,
+        javaRestarted,
+        floodgateInstall,
+        keySynchronized,
+        keyExportAvailable: plan.keyExportAvailable,
+        preservedInactive: [],
+        warnings,
         errors: [],
       };
     }

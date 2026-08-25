@@ -551,6 +551,11 @@ versionRange="[13.0.8,)"
   assert.match(geyserUi, /apply-settings/);
   assert.match(geyserUi, /detailAuth/);
   assert.match(geyserUi, /'Authentication'/);
+  assert.match(geyserUi, /askConfirm/);
+  assert.match(geyserUi, /confirmOverlay/);
+  assert.match(geyserUi, /syncSaveButton/);
+  assert.match(geyserUi, /The selected actions have been performed/);
+  assert.doesNotMatch(geyserUi, /window\.confirm/);
   assert.doesNotMatch(geyserUi, /Hide from Bedrock Connect/);
   assert.doesNotThrow(() => new Function(geyserUi), 'Geyser plugin UI script must parse');
   assert.doesNotMatch(geyserUi, /\/api\/gateways/);
@@ -1080,6 +1085,8 @@ versionRange="[13.0.8,)"
   assert.match(geyserUiSrc, /Install ViaProxy/);
   assert.match(geyserUiSrc, /Save Changes/);
   assert.match(geyserUiSrc, /apply-settings/);
+  assert.match(geyserUiSrc, /askConfirm/);
+  assert.doesNotMatch(geyserUiSrc, /window\.confirm/);
   assert.doesNotMatch(geyserUiSrc, /Hide from Bedrock Connect/);
 
   javaLoaderHost.executeInstallPlan = async (plan, opts) => {
@@ -1231,6 +1238,17 @@ versionRange="[13.0.8,)"
     assert.equal(withJavaRestart.authentication, 'floodgate');
     assert.equal(withJavaRestart.javaRestarted, true);
     assert.equal(javaRestarts, 1);
+    const actionOnly = await gatewayManager.applySettings(localFgGw.id, {
+      authentication: 'floodgate',
+      confirmFloodgateInstall: true,
+      confirmJavaRestart: true,
+    });
+    assert.equal(actionOnly.authentication, 'floodgate');
+    assert.equal(actionOnly.gatewayRestarted, false);
+    assert.equal(actionOnly.floodgateInstall.alreadyPresent, true);
+    assert.equal(actionOnly.floodgateInstall.installed, false);
+    assert.equal(actionOnly.javaRestarted, true);
+    assert.equal(javaRestarts, 2);
     const leaveLocal = await gatewayManager.applySettings(localFgGw.id, { authentication: 'online' });
     assert.ok(fs.existsSync(path.join(paperDir, 'plugins', 'floodgate-spigot.jar')));
     assert.ok(leaveLocal.preservedInactive.includes('Floodgate JARs'));
