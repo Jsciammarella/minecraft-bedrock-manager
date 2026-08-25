@@ -489,18 +489,8 @@
 
     var right = document.createElement('div');
     right.className = 'detail-head-right';
-    var toolbar = document.createElement('div');
-    toolbar.className = 'detail-toolbar';
-    addLifecycleButtons(toolbar, gateway, false);
-    var save = makeButton(busy === String(gateway.id) ? 'Saving...' : 'Save Changes', '', function () {
-      saveChanges(gateway);
-    }, 'save');
-    save.id = 'detailSave';
-    save.disabled = busy === String(gateway.id) || !detailIsDirty(gateway);
-    toolbar.appendChild(save);
     var close = makeButton('', 'close-btn secondary', closeDetail, 'close');
     close.setAttribute('aria-label', 'Close');
-    right.appendChild(toolbar);
     right.appendChild(close);
     head.appendChild(left);
     head.appendChild(right);
@@ -643,13 +633,27 @@
     applyBanner(banner, detailNotice.message, detailNotice.kind);
 
     var consoleCard = document.createElement('div');
+    consoleCard.className = 'console-card';
+    var consoleHead = document.createElement('div');
+    consoleHead.className = 'console-head';
     var consoleTitle = document.createElement('h2');
     consoleTitle.textContent = 'Console';
+    var toolbar = document.createElement('div');
+    toolbar.className = 'console-toolbar';
+    addLifecycleButtons(toolbar, gateway, false);
+    var save = makeButton(busy === String(gateway.id) ? 'Saving...' : 'Save Changes', '', function () {
+      saveChanges(gateway);
+    }, 'save');
+    save.id = 'detailSave';
+    save.disabled = busy === String(gateway.id) || !detailIsDirty(gateway);
+    toolbar.appendChild(save);
+    consoleHead.appendChild(consoleTitle);
+    consoleHead.appendChild(toolbar);
     var logs = document.createElement('pre');
     logs.className = 'logs';
     logs.id = 'detailLogs';
     logs.textContent = 'Loading logs…';
-    consoleCard.appendChild(consoleTitle);
+    consoleCard.appendChild(consoleHead);
     consoleCard.appendChild(logs);
     root.appendChild(consoleCard);
   }

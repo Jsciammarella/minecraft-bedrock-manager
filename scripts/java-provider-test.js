@@ -548,6 +548,7 @@ versionRange="[13.0.8,)"
   assert.match(geyserUi, /'outlined'/);
   assert.match(geyserUi, /extra-actions/);
   assert.match(geyserUi, /Save Changes/);
+  assert.match(geyserUi, /console-toolbar/);
   assert.match(geyserUi, /apply-settings/);
   assert.match(geyserUi, /detailAuth/);
   assert.match(geyserUi, /'Authentication'/);

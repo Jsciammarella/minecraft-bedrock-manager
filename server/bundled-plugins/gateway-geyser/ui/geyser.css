@@ -317,9 +317,9 @@ body.modal-open { overflow: hidden; }
 }
 
 .detail-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  align-items: start;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 1rem;
   margin-bottom: 1.5rem;
 }
@@ -337,18 +337,7 @@ body.modal-open { overflow: hidden; }
   display: flex;
   justify-content: flex-end;
   align-items: flex-start;
-  gap: 0.5rem;
-  min-width: 0;
-}
-
-.detail-toolbar {
-  display: grid;
-  grid-template-columns: repeat(2, max-content);
-  gap: 0.4rem;
-}
-
-.detail-toolbar button {
-  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .detail-fields {
@@ -533,8 +522,33 @@ label {
   color: #fca5a5;
 }
 
+.console-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+}
+
+.overlay-panel .console-head h2 {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.console-toolbar {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 0.5rem;
+}
+
+.console-toolbar button {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+}
+
 .logs {
-  margin-top: 0.75rem;
+  margin-top: 0;
   max-height: 18rem;
   overflow: auto;
   background: var(--darker);
