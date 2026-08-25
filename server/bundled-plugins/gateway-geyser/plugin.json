@@ -1,0 +1,46 @@
+{
+  "id": "gateway-geyser",
+  "name": "Geyser Gateway",
+  "version": "1.0.0",
+  "author": "Minecraft Bedrock Manager",
+  "description": "Powered by Geyser. Downloads Geyser Standalone from GeyserMC on demand so Bedrock clients can join Java servers.",
+  "menu": {
+    "label": "Geyser",
+    "icon": "radio",
+    "order": 100
+  },
+  "pages": [
+    {
+      "id": "home",
+      "title": "Geyser",
+      "file": "index.html"
+    }
+  ],
+  "backend": "backend.js",
+  "capabilities": [
+    "provider:gateway",
+    "download:official-sources",
+    "filesystem:plugin-data",
+    "runtime:java",
+    "network:outbound-target",
+    "ports:udp",
+    "ports:tcp"
+  ],
+  "downloadHosts": [
+    "download.geysermc.org",
+    "repo.opencollab.dev",
+    "github.com",
+    "api.github.com",
+    "objects.githubusercontent.com",
+    "github-releases.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "cdn.modrinth.com"
+  ],
+  "providers": [
+    {
+      "type": "gateway",
+      "id": "geyser",
+      "name": "Geyser"
+    }
+  ]
+}

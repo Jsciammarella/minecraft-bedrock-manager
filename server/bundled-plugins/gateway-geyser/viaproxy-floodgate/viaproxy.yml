@@ -1,0 +1,5 @@
+name: FloodgateJoin
+author: Minecraft Bedrock Manager
+version: 1.0.0
+main: org.mcmanager.viaproxy.FloodgateJoinPlugin
+min-version: "3.3.2"

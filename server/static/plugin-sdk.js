@@ -3,7 +3,7 @@
 
   var pending = Object.create(null);
   var seq = 0;
-  var timeoutMs = 120000;
+  var timeoutMs = 600000;
 
   function pluginIdFromLocation() {
     try {

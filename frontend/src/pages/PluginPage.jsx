@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { pluginApi } from '../services/api';
 import { isAllowedPluginNavigatePath, proxyPluginApi } from '../services/pluginBridge';
+import NativePluginSettings from '../components/pluginSettings/NativePluginSettings';
 
 function PluginPage() {
   const { pluginId, pageId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const iframeRef = useRef(null);
   const [plugin, setPlugin] = useState(null);
   const [error, setError] = useState('');
@@ -35,7 +37,8 @@ function PluginPage() {
 
   const page = plugin?.pages?.find((item) => item.id === pageId)
     || (!pageId ? plugin?.pages?.[0] : null);
-  const src = page ? `/api/plugins/${pluginId}/ui/${page.file}` : '';
+  const pageFile = String(page?.file || 'index.html').replace(/^\/+/, '');
+  const src = page ? `/api/plugins/${pluginId}/ui/${pageFile}${location.search || ''}` : '';
 
   useEffect(() => {
     function onMessage(event) {
@@ -76,7 +79,7 @@ function PluginPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div className="absolute inset-0 flex items-center justify-center">
         <div className="w-8 h-8 border-2 border-mc-accent border-t-transparent rounded-full animate-spin" />
       </div>
     );
@@ -84,9 +87,19 @@ function PluginPage() {
 
   if (error || !page) {
     return (
-      <div className="p-6 max-w-xl mx-auto">
-        <h1 className="text-xl font-bold text-white mb-2">Plugin page not found</h1>
-        <p className="text-mc-textMuted">{error || 'That plugin page does not exist.'}</p>
+      <div className="absolute inset-0 overflow-y-auto p-6">
+        <div className="max-w-xl mx-auto">
+          <h1 className="text-xl font-bold text-white mb-2">Plugin unavailable</h1>
+          <p className="text-mc-textMuted">{error || 'That plugin page does not exist.'}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (page.renderer === 'native-settings') {
+    return (
+      <div className="absolute inset-0 overflow-y-auto overflow-x-hidden">
+        <NativePluginSettings pluginId={pluginId} />
       </div>
     );
   }
@@ -97,7 +110,8 @@ function PluginPage() {
       key={src}
       title={page.title || plugin.name}
       src={src}
-      className="w-full h-full border-0 bg-mc-dark"
+      className="absolute inset-0 w-full h-full border-0 bg-mc-dark"
+      style={{ colorScheme: 'dark' }}
       sandbox="allow-scripts allow-forms allow-modals allow-downloads"
       referrerPolicy="no-referrer"
     />

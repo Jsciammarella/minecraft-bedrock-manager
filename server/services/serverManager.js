@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
+const net = require('net');
 const { exec, spawn } = require('child_process');
 const { promisify } = require('util');
 const db = require('../db/connection');
@@ -9,6 +10,10 @@ const settingsStore = require('./settingsStore');
 const portRanges = require('./portRanges');
 const playerPresence = require('./playerPresence');
 const platform = require('./platform');
+const javaEdition = require('./javaEdition');
+const javaLoaderRegistry = require('./javaLoaderRegistry');
+const javaLoaderHost = require('./javaLoaderHost');
+const javaModInstall = require('./javaModInstall');
 const execAsync = promisify(exec);
 
 const BASE_DIR = path.join(__dirname, '../../data/servers');
@@ -22,10 +27,15 @@ class ServerManager {
     this.processes = new Map(); // serverId -> process reference
     this.scheduledRestarts = new Map(); // serverId -> warning/restart timers
     this.provisionJobs = new Map();
+    this.cancelledProvision = new Set();
     this.consoleBuffers = new Map(); // serverId -> recent PTY text
     this.ptyCaptures = new Map(); // serverId -> pending command captures
     this.onlineRefreshInFlight = new Map();
     this.onlineListAt = new Map();
+    this.javaSessionReady = new Map();
+    this.javaDepHits = new Map();
+    this.javaDepOverlap = new Map();
+    this.javaSessionStartedAt = new Map();
 
     // Ensure directories exist
     fs.mkdirSync(BASE_DIR, { recursive: true });
@@ -37,7 +47,7 @@ class ServerManager {
       UPDATE servers
       SET status = 'stopped', pid = NULL, started_at = NULL, restart_scheduled_at = NULL,
         updated_at = CURRENT_TIMESTAMP
-      WHERE status IN ('running', 'starting', 'creating')
+      WHERE status IN ('running', 'starting', 'creating', 'stopping', 'failed')
     `).run();
     if (reconciled.changes > 0) {
       logger.warn(`Reset ${reconciled.changes} stale server status record(s) during manager startup`);
@@ -47,6 +57,37 @@ class ServerManager {
 
   sessionKey(serverId) {
     return String(serverId);
+  }
+
+  clearJavaDepSession(serverId) {
+    const key = this.sessionKey(serverId);
+    this.javaSessionReady.delete(key);
+    this.javaDepHits.delete(key);
+    this.javaDepOverlap.delete(key);
+    this.javaSessionStartedAt.delete(key);
+  }
+
+  resetJavaDepSession(serverId) {
+    const key = this.sessionKey(serverId);
+    this.javaSessionReady.set(key, false);
+    this.javaDepHits.delete(key);
+    this.javaDepOverlap.delete(key);
+    this.javaSessionStartedAt.set(key, Date.now());
+    this.consoleBuffers.delete(key);
+  }
+
+  publicAttachFields(stats) {
+    if (!stats) return {};
+    return {
+      loaderProviderId: stats.loaderProviderId,
+      loaderVersion: stats.loaderVersion,
+      minecraftVersion: stats.minecraftVersion,
+      javaMajor: stats.javaMajor,
+      loaderState: stats.loaderState,
+      geyserGateways: stats.geyserGateways,
+      optionalIntegrations: stats.optionalIntegrations,
+      missingModDependencies: stats.missingModDependencies ?? null,
+    };
   }
 
   invalidateServerCache(serverId) {
@@ -65,6 +106,7 @@ class ServerManager {
     this.markAllPlayersOffline(serverId);
     this.consoleBuffers.delete(this.sessionKey(serverId));
     this.onlineListAt.delete(this.sessionKey(serverId));
+    this.clearJavaDepSession(serverId);
     this.invalidateServerCache(serverId);
     if (broadcast) this.broadcastServerStatus(serverId);
     if (this.isBedrockConnect(server)) {
@@ -150,6 +192,10 @@ class ServerManager {
     return Boolean(server && server.kind === 'remote');
   }
 
+  isJava(server) {
+    return javaEdition.isJava(server);
+  }
+
   assertRemoteLocalPort(port, label = 'IPv4 port') {
     if (!portRanges.isDiscoveryPort(port)) return Number(port);
     throw new Error(
@@ -167,7 +213,7 @@ class ServerManager {
 
   isBedrockConnectActive() {
     const bc = this.getBedrockConnectServer();
-    return Boolean(bc && (bc.status === 'running' || bc.status === 'starting'));
+    return Boolean(bc && (bc.status === 'running' || bc.status === 'starting' || bc.status === 'stopping'));
   }
 
   getPendingBedrockConnect() {
@@ -202,19 +248,33 @@ class ServerManager {
     if (!server) return server;
     const lanBroadcast = require('./lanBroadcast');
     const lan = lanBroadcast.statusFor(server);
-    if (this.isBedrockConnect(server)) {
-      return {
+    const extra = this.isJava(server) ? {
+      loaderProviderId: server.loader_provider_id || 'vanilla',
+      loaderVersion: server.loader_version || '',
+      minecraftVersion: server.minecraft_version || server.version,
+      javaMajor: server.java_major || null,
+      loaderState: server.loader_state || '',
+      geyserGateways: require('./gatewayManager').forServer(server.id),
+      optionalIntegrations: require('./gatewayManager').integrationsForServer({
         ...server,
+        kind: 'java',
+      }),
+      missingModDependencies: require('./javaModDependencies').publicState(server),
+    } : {};
+    if (this.isBedrockConnect(server) || this.isJava(server)) {
+      return javaEdition.attachFields({
+        ...server,
+        ...extra,
         lan: { ...lan, enabled: false, active: false, native: false, error: null },
         remoteReachable: null,
-      };
+      });
     }
     const remotePing = require('./remotePing');
-    return {
+    return javaEdition.attachFields({
       ...server,
       lan,
       remoteReachable: this.isRemote(server) ? remotePing.reachable(server.id) : null,
-    };
+    });
   }
 
   stopLanBroadcastsForBedrockConnect() {
@@ -280,6 +340,14 @@ class ServerManager {
         lan: lanBroadcast.statusFor(server),
       };
     }
+    if (this.isJava(server)) {
+      return {
+        allowed: false,
+        reason: 'java',
+        message: 'Java Edition servers do not use the Bedrock console LAN proxy. Geyser support will come later.',
+        lan: lanBroadcast.statusFor(server),
+      };
+    }
     if (this.isBedrockConnectActive()) {
       return {
         allowed: false,
@@ -337,6 +405,9 @@ class ServerManager {
     if (!server) throw new Error('Server not found');
     if (this.isBedrockConnect(server)) {
       throw new Error('Bedrock Connect cannot be advertised as a LAN game');
+    }
+    if (this.isJava(server)) {
+      throw new Error('Java Edition servers do not use the Bedrock console LAN proxy');
     }
     if (server.status === 'creating') {
       throw new Error('Wait until this server finishes building before enabling LAN listing');
@@ -729,7 +800,10 @@ class ServerManager {
       throw new Error('IPv4 and IPv6 ports must be different');
     }
     if (!portRanges.isIpv4GamePort(port) && !(this.isBedrockConnect(server) && port === BEDROCK_CONNECT_PORT)) {
-      throw new Error(`UDP port ${port} is not in the IPv4 game ranges`);
+      throw new Error(`${this.isJava(server) ? 'TCP' : 'UDP'} port ${port} is not in the IPv4 game ranges`);
+    }
+    if (this.isJava(server) && portRanges.isDiscoveryPort(port)) {
+      throw new Error(`Port ${port} is reserved for Bedrock LAN discovery`);
     }
 
     const taken = db.prepare('SELECT id, name FROM servers WHERE (port = ? OR ipv6_port = ?) AND id != ?').get(port, port, serverId);
@@ -742,8 +816,10 @@ class ServerManager {
       throw new Error('UDP port 19132 is reserved for Bedrock Connect');
     }
 
-    if (port !== Number(server.port) && !(await this.isUdpPortAvailable(port))) {
-      throw new Error(`UDP port ${port} is already in use by another process`);
+    if (port !== Number(server.port) && !(
+      this.isJava(server) ? await this.isTcpPortAvailable(port) : await this.isUdpPortAvailable(port)
+    )) {
+      throw new Error(`${this.isJava(server) ? 'TCP' : 'UDP'} port ${port} is already in use by another process`);
     }
 
     if (restartRequired || server.status === 'running') {
@@ -770,9 +846,13 @@ class ServerManager {
 
     const current = this.getServer(serverId);
     let ipv6Port = Number(current.ipv6_port) || null;
-    const wasPaired = ipv6Port && ipv6Port === portRanges.preferredIpv6Port(current.port);
-    if (!ipv6Port || wasPaired || ipv6Port === port) {
-      ipv6Port = await this.allocateIpv6Port(port, { excludeServerId: serverId });
+    if (!this.isJava(current)) {
+      const wasPaired = ipv6Port && ipv6Port === portRanges.preferredIpv6Port(current.port);
+      if (!ipv6Port || wasPaired || ipv6Port === port) {
+        ipv6Port = await this.allocateIpv6Port(port, { excludeServerId: serverId });
+      }
+    } else {
+      ipv6Port = null;
     }
 
     if (!this.isBedrockConnect(server) && !this.isRemote(server)) {
@@ -785,15 +865,16 @@ class ServerManager {
       WHERE id = ?
     `).run(port, ipv6Port, serverId);
     this.unregisterPorts(serverId);
-    this.registerPort(serverId, port, 'udp', 'ipv4');
+    this.registerPort(serverId, port, this.isJava(server) ? 'tcp' : 'udp', 'ipv4');
     if (ipv6Port) this.registerPort(serverId, ipv6Port, 'udp', 'ipv6');
     this.invalidateServerCache(serverId);
     logger.info(`Server ${server.name} is now on port ${port}`);
     require('./bedrockConnectList').scheduleSync();
+    try { require('./gatewayManager').syncLocalTargetPort(serverId, port); } catch { /* ignore */ }
     try {
       if (this.isRemote(this.getServer(serverId)) && this.getServer(serverId).status === 'running') {
         await this.restartRemoteGateway(serverId);
-      } else if (Number(this.getServer(serverId)?.lan_broadcast) === 1) {
+      } else if (!this.isJava(this.getServer(serverId)) && Number(this.getServer(serverId)?.lan_broadcast) === 1) {
         await this.syncLanBroadcast(serverId);
       }
     } catch (err) {
@@ -807,6 +888,9 @@ class ServerManager {
   async createServer(config) {
     if (config?.kind === 'remote' || config?.remote === true) {
       return this.createRemoteServer(config);
+    }
+    if (config?.kind === 'java' || config?.java === true) {
+      return this.createJavaServer(config);
     }
     const { name, port, ipv6Port, version, maxPlayers, description, gamemode, difficulty } = config;
 
@@ -972,6 +1056,244 @@ class ServerManager {
       remoteIpv6Port,
       dataPath: serverPath,
     };
+  }
+
+  async createJavaServer(config) {
+    require('./javaHostingPolicy').assertServerEditionAvailable('java', 'create');
+    const name = String(config.name || '').trim();
+    const port = parseInt(config.port, 10);
+    const version = config.minecraftVersion || config.version || 'latest';
+    const loaderProvider = String(config.loaderProvider || config.loader_provider || 'vanilla').trim() || 'vanilla';
+    const loaderVersion = config.loaderVersion || config.loader_version || 'latest-compatible';
+    const maxPlayers = parseInt(config.maxPlayers ?? config.max_players ?? 20, 10) || 20;
+    const description = config.description || config.server_description || 'Minecraft Java Server';
+    const gamemode = config.gamemode || 'survival';
+    const difficulty = config.difficulty || 'easy';
+    const acceptedEula = config.acceptEula === true || config.acceptEula === 1 || config.acceptEula === '1'
+      || config.eula === true || config.eula === 1 || config.eula === 'true';
+
+    if (!name) throw new Error('Server name is required');
+    if (!acceptedEula) {
+      throw new Error('You must agree to the Minecraft EULA to create a Java Edition server');
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('Port must be between 1 and 65535');
+    }
+    if (!portRanges.isIpv4GamePort(port)) {
+      throw new Error(`TCP port ${port} is not in the IPv4 game ranges`);
+    }
+    if (Number(port) === portRanges.DISCOVERY_IPV4 || Number(port) === portRanges.DISCOVERY_IPV6) {
+      throw new Error(`Port ${port} is reserved for Bedrock LAN discovery`);
+    }
+
+    const existing = db.prepare('SELECT * FROM servers WHERE port = ? OR ipv6_port = ? OR name = ?').get(port, port, name);
+    if (existing) {
+      throw new Error('Port or server name already in use');
+    }
+    const pendingTaken = db.prepare('SELECT name FROM servers WHERE pending_port = ? OR pending_ipv6_port = ?').get(port, port);
+    if (pendingTaken) {
+      throw new Error(`Port ${port} is already reserved for ${pendingTaken.name}`);
+    }
+    if (!(await this.isTcpPortAvailable(port))) {
+      throw new Error(`TCP port ${port} is already in use by another process`);
+    }
+
+    if (String(process.env.ALLOW_STUB_SERVER || '') !== '1') {
+      const entry = javaLoaderRegistry.requireLoader(loaderProvider);
+      await entry.provider.resolveInstallation({
+        minecraftVersion: version,
+        loaderVersion,
+        version,
+      });
+    }
+
+    const serverPath = path.join(BASE_DIR, name);
+    fs.mkdirSync(serverPath, { recursive: true });
+
+    const insert = db.prepare(`
+      INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
+        server_description, server_motd, status, data_path, lan_broadcast, kind,
+        loader_provider_id, loader_version, minecraft_version, loader_state)
+      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'creating', ?, 0, 'java', ?, ?, ?, 'installing')
+    `);
+    const result = insert.run(
+      name, version, port, maxPlayers,
+      difficulty, gamemode,
+      description, description,
+      serverPath,
+      loaderProvider, loaderVersion === 'latest-compatible' ? '' : loaderVersion, version
+    );
+    const serverId = result.lastInsertRowid;
+    this.registerPort(serverId, port, 'tcp', 'ipv4');
+    javaEdition.writeSettings(serverId, javaEdition.DEFAULTS);
+    this.invalidateServerCache(serverId);
+    this.broadcastServerStatus(serverId);
+
+    const job = this.finishCreateJavaServer(serverId, {
+      name,
+      port,
+      maxPlayers,
+      description,
+      gamemode,
+      difficulty,
+      version,
+      loaderProvider,
+      loaderVersion,
+      serverPath,
+    }).finally(() => this.provisionJobs.delete(Number(serverId)));
+    this.provisionJobs.set(Number(serverId), job);
+
+    logger.info(`Queued Java server create: ${name} on TCP ${port}`);
+    return { id: serverId, name, port, kind: 'java', status: 'creating', dataPath: serverPath };
+  }
+
+  async finishCreateJavaServer(serverId, config) {
+    const { name, port, maxPlayers, description, gamemode, difficulty, version, loaderProvider, loaderVersion, serverPath } = config;
+    const provisioningCancelled = () => this.cancelledProvision.has(Number(serverId));
+    const markCancelled = () => {
+      this.cancelledProvision.delete(Number(serverId));
+      if (!this.getServer(serverId)) return;
+      db.prepare(`
+        UPDATE servers
+        SET status = 'stopped', pending_restart = 0, pending_restart_reason = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run('Minecraft Java Hosting was disabled during provisioning', serverId);
+      this.invalidateServerCache(serverId);
+      this.broadcastServerStatus(serverId);
+    };
+    if (provisioningCancelled()) {
+      markCancelled();
+      return;
+    }
+    try {
+      let minecraftVersion = version;
+      let resolvedLoader = loaderProvider || 'vanilla';
+      let resolvedLoaderVersion = loaderVersion || 'vanilla';
+      let javaMajor = 17;
+      let metadata = {};
+      if (String(process.env.ALLOW_STUB_SERVER || '') === '1') {
+        javaEdition.createStubJar(serverPath);
+        metadata = { loader: 'vanilla', stub: true };
+      } else {
+        const entry = javaLoaderRegistry.get(resolvedLoader);
+        if (entry) {
+          const plan = await entry.provider.planInstallation({
+            minecraftVersion: version,
+            loaderVersion,
+            version,
+          });
+          javaLoaderHost.validatePlan(plan);
+          await javaLoaderHost.executeInstallPlan(plan, {
+            serverDir: serverPath,
+            allowHosts: entry.downloadHosts,
+            ownerId: serverId,
+          });
+          minecraftVersion = plan.result?.minecraftVersion || version;
+          resolvedLoaderVersion = plan.result?.loaderVersion || resolvedLoader;
+          javaMajor = plan.result?.javaMajor || 17;
+          metadata = plan.result || {};
+          javaEdition.writeEula(serverPath);
+          try {
+            await javaEdition.ensureJavaForServer({ data_path: serverPath, version: minecraftVersion });
+          } catch (err) {
+            logger.warn(`Java runtime will be installed when this server first starts: ${err.message}`);
+          }
+        } else if (resolvedLoader === 'vanilla') {
+          const jar = await javaEdition.ensureJar(version);
+          javaEdition.installJarInto(serverPath, jar.path, jar.id, jar.java);
+          minecraftVersion = jar.id;
+          javaMajor = jar.java?.major || 17;
+          metadata = jar.java || {};
+          try {
+            await javaEdition.ensureJavaForServer({ data_path: serverPath, version: jar.id });
+          } catch (err) {
+            logger.warn(`Java runtime will be installed when this server first starts: ${err.message}`);
+          }
+        } else {
+          throw new Error(`Java loader "${resolvedLoader}" is not installed`);
+        }
+      }
+      db.prepare(`
+        UPDATE servers
+        SET version = ?, minecraft_version = ?, loader_provider_id = ?, loader_version = ?,
+          java_major = ?, loader_state = 'ready', loader_metadata = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        minecraftVersion,
+        minecraftVersion,
+        resolvedLoader,
+        resolvedLoaderVersion,
+        javaMajor,
+        JSON.stringify(metadata),
+        serverId
+      );
+      if (!this.getServer(serverId) || provisioningCancelled()) {
+        if (provisioningCancelled()) markCancelled();
+        return;
+      }
+
+      const server = this.getServer(serverId);
+      const extras = javaEdition.readSettings(serverId);
+      const propsPath = path.join(serverPath, 'server.properties');
+      this.writeServerProperties(
+        propsPath,
+        javaEdition.runtimeProperties({
+          ...server,
+          name,
+          port,
+          max_players: maxPlayers,
+          difficulty,
+          gamemode,
+          server_description: description,
+          server_motd: description,
+          data_path: serverPath,
+        }, this.readServerProperties(propsPath), extras)
+      );
+      javaEdition.writeEula(serverPath);
+      javaEdition.syncAccessFiles(server, []);
+
+      if (provisioningCancelled()) {
+        markCancelled();
+        return;
+      }
+
+      db.prepare('UPDATE servers SET status = ?, pending_restart_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('stopped', serverId);
+      this.invalidateServerCache(serverId);
+      this.broadcastServerStatus(serverId);
+      logger.info(`Created Java server: ${name} on TCP ${port}`);
+    } catch (err) {
+      logger.error(`Failed to finish creating Java server ${name}: ${err.message}`);
+      if (!this.getServer(serverId)) return;
+      db.prepare('UPDATE servers SET status = ?, pending_restart = 0, pending_restart_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run('stopped', `Create failed: ${err.message}`, serverId);
+      this.invalidateServerCache(serverId);
+      this.broadcastServerStatus(serverId);
+    }
+  }
+
+  async cancelJavaProvisioning({ timeoutMs = 8000 } = {}) {
+    const java = this.getAllServers().filter((server) => this.isJava(server)
+      && (server.status === 'creating' || this.provisionJobs.has(Number(server.id))));
+    for (const server of java) this.cancelledProvision.add(Number(server.id));
+    const jobs = java
+      .map((server) => this.provisionJobs.get(Number(server.id)))
+      .filter((job) => job && typeof job.then === 'function');
+    if (jobs.length) {
+      await Promise.race([
+        Promise.allSettled(jobs),
+        new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+      ]);
+    }
+    for (const server of this.getAllServers().filter((item) => this.isJava(item) && item.status === 'creating')) {
+      db.prepare(`
+        UPDATE servers
+        SET status = 'stopped', pending_restart = 0, pending_restart_reason = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run('Minecraft Java Hosting was disabled during provisioning', server.id);
+      this.invalidateServerCache(server.id);
+      this.broadcastServerStatus(server.id);
+    }
   }
 
   async startRemoteServer(server) {
@@ -1230,28 +1552,57 @@ done
   }
 
   async startBedrockConnect(server) {
-    await this.releaseDiscoveryPortsForBedrockConnect();
-    const bedrockConnect = require('./bedrockConnect');
-    await bedrockConnect.assertJavaAvailable();
-    const installed = bedrockConnect.installedJar(server.data_path)
-      || bedrockConnect.installJarInto(server.data_path, server.version);
-    const list = require('./bedrockConnectList');
-    list.writeList();
+    return require('./bedrockConnectLifecycle').start(server);
+  }
+
+  async startJavaServer(server) {
+    require('./javaHostingPolicy').assertServerEditionAvailable('java', 'start');
+    const loaderId = server.loader_provider_id || 'vanilla';
+    const jar = javaEdition.installedJar(server.data_path);
+    if (loaderId === 'vanilla') {
+      if (!jar) {
+        throw new Error('Minecraft Java server.jar was not found. Recreate the server or run an update.');
+      }
+      if (javaEdition.isStubJar(jar.jarPath)) {
+        throw new Error('This instance has a placeholder Java jar, not the official Minecraft server. Delete it and create the server again.');
+      }
+    }
+    const javaRuntime = require('./javaRuntime');
+    try { javaModInstall.applyPending(server); } catch (err) {
+      logger.warn(`Pending Java mods were not applied: ${err.message}`);
+    }
+    let launch;
+    try {
+      launch = await javaLoaderHost.resolveLaunch(server);
+    } catch {
+      if (javaEdition.isStubJar(jar.jarPath)) {
+        throw new Error('This instance has a placeholder Java jar, not the official Minecraft server. Delete it and create the server again.');
+      }
+      const javaBin = await javaEdition.ensureJavaForServer(server);
+      launch = {
+        javaBin,
+        args: javaEdition.spawnArgs(server.data_path),
+        cwd: server.data_path,
+        env: { ...require('./childEnv').sanitizedChildEnv(), JAVA_HOME: path.isAbsolute(javaBin) ? javaRuntime.javaHomeFromBin(javaBin) : undefined },
+      };
+    }
+    javaEdition.writeEula(server.data_path);
+    this.writeRuntimeServerProperties(server);
+
     const sessionKey = this.sessionKey(server.id);
     try {
       const { spawn: spawnPty } = require('node-pty');
-      const pty = spawnPty(platform.javaCommand(), [
-        '-jar', installed.jarPath,
-        ...list.spawnArgs(server.data_path),
-      ], {
+      logger.info(`Starting Java server ${server.name} with ${launch.javaBin}`);
+      const pty = spawnPty(launch.javaBin, launch.args, {
         name: 'xterm-color',
         cols: 120,
         rows: 30,
-        cwd: server.data_path,
-        env: { ...process.env },
+        cwd: launch.cwd,
+        env: launch.env,
       });
 
       this.ptySessions.set(sessionKey, pty);
+      this.resetJavaDepSession(server.id);
       this.setupPtyOutputBroadcast(server.id, pty);
       db.prepare('UPDATE servers SET status = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run('starting', server.id);
@@ -1268,19 +1619,18 @@ done
             WHERE id = ?
           `).run('running', server.id);
           this.invalidateServerCache(server.id);
-          logger.info('Bedrock Connect started');
+          logger.info(`Java server ${server.name} started`);
           this.broadcastServerStatus(server.id);
         }
-      }, 3000);
+      }, 4000);
 
-      return { success: true, message: 'Bedrock Connect starting...' };
+      return { success: true, message: 'Java server starting...' };
     } catch (err) {
-      logger.error(`Failed to start Bedrock Connect: ${err.message}`);
+      logger.error(`Failed to start Java server ${server.name}: ${err.message}`);
       db.prepare('UPDATE servers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run('stopped', server.id);
       this.invalidateServerCache(server.id);
-      await this.restoreLanBroadcasts();
-      throw new Error(`Failed to start Bedrock Connect: ${err.message}`);
+      throw new Error(`Failed to start Java server: ${err.message}`);
     }
   }
 
@@ -1290,6 +1640,7 @@ done
     if (!server) throw new Error('Server not found');
     if (server.status === 'running') throw new Error('Server already running');
     if (server.status === 'starting') throw new Error('Server is already starting');
+    if (server.status === 'stopping') throw new Error('Server is stopping');
     if (server.status === 'creating') throw new Error('Server is still being built');
 
     if (server.pending_port) {
@@ -1298,7 +1649,9 @@ done
     if (this.getServer(serverId)?.pending_ipv6_port) {
       await this.commitIpv6PortChange(serverId, this.getServer(serverId).pending_ipv6_port);
     }
-    await this.ensureIpv6PortAssigned(serverId);
+    if (!this.isJava(this.getServer(serverId))) {
+      await this.ensureIpv6PortAssigned(serverId);
+    }
     const current = this.getServer(serverId);
     const serverPath = current.data_path;
 
@@ -1310,6 +1663,11 @@ done
 
     if (this.isRemote(current)) {
       return this.startRemoteServer(current);
+    }
+
+    if (this.isJava(current)) {
+      require('./javaHostingPolicy').assertServerEditionAvailable('java', 'start');
+      return this.startJavaServer(current);
     }
 
     const serverBin = platform.bedrockBinaryPath(serverPath);
@@ -1411,6 +1769,9 @@ done
     if (server.status === 'creating') {
       throw new Error('Server is still being built');
     }
+    if (this.isBedrockConnect(server)) {
+      return require('./bedrockConnectLifecycle').stop(server);
+    }
     if (server.status === 'stopped') throw new Error('Server already stopped');
 
     const pty = this.ptySessions.get(sessionKey);
@@ -1420,28 +1781,17 @@ done
       require('./lanBroadcast').stop(serverId);
       require('./lanBroadcast').killOrphanPhantoms();
     } else if (pty) {
-      if (this.isBedrockConnect(server)) {
-        try { pty.kill(); } catch { /* ignore */ }
-        await new Promise((resolve) => {
-          const timeout = setTimeout(resolve, 3000);
-          pty.on('exit', () => {
-            clearTimeout(timeout);
-            resolve();
-          });
+      pty.write('stop\n');
+      await new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          pty.kill();
+          resolve();
+        }, 15000);
+        pty.on('exit', () => {
+          clearTimeout(timeout);
+          resolve();
         });
-      } else {
-        pty.write('stop\n');
-        await new Promise((resolve) => {
-          const timeout = setTimeout(() => {
-            pty.kill();
-            resolve();
-          }, 15000);
-          pty.on('exit', () => {
-            clearTimeout(timeout);
-            resolve();
-          });
-        });
-      }
+      });
       this.ptySessions.delete(sessionKey);
     }
 
@@ -1452,15 +1802,17 @@ done
 
     logger.info(`Server ${server.name} stopped`);
     this.broadcastServerStatus(serverId);
-    if (this.isBedrockConnect(server)) {
-      await this.waitForUdpPort(portRanges.DISCOVERY_IPV4, 'ipv4');
-      await this.waitForUdpPort(portRanges.DISCOVERY_IPV6, 'ipv6');
-      await this.restoreLanBroadcasts();
-    }
     return { success: true, message: 'Server stopped' };
   }
 
   async restartServer(serverId) {
+    const server = this.getServer(serverId);
+    if (server && this.isJava(server)) {
+      require('./javaHostingPolicy').assertServerEditionAvailable('java', 'restart');
+    }
+    if (server && this.isBedrockConnect(server)) {
+      return require('./bedrockConnectLifecycle').restart(server);
+    }
     await this.stopServer(serverId);
     await this.startServer(serverId);
     await this.completePendingBedrockConnectIfNeeded(serverId);
@@ -1470,6 +1822,9 @@ done
     const key = this.sessionKey(serverId);
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+    if (this.isJava(server)) {
+      require('./javaHostingPolicy').assertServerEditionAvailable('java', 'restart');
+    }
     if (this.isBedrockConnect(server)) {
       throw new Error('Bedrock Connect does not support warned restarts');
     }
@@ -1517,9 +1872,34 @@ done
     return { success: true, scheduledAt };
   }
 
-  async deleteServer(serverId) {
+  async deleteServer(serverId, { detachAttachedPlugins = false, deleteAttachedGateways = false } = {}) {
     const server = this.getServer(serverId);
     if (!server) throw new Error('Server not found');
+    const attachments = (() => {
+      try { return require('./serverPluginAttachments').attachmentsBlockingDelete(serverId); } catch { return []; }
+    })();
+    if (attachments.length && !detachAttachedPlugins && !deleteAttachedGateways) {
+      const err = Object.assign(
+        new Error('A Geyser gateway is attached to this server. Confirm detach or delete the gateway before removing the server.'),
+        {
+          status: 409,
+          code: 'PLUGIN_ATTACHMENT',
+          attachments: attachments.map((item) => ({
+            pluginId: item.plugin_id,
+            resourceType: item.resource_type,
+            resourceId: item.resource_id,
+            primary: Boolean(item.primary_attachment),
+          })),
+        }
+      );
+      throw err;
+    }
+    if (attachments.length && deleteAttachedGateways) {
+      require('./serverPluginAttachments').deleteAttachedResources(serverId);
+    } else if (attachments.length && detachAttachedPlugins) {
+      require('./serverPluginAttachments').detachServer(serverId);
+    }
+
     const wasBedrockConnect = this.isBedrockConnect(server);
     require('./lanBroadcast').stop(serverId);
     await require('./udpGateway').stop(serverId);
@@ -1541,6 +1921,13 @@ done
 
     // Unregister ports
     this.unregisterPorts(serverId);
+
+    if (!attachments.length) {
+      try {
+        const gatewayManager = require('./gatewayManager');
+        gatewayManager.detachServer(serverId);
+      } catch { /* ignore */ }
+    }
 
     const pending = this.getPendingBedrockConnect();
     if (pending && (Number(pending.occupantId) === Number(serverId) || this.isBedrockConnect(server))) {
@@ -1691,7 +2078,25 @@ done
 
     const propsPath = path.join(server.data_path, 'server.properties');
     const currentProps = this.readServerProperties(propsPath);
-    
+
+    if (this.isJava(server)) {
+      const javaValues = {};
+      for (const key of javaEdition.SETTING_KEYS) {
+        if (rest[key] != null) javaValues[key] = rest[key];
+      }
+      if (rest.view_distance != null) javaValues.view_distance = rest.view_distance;
+      if (rest.player_idle_timeout != null) javaValues.player_idle_timeout = rest.player_idle_timeout;
+      javaEdition.writeSettings(serverId, javaValues);
+      const extras = javaEdition.readSettings(serverId);
+      const nextProps = javaEdition.applyMappedSettings(currentProps, {
+        ...rest,
+        ...extras,
+      });
+      this.writeServerProperties(
+        propsPath,
+        javaEdition.runtimeProperties({ ...server, ...rest }, nextProps, extras)
+      );
+    } else {
     // Map settings to properties
     const mapping = {
       max_players: 'max-players',
@@ -1736,6 +2141,7 @@ done
     }
 
     this.writeServerProperties(propsPath, currentProps);
+    }
 
     // Update database
     const update = db.prepare(`
@@ -1783,7 +2189,8 @@ done
     }
     const latest = this.getServer(serverId);
     if (
-      requestedIpv6Port != null
+      !this.isJava(server)
+      && requestedIpv6Port != null
       && requestedIpv6Port !== ''
       && Number(requestedIpv6Port) !== Number(server.ipv6_port)
       && Number(requestedIpv6Port) !== Number(latest.ipv6_port)
@@ -1860,6 +2267,13 @@ done
   writeRuntimeServerProperties(server) {
     const propsPath = path.join(server.data_path, 'server.properties');
     const current = this.readServerProperties(propsPath);
+    if (this.isJava(server)) {
+      this.writeServerProperties(
+        propsPath,
+        javaEdition.runtimeProperties(server, current, javaEdition.readSettings(server.id))
+      );
+      return;
+    }
     this.writeServerProperties(propsPath, this.bedrockRuntimeProperties(server, current));
   }
 
@@ -1905,10 +2319,63 @@ done
         VALUES (?, ?, ?, 'completed', ?)
       `).run(serverId, fromVersion, installed.tag, 'Bedrock Connect JAR updated');
       this.invalidateServerCache(serverId);
-      if (server.status === 'running') {
-        this.markRestartRequired(serverId, `Bedrock Connect ${installed.tag} is ready`);
-      }
+      await require('./bedrockConnectLifecycle').afterJarUpdate(serverId);
       return { success: true, fromVersion, toVersion: installed.tag };
+    }
+
+    if (this.isJava(server)) {
+      require('./javaHostingPolicy').assertServerEditionAvailable('java', 'update');
+      const fromVersion = server.minecraft_version || server.version;
+      const backupPath = path.join(server.data_path, 'backup_' + Date.now());
+      await this.backupServerData(server.data_path, backupPath, { java: true });
+      try {
+        const loaderId = server.loader_provider_id || 'vanilla';
+        const entry = javaLoaderRegistry.get(loaderId);
+        let toVersion = targetVersion || 'latest';
+        if (entry) {
+          const plan = await entry.provider.planUpdate(server, { minecraftVersion: targetVersion || 'latest', version: targetVersion });
+          await javaLoaderHost.executeInstallPlan(plan, {
+            serverDir: server.data_path,
+            allowHosts: entry.downloadHosts,
+            ownerId: serverId,
+          });
+          toVersion = plan.result?.minecraftVersion || toVersion;
+          db.prepare(`
+            UPDATE servers
+            SET version = ?, minecraft_version = ?, loader_version = ?, java_major = ?, loader_metadata = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(
+            toVersion,
+            toVersion,
+            plan.result?.loaderVersion || server.loader_version,
+            plan.result?.javaMajor || server.java_major,
+            JSON.stringify(plan.result || {}),
+            serverId
+          );
+        } else {
+          const jar = await javaEdition.ensureJar(targetVersion || 'latest');
+          javaEdition.installJarInto(server.data_path, jar.path, jar.id, jar.java);
+          toVersion = jar.id;
+          db.prepare('UPDATE servers SET version = ?, minecraft_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+            .run(jar.id, jar.id, serverId);
+        }
+        await this.restoreServerData(server.data_path, backupPath, { java: true });
+        this.writeRuntimeServerProperties(this.getServer(serverId));
+        db.prepare(`
+          INSERT INTO update_history (server_id, from_version, to_version, status, notes)
+          VALUES (?, ?, ?, 'completed', ?)
+        `).run(serverId, fromVersion, toVersion, 'Java server updated');
+        this.invalidateServerCache(serverId);
+        if (server.status === 'running') {
+          this.markRestartRequired(serverId, `Java ${toVersion} is ready`);
+        }
+        logger.info(`Java server ${server.name} updated from ${fromVersion} to ${toVersion}`);
+        return { success: true, fromVersion, toVersion };
+      } catch (err) {
+        logger.error(`Java update failed for ${server.name}, restoring backup`);
+        await this.restoreServerData(server.data_path, backupPath, { java: true });
+        throw new Error(`Update failed: ${err.message}`);
+      }
     }
 
     const fromVersion = server.version;
@@ -1944,11 +2411,13 @@ done
     }
   }
 
-  async backupServerData(serverPath, backupPath) {
+  async backupServerData(serverPath, backupPath, { java = false } = {}) {
     fs.mkdirSync(backupPath, { recursive: true });
     
     // Backup important directories that should persist
-    const dirsToBackup = ['behavior_packs', 'texture_packs', 'resource_packs', 'worlds', 'user_data'];
+    const dirsToBackup = java
+      ? javaEdition.worldBackupDirs()
+      : ['behavior_packs', 'texture_packs', 'resource_packs', 'worlds', 'user_data'];
     
     for (const dir of dirsToBackup) {
       const src = path.join(serverPath, dir);
@@ -1963,16 +2432,23 @@ done
     }
 
     // Backup server.properties
-    const propsSrc = path.join(serverPath, 'server.properties');
-    if (fs.existsSync(propsSrc)) {
-      fs.copyFileSync(propsSrc, path.join(backupPath, 'server.properties'));
+    const extraFiles = java
+      ? javaEdition.accessBackupFiles()
+      : ['server.properties'];
+    for (const fileName of extraFiles) {
+      const propsSrc = path.join(serverPath, fileName);
+      if (fs.existsSync(propsSrc)) {
+        fs.copyFileSync(propsSrc, path.join(backupPath, fileName));
+      }
     }
   }
 
-  async restoreServerData(serverPath, backupPath) {
+  async restoreServerData(serverPath, backupPath, { java = false } = {}) {
     if (!fs.existsSync(backupPath)) return;
     
-    const dirsToRestore = ['behavior_packs', 'texture_packs', 'resource_packs', 'worlds', 'user_data'];
+    const dirsToRestore = java
+      ? javaEdition.worldBackupDirs()
+      : ['behavior_packs', 'texture_packs', 'resource_packs', 'worlds', 'user_data'];
     
     for (const dir of dirsToRestore) {
       const src = path.join(backupPath, dir);
@@ -1985,9 +2461,14 @@ done
     }
 
     // Restore server.properties if it exists
-    const propsSrc = path.join(backupPath, 'server.properties');
-    if (fs.existsSync(propsSrc)) {
-      fs.copyFileSync(propsSrc, path.join(serverPath, 'server.properties'));
+    const extraFiles = java
+      ? javaEdition.accessBackupFiles()
+      : ['server.properties'];
+    for (const fileName of extraFiles) {
+      const propsSrc = path.join(backupPath, fileName);
+      if (fs.existsSync(propsSrc)) {
+        fs.copyFileSync(propsSrc, path.join(serverPath, fileName));
+      }
     }
 
     // Cleanup backup
@@ -2402,10 +2883,12 @@ done
       WHERE server_id = ? AND player_id = ?
     `).get(serverId, player.id);
     if (!access?.has_custom_permission) return;
-    this.sendCommand(
-      serverId,
-      `permission set ${this.quoteCommandArgument(player.username)} ${access.permission}`
-    );
+    const safeName = this.quoteCommandArgument(player.username);
+    if (this.isJava(server)) {
+      this.sendCommand(serverId, access.permission === 'operator' ? `op ${safeName}` : `deop ${safeName}`);
+      return;
+    }
+    this.sendCommand(serverId, `permission set ${safeName} ${access.permission}`);
   }
 
   removeFromAllWhitelists(playerId) {
@@ -2524,6 +3007,21 @@ done
 
     if (server.status === 'running') {
       const safeName = this.quoteCommandArgument(player.username);
+      if (this.isJava(server)) {
+        if (changes.isWhitelisted !== undefined || changes.isBanned) {
+          this.sendCommand(serverId, `whitelist ${isWhitelisted ? 'add' : 'remove'} ${safeName}`);
+        }
+        if (hasCustomPermission && (changes.permission !== undefined || changes.hasCustomPermission !== undefined)) {
+          this.sendCommand(serverId, permission === 'operator' ? `op ${safeName}` : `deop ${safeName}`);
+        } else if (changes.hasCustomPermission !== undefined && !hasCustomPermission) {
+          this.sendCommand(serverId, `deop ${safeName}`);
+        }
+        if (isBanned) {
+          this.sendCommand(serverId, `ban ${safeName} ${this.quoteCommandArgument(banReason)}`);
+        } else if (changes.isBanned === false) {
+          this.sendCommand(serverId, `pardon ${safeName}`);
+        }
+      } else {
       if (changes.isWhitelisted !== undefined || changes.isBanned) {
         this.sendCommand(serverId, `allowlist ${isWhitelisted ? 'add' : 'remove'} ${safeName}`);
       }
@@ -2539,6 +3037,7 @@ done
       }
       if (isBanned) {
         this.sendCommand(serverId, `kick ${safeName} ${this.quoteCommandArgument(banReason)}`);
+      }
       }
     }
 
@@ -2579,6 +3078,9 @@ done
 
     fs.writeFileSync(path.join(server.data_path, 'allowlist.json'), `${JSON.stringify(allowlist, null, 2)}\n`);
     fs.writeFileSync(path.join(server.data_path, 'permissions.json'), `${JSON.stringify(permissions, null, 2)}\n`);
+    if (this.isJava(server)) {
+      javaEdition.syncAccessFiles(server, rows);
+    }
   }
 
   quoteCommandArgument(value) {
@@ -2636,6 +3138,22 @@ done
 
   isUdp6PortAvailable(port) {
     return this.bindProbe(port, 'udp6', '::');
+  }
+
+  isTcpPortAvailable(port) {
+    return new Promise((resolve) => {
+      const server = net.createServer();
+      let settled = false;
+      const finish = (available) => {
+        if (settled) return;
+        settled = true;
+        try { server.close(); } catch { /* ignore */ }
+        resolve(available);
+      };
+      server.once('error', () => finish(false));
+      server.once('listening', () => finish(true));
+      server.listen(Number(port), '0.0.0.0');
+    });
   }
 
   bindProbe(port, type, address) {
@@ -2749,7 +3267,7 @@ done
 
   async ensureIpv6PortAssigned(serverId) {
     const server = this.getServer(serverId);
-    if (!server || this.isBedrockConnect(server)) return server?.ipv6_port || null;
+    if (!server || this.isBedrockConnect(server) || this.isJava(server)) return server?.ipv6_port || null;
     if (server.ipv6_port) return server.ipv6_port;
     const ipv6Port = await this.allocateIpv6Port(server.port, { excludeServerId: serverId });
     db.prepare('UPDATE servers SET ipv6_port = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
@@ -2765,6 +3283,9 @@ done
     if (!server) throw new Error('Server not found');
     if (this.isBedrockConnect(server)) {
       throw new Error('Bedrock Connect must stay on UDP ports 19132/19133');
+    }
+    if (this.isJava(server)) {
+      throw new Error('Java Edition uses a single TCP port and does not have a separate IPv6 game port');
     }
     const port = parseInt(newPort, 10);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -2830,21 +3351,23 @@ done
   }
 
   async getAllPorts() {
+    const javaHostingPolicy = require('./javaHostingPolicy');
     const usedPorts = db.prepare(`
-      SELECT p.port, p.protocol, p.family, p.in_use, s.name as server_name
+      SELECT p.port, p.protocol, p.family, p.in_use, s.name as server_name, s.kind as server_kind
       FROM port_usage p
       LEFT JOIN servers s ON p.server_id = s.id
       ORDER BY p.port
     `).all().map((row) => ({
       ...row,
       family: row.family || portRanges.classifyFamily(row.port),
+      server_name: javaHostingPolicy.redactPortName(row.server_kind, row.server_name),
     }));
 
     const usedPortSet = new Set(usedPorts.map((p) => p.port));
-    const addUsed = (port, family, server_name) => {
+    const addUsed = (port, family, server_name, protocol = 'udp') => {
       if (usedPortSet.has(port)) return;
       usedPortSet.add(port);
-      usedPorts.push({ port, protocol: 'udp', family, in_use: 1, server_name });
+      usedPorts.push({ port, protocol, family, in_use: 1, server_name });
     };
 
     for (const row of this.assignedPortRows()) {
@@ -2878,11 +3401,17 @@ done
     const ipv4Candidates = portRanges.ipv4Candidates().filter((port) => !usedPortSet.has(port));
     const ipv6Candidates = portRanges.ipv6Candidates().filter((port) => !usedPortSet.has(port));
     const ipv4Availability = await Promise.all(
-      ipv4Candidates.map(async (port) => ({
-        port,
-        family: 'ipv4',
-        available: await this.isUdpPortAvailable(port),
-      }))
+      ipv4Candidates.map(async (port) => {
+        const [udpFree, tcpFree] = await Promise.all([
+          this.isUdpPortAvailable(port),
+          this.isTcpPortAvailable(port),
+        ]);
+        return {
+          port,
+          family: 'ipv4',
+          available: udpFree && tcpFree,
+        };
+      })
     );
     const ipv6Availability = await Promise.all(
       ipv6Candidates.map(async (port) => ({
@@ -2901,7 +3430,8 @@ done
   // ========== DATA ACCESS ==========
 
   getServer(serverId) {
-    return db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
+    return server ? javaEdition.attachFields(server) : server;
   }
 
   getAllServers() {
@@ -2979,6 +3509,40 @@ done
     pty.on('data', (data) => {
       const text = playerPresence.stripAnsi(data);
       this.observePlayerTraffic(serverId, text);
+      const current = this.getServer(serverId);
+      if (current && this.isJava(current)) {
+        const javaModDependencies = require('./javaModDependencies');
+        const sessionKey = this.sessionKey(serverId);
+        if (javaModDependencies.looksLikeStarted(text) && !javaModDependencies.looksLikeDependencyFailure(text)) {
+          this.javaSessionReady.set(sessionKey, true);
+          javaModDependencies.maybeClearOnReady(current, text);
+        }
+        const overlap = `${this.javaDepOverlap.get(sessionKey) || ''}${text}`;
+        this.javaDepOverlap.set(sessionKey, overlap.slice(-2048));
+        const hits = javaModDependencies.mergeDeps(
+          javaModDependencies.parseLoaderCrash(text),
+          javaModDependencies.parseLoaderCrash(overlap.slice(-4096)),
+          false,
+        );
+        if (hits.length) {
+          this.javaDepHits.set(
+            sessionKey,
+            javaModDependencies.mergeDeps(this.javaDepHits.get(sessionKey) || [], hits, false),
+          );
+        }
+        if (hits.length || javaModDependencies.looksLikeDependencyFailure(text)) {
+          const before = current.missing_mod_dependencies;
+          javaModDependencies.recordFromCrash(current, this.consoleBuffers.get(sessionKey) || text, {
+            extraRequired: this.javaDepHits.get(sessionKey) || [],
+            sinceMs: this.javaSessionStartedAt.get(sessionKey) || 0,
+          });
+          const after = this.getServer(serverId);
+          if (after?.missing_mod_dependencies !== before) {
+            this.invalidateServerCache(serverId);
+            this.broadcastServerStatus(serverId);
+          }
+        }
+      }
       if (global.io) {
         global.io.to(`server-${serverId}`).emit('server-output', {
           serverId,
@@ -2988,9 +3552,27 @@ done
     });
 
     pty.on('exit', () => {
+      const lifecycle = require('./bedrockConnectLifecycle');
+      if (lifecycle.currentSession(serverId) || this.isBedrockConnect(this.getServer(serverId))) {
+        lifecycle.handlePtyExit(serverId, pty);
+        return;
+      }
       const sessionKey = this.sessionKey(serverId);
       if (this.ptySessions.get(sessionKey) !== pty) return;
+      const current = this.getServer(serverId);
+      const buffer = this.consoleBuffers.get(sessionKey) || '';
+      const depHits = this.javaDepHits.get(sessionKey) || [];
+      const sawReady = this.javaSessionReady.get(sessionKey) === true;
+      const sinceMs = this.javaSessionStartedAt.get(sessionKey) || 0;
       this.ptySessions.delete(sessionKey);
+      if (current && this.isJava(current)) {
+        const javaModDependencies = require('./javaModDependencies');
+        javaModDependencies.recordFromCrash(current, buffer, {
+          extraRequired: depHits,
+          includeManifestRequired: !sawReady,
+          sinceMs,
+        });
+      }
       this.markServerStopped(serverId);
       logger.info(`Server process for ${serverId} exited; status changed to stopped`);
     });
@@ -3028,12 +3610,19 @@ done
   }
 
   // Cleanup on shutdown
-  shutdown() {
+  async shutdown() {
     for (const { timers } of this.scheduledRestarts.values()) {
       timers.forEach(timer => clearTimeout(timer));
     }
     this.scheduledRestarts.clear();
+    try {
+      await require('./bedrockConnectLifecycle').shutdown();
+    } catch (err) {
+      logger.error(`Bedrock Connect shutdown failed: ${err.message}`);
+    }
     for (const [id, pty] of this.ptySessions) {
+      const server = this.getServer(id);
+      if (server && this.isBedrockConnect(server)) continue;
       try { pty.kill(); } catch {}
     }
     this.ptySessions.clear();
@@ -3042,6 +3631,8 @@ done
     try { require('./udpGateway').stopAll(); } catch { /* ignore */ }
     try { require('./remotePing').stopAll(); } catch { /* ignore */ }
     try { require('./dnsProxy').stop(); } catch { /* ignore */ }
+    try { require('./gatewayManager').stopAll(); } catch { /* ignore */ }
+    try { require('./controlledProcess').stopAll(); } catch { /* ignore */ }
   }
 }
 

@@ -23,6 +23,7 @@ function Plugins() {
   const [busyId, setBusyId] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [disableConfirm, setDisableConfirm] = useState(null);
 
   const applyPayload = (data) => {
     setPlugins(data?.plugins || []);
@@ -49,19 +50,48 @@ function Plugins() {
     return () => document.removeEventListener('mousedown', onPointer);
   }, [uploadOpen]);
 
+  const isServerEditionPlugin = (plugin) => (plugin.capabilities || []).includes('provider:server-edition');
+
   const togglePlugin = async (plugin) => {
     if (!isAdmin) return;
     setError('');
     setMessage('');
+    if (plugin.enabled && isServerEditionPlugin(plugin) && !disableConfirm) {
+      setBusyId(plugin.id);
+      try {
+        const res = await pluginApi.disableImpact(plugin.id);
+        if (res.data?.required) {
+          setDisableConfirm({ plugin, impact: res.data });
+          setBusyId('');
+          return;
+        }
+      } catch {
+        /* fall through and toggle; backend still requires confirm */
+      }
+    }
     setBusyId(plugin.id);
     try {
-      const res = await pluginApi.setEnabled(plugin.id, !plugin.enabled);
+      const res = await pluginApi.setEnabled(plugin.id, !plugin.enabled, {
+        confirm: Boolean(disableConfirm && plugin.enabled && isServerEditionPlugin(plugin)),
+      });
       applyPayload(res.data);
+      setDisableConfirm(null);
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Could not update that plugin.');
+      const data = err.response?.data;
+      if (data?.code === 'JAVA_HOSTING_DISABLE_CONFIRM') {
+        setDisableConfirm({ plugin, impact: data.impact || data });
+        setBusyId('');
+        return;
+      }
+      setError(data?.error || err.message || 'Could not update that plugin.');
     } finally {
       setBusyId('');
     }
+  };
+
+  const cancelDisable = () => {
+    setDisableConfirm(null);
+    setBusyId('');
   };
 
   const uploadForm = async (formData) => {
@@ -201,9 +231,36 @@ function Plugins() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="text-white font-semibold">{plugin.name}</h3>
                     <span className="text-xs text-mc-textMuted">v{plugin.version}</span>
+                    {plugin.source === 'bundled' && <span className="text-xs text-mc-accent">bundled</span>}
+                    {plugin.source === 'user' && <span className="text-xs text-amber-300">uploaded</span>}
+                    {plugin.trustLevel && <span className="text-xs text-mc-textMuted">{plugin.trustLevel}</span>}
                   </div>
                   {plugin.description && (
                     <p className="text-sm text-mc-textMuted mt-1">{plugin.description}</p>
+                  )}
+                  {plugin.notices?.map((notice) => (
+                    <p key={notice} className="text-xs text-amber-300 mt-1">{notice}</p>
+                  ))}
+                  {plugin.source === 'user' && plugin.backendDeclared && (
+                    <label className="mt-2 flex items-center gap-2 text-xs text-mc-text">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(plugin.backendEnabled)}
+                        disabled={busyId === plugin.id}
+                        onChange={async () => {
+                          setBusyId(plugin.id);
+                          try {
+                            const res = await pluginApi.setBackendEnabled(plugin.id, !plugin.backendEnabled);
+                            applyPayload(res.data);
+                          } catch (err) {
+                            setError(err.response?.data?.error || err.message);
+                          } finally {
+                            setBusyId('');
+                          }
+                        }}
+                      />
+                      Enable uploaded backend execution
+                    </label>
                   )}
                 </div>
                 <button
@@ -229,6 +286,36 @@ function Plugins() {
         <div className="mt-4 flex items-center gap-2 text-xs text-mc-textMuted">
           <Puzzle className="w-4 h-4" />
           See docs/plugins.md for the manifest format and isolation rules.
+        </div>
+      )}
+
+      {disableConfirm && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[80] p-4">
+          <div className="card max-w-md w-full animate-slide-up" onClick={(event) => event.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-white mb-2">Disable {disableConfirm.plugin.name}?</h3>
+            <p className="text-sm text-mc-textMuted mb-4">
+              {disableConfirm.impact?.message
+                || 'Disabling Minecraft Java Hosting will stop all running Java servers and hide them from the dashboard. No server data will be deleted.'}
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                className="btn btn-primary whitespace-nowrap min-w-[7rem]"
+                onClick={() => togglePlugin(disableConfirm.plugin)}
+                disabled={busyId === disableConfirm.plugin.id}
+              >
+                Continue
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary whitespace-nowrap min-w-[7rem]"
+                onClick={cancelDisable}
+                disabled={busyId === disableConfirm.plugin.id}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

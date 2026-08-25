@@ -1,0 +1,21 @@
+{
+  "id": "server-edition-java",
+  "name": "Minecraft Java Hosting",
+  "version": "1.0.0",
+  "author": "Minecraft Bedrock Manager",
+  "description": "Required first-party plugin for local Java server hosting and for Geyser/ViaProxy gateways that depend on it. Disabling stops running Java and Geyser processes and hides them without deleting data.",
+  "pages": [],
+  "menus": [],
+  "backend": "backend.js",
+  "capabilities": [
+    "provider:server-edition"
+  ],
+  "providers": [
+    {
+      "type": "server-edition",
+      "id": "java",
+      "name": "Java",
+      "edition": "java"
+    }
+  ]
+}

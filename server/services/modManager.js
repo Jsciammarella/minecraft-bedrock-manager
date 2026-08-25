@@ -9,9 +9,25 @@ const packInstaller = require('./packInstaller');
 const packFiles = require('./packFiles');
 const execAsync = promisify(exec);
 const modArchives = require('./modArchives');
+const minecraftVersions = require('./minecraftVersions');
 
 const MODS_DIR = path.join(__dirname, '../../data/mods');
 const THUMBS_DIR = path.join(MODS_DIR, 'thumbs');
+
+function parseJavaUploadHints(raw) {
+  if (!raw) return [];
+  let parsed = raw;
+  if (typeof raw === 'string') {
+    try { parsed = JSON.parse(raw); } catch { return []; }
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map((item) => ({
+    name: item?.name || item?.fileName || '',
+    loader: item?.loader || '',
+    minecraftVersions: minecraftVersions.parseVersionList(item?.minecraftVersions || item?.versions || item?.minecraft_versions),
+    environment: item?.environment || 'unknown',
+  }));
+}
 
 class ModManager {
   constructor() {
@@ -68,8 +84,16 @@ class ModManager {
     try {
       for (const file of unique) {
         const destPath = this.storeUploadedFile(file);
+        const ext = path.extname(file.originalname).toLowerCase();
         try {
-          await packInstaller.verifyArchive(destPath);
+          if (ext === '.jar') {
+            require('./zipGuard').assertSafeZipNames(
+              require('./zipGuard').listStoredZipEntries(destPath, { limitEntries: false }),
+              { limitEntries: false }
+            );
+          } else {
+            await packInstaller.verifyArchive(destPath);
+          }
         } catch (err) {
           if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
           throw err;
@@ -91,14 +115,58 @@ class ModManager {
     }
 
     const primary = stored[0];
-    const extraFiles = stored.length > 1 ? modArchives.serializeExtraFiles(stored.slice(1)) : null;
+        const extraFiles = stored.length > 1 ? modArchives.serializeExtraFiles(stored.slice(1)) : null;
     const fileSize = stored.reduce((sum, file) => sum + (file.size || 0), 0);
-    const type = metadata.type || primary.kind || 'addon';
-    const displayName = metadata.name || path.parse(unique[0].originalname).name || primary.name;
+    const edition = String(metadata.edition || '').toLowerCase() === 'java' ? 'java' : (path.extname(primary.path).toLowerCase() === '.jar' ? 'java' : 'bedrock');
+    const isJava = edition === 'java';
+    const javaModFiles = require('./javaModFiles');
+    const javaHints = parseJavaUploadHints(metadata.javaFiles || metadata.filesMeta);
+    let javaMeta = {};
+    let javaRecords = [];
+    if (isJava) {
+      javaRecords = stored.map((item, index) => {
+        const original = unique[index]?.originalname || item.name;
+        const hint = javaHints.find((entry) => String(entry.name || '').toLowerCase() === String(original).toLowerCase())
+          || javaHints[index]
+          || {};
+        const record = javaModFiles.inspectPath(item.path, {
+          name: item.name,
+          size: item.size,
+          loader: hint.loader || metadata.loader,
+          minecraftVersions: hint.minecraftVersions,
+          environment: hint.environment,
+        });
+        if ((!record.loader || record.loader === 'unknown' || record.loader === 'any') && hint.loader) {
+          record.loader = require('./catalogModMeta').normalizeLoader(hint.loader, 'java') || record.loader;
+        }
+        if ((!record.minecraftVersions || !record.minecraftVersions.length) && hint.minecraftVersions?.length) {
+          record.minecraftVersions = hint.minecraftVersions;
+        }
+        return record;
+      });
+      const incomplete = javaRecords.find((record) => (
+        !record.loader || record.loader === 'unknown' || record.loader === 'any'
+        || !(record.minecraftVersions || []).length
+      ));
+      if (incomplete) {
+        for (const item of stored) {
+          if (item.path && fs.existsSync(item.path)) {
+            try { fs.unlinkSync(item.path); } catch { /* ignore */ }
+          }
+        }
+        throw Object.assign(new Error('Each Java jar needs a launcher and Minecraft version. Enter that metadata or use a catalog file so it can be parsed.'), { status: 400 });
+      }
+      try { javaMeta = require('./javaModMetadata').inspectJar(primary.path); } catch {
+        javaMeta = { edition: 'java', warning: 'Java mods are executable code. Only install mods you trust.' };
+      }
+    }
+    const type = metadata.type || javaMeta.artifactType || primary.kind || (isJava ? 'mod' : 'addon');
+    const displayName = metadata.name || javaMeta.name || path.parse(unique[0].originalname).name || primary.name;
 
     const insert = db.prepare(`
-      INSERT INTO mods (name, slug, type, description, file_path, file_size, extra_files, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'upload')
+      INSERT INTO mods (name, slug, type, description, file_path, file_size, extra_files, source,
+        edition, artifact_type, loader, minecraft_versions, environment, dependencies, license, sha256, warning, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'upload', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const slug = this.getAvailableSlug(displayName);
@@ -111,8 +179,21 @@ class ModManager {
         metadata.description || '',
         primary.path,
         fileSize,
-        extraFiles
+        extraFiles,
+        isJava ? 'java' : (javaMeta.edition || 'bedrock'),
+        javaMeta.artifactType || type,
+        javaRecords[0]?.loader || metadata.loader || javaMeta.loader || 'any',
+        JSON.stringify(javaRecords[0]?.minecraftVersions || javaMeta.minecraftVersions || []),
+        javaRecords[0]?.environment || javaMeta.environment || 'unknown',
+        JSON.stringify(javaMeta.dependencies || []),
+        javaMeta.license || '',
+        javaMeta.sha256 || javaRecords[0]?.sha256 || '',
+        javaMeta.warning || '',
+        JSON.stringify(javaMeta.metadata || {})
       );
+      if (isJava && javaRecords.length) {
+        javaModFiles.persistFiles(result.lastInsertRowid, javaRecords, { jarEnvironment: true });
+      }
     } catch (err) {
       for (const item of stored) {
         if (item.path && fs.existsSync(item.path)) {
@@ -128,13 +209,21 @@ class ModManager {
     return { id: result.lastInsertRowid, name: displayName, type, filePath: primary.path };
   }
 
-  async installModToServer(serverId, modId) {
+  async installModToServer(serverId, modId, options = {}) {
     const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
     if (!server) throw new Error('Server not found');
     if (server.kind === 'bedrock_connect' || server.kind === 'remote') {
       throw new Error(server.kind === 'remote'
         ? 'Remote servers do not support mods'
         : 'Bedrock Connect does not support mods');
+    }
+    if (server.kind === 'java') {
+      const result = require('./javaModInstall').install(server, modId, {
+        fileSha256: options.fileSha256,
+        override: Boolean(options.override),
+      });
+      if (result.restartRequired) serverManager.markRestartRequired(serverId, 'Java mods changed');
+      return { success: true, ...result };
     }
 
     const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
@@ -181,6 +270,13 @@ class ModManager {
         ? 'Remote servers do not support mods'
         : 'Bedrock Connect does not support mods');
     }
+    if (server.kind === 'java') {
+      const row = db.prepare('SELECT id FROM server_mods WHERE server_id = ? AND mod_id = ?').get(serverId, modId);
+      if (!row) throw new Error('Mod is not installed on this server');
+      const result = require('./javaModInstall').remove(server, row.id);
+      if (result.restartRequired) serverManager.markRestartRequired(serverId, 'Java mods changed');
+      return { success: true, ...result };
+    }
 
     const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
     if (!mod) throw new Error('Mod not found');
@@ -198,18 +294,22 @@ class ModManager {
   }
 
   async getInstalledMods(serverId) {
-    return db.prepare(`
-      SELECT m.*, sm.installed_at
+    const rows = db.prepare(`
+      SELECT m.*, sm.installed_at, sm.installed_file as installedFile,
+        sm.compatibility_override as compatibilityOverride
       FROM mods m
       JOIN server_mods sm ON m.id = sm.mod_id
       WHERE sm.server_id = ?
       ORDER BY sm.installed_at DESC
     `).all(serverId);
+    return require('./javaModFiles').decorateMany(rows).map((mod) => ({
+      ...mod,
+      compatibilityOverride: Boolean(mod.compatibilityOverride),
+    }));
   }
 
   async getAvailableMods(serverId) {
-    // Get mods NOT installed on this server
-    return db.prepare(`
+    const mods = db.prepare(`
       SELECT m.*
       FROM mods m
       WHERE m.id NOT IN (
@@ -217,14 +317,130 @@ class ModManager {
       )
       ORDER BY m.downloaded_at DESC
     `).all(serverId);
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId);
+    const modCompatibility = require('./modCompatibility');
+    return require('./javaModFiles').decorateMany(mods).filter((mod) => modCompatibility.compatibleWithServer(mod, server));
   }
 
   async getAllMods() {
-    return db.prepare('SELECT * FROM mods ORDER BY downloaded_at DESC').all();
+    return require('./javaModFiles').decorateMany(
+      db.prepare('SELECT * FROM mods ORDER BY downloaded_at DESC').all()
+    );
   }
 
   async getModById(modId) {
-    return db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
+    const row = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
+    return row ? require('./javaModFiles').decorateMany([row])[0] : row;
+  }
+
+  async addFilesToMod(modId, fileOrFiles, metadata = {}) {
+    const javaModFiles = require('./javaModFiles');
+    const catalogModMeta = require('./catalogModMeta');
+    const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
+    if (!mod) throw new Error('Mod not found');
+    if (!catalogModMeta.isJavaMod(mod)) {
+      throw Object.assign(new Error('Additional jars can only be added to Java mods'), { status: 400 });
+    }
+    const incoming = (Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles]).filter(Boolean);
+    if (!incoming.length) throw new Error('No file uploaded');
+    const stored = [];
+    try {
+      for (const file of incoming) {
+        const destPath = this.storeUploadedFile(file);
+        const ext = path.extname(file.originalname).toLowerCase();
+        if (ext === '.jar' || ext === '.zip') {
+          require('./zipGuard').assertSafeZipNames(
+            require('./zipGuard').listStoredZipEntries(destPath, { limitEntries: false }),
+            { limitEntries: false }
+          );
+        } else {
+          throw new Error('Java mods only accept JAR or ZIP files');
+        }
+        stored.push({
+          path: destPath,
+          size: fs.statSync(destPath).size,
+          name: path.basename(destPath),
+          originalname: file.originalname,
+        });
+      }
+    } catch (err) {
+      for (const item of stored) {
+        if (item.path && fs.existsSync(item.path)) {
+          try { fs.unlinkSync(item.path); } catch { /* ignore */ }
+        }
+      }
+      throw err;
+    }
+    const hints = parseJavaUploadHints(metadata.javaFiles || metadata.filesMeta);
+    const records = stored.map((item, index) => {
+      const hint = hints.find((entry) => String(entry.name || '').toLowerCase() === String(item.originalname || '').toLowerCase())
+        || hints[index]
+        || {};
+      const record = javaModFiles.inspectPath(item.path, {
+        name: item.name,
+        size: item.size,
+        loader: hint.loader,
+        minecraftVersions: hint.minecraftVersions,
+        environment: hint.environment,
+      });
+      if ((!record.loader || record.loader === 'unknown' || record.loader === 'any') && hint.loader) {
+        record.loader = catalogModMeta.normalizeLoader(hint.loader, 'java') || record.loader;
+      }
+      if ((!record.minecraftVersions || !record.minecraftVersions.length) && hint.minecraftVersions?.length) {
+        record.minecraftVersions = hint.minecraftVersions;
+      }
+      return record;
+    });
+    const incomplete = records.find((record) => (
+      !record.loader || record.loader === 'unknown' || record.loader === 'any'
+      || !(record.minecraftVersions || []).length
+    ));
+    if (incomplete) {
+      for (const item of stored) {
+        if (item.path && fs.existsSync(item.path)) {
+          try { fs.unlinkSync(item.path); } catch { /* ignore */ }
+        }
+      }
+      throw Object.assign(new Error('Each Java jar needs a launcher and Minecraft version.'), { status: 400 });
+    }
+    javaModFiles.appendFiles(mod, records);
+    logger.info(`Added ${records.length} jar(s) to library mod ${mod.name}`);
+    return javaModFiles.decorateMany([db.prepare('SELECT * FROM mods WHERE id = ?').get(modId)])[0];
+  }
+
+  async deleteModFile(modId, { sha256, name, uninstallFromServers = false } = {}) {
+    const javaModFiles = require('./javaModFiles');
+    const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);
+    if (!mod) throw new Error('Mod not found');
+    const files = javaModFiles.listFiles(mod);
+    const target = files.find((file) => (
+      (sha256 && file.sha256 === sha256)
+      || (name && (file.name === name || path.basename(file.path) === name))
+    ));
+    if (!target) throw Object.assign(new Error('File not found in this mod'), { status: 404 });
+    const usage = javaModFiles.usageForFile(modId, target);
+    if (usage.length && !uninstallFromServers) {
+      const err = new Error('This file is in use on one or more servers');
+      err.status = 409;
+      err.code = 'IN_USE';
+      err.servers = usage;
+      throw err;
+    }
+    if (usage.length) {
+      for (const server of usage) {
+        await this.uninstallModFromServer(server.id, modId);
+      }
+    }
+    if (files.length <= 1) {
+      return this.deleteMod(modId, { uninstallFromServers: true });
+    }
+    if (target.path && fs.existsSync(target.path)) {
+      try { fs.unlinkSync(target.path); } catch { /* ignore */ }
+    }
+    const remaining = files.filter((file) => path.resolve(file.path) !== path.resolve(target.path));
+    javaModFiles.persistFiles(modId, remaining);
+    logger.info(`Removed ${target.name} from library mod ${mod.name}`);
+    return javaModFiles.decorateMany([db.prepare('SELECT * FROM mods WHERE id = ?').get(modId)])[0];
   }
 
   async updateMod(modId, metadata = {}, thumbnailFile = null) {
@@ -258,9 +474,14 @@ class ModManager {
     }
 
     const description = metadata.description != null ? String(metadata.description) : (mod.description || '');
+    const catalogModMeta = require('./catalogModMeta');
+    let loader = mod.loader || 'any';
+    if (metadata.loader != null && catalogModMeta.isJavaMod(mod)) {
+      loader = catalogModMeta.normalizeLoader(metadata.loader, 'java');
+    }
     db.prepare(`
-      UPDATE mods SET description = ?, thumbnail = ? WHERE id = ?
-    `).run(description, thumbnail, modId);
+      UPDATE mods SET description = ?, thumbnail = ?, loader = ? WHERE id = ?
+    `).run(description, thumbnail, loader, modId);
 
     logger.info(`Updated library mod ${mod.name}`);
     return db.prepare('SELECT * FROM mods WHERE id = ?').get(modId);

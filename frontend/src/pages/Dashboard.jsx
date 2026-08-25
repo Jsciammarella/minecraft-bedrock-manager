@@ -9,12 +9,36 @@ import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
 import { startPermissionForKind, stopPermissionForKind, useAuth } from '../context/AuthContext';
 
+import { loaderDisplayName, missingModDependenciesOf, serverLoaderId } from '../utils/modCompatibility';
+import {
+  CONTROL_DISABLED_REASONS,
+  PluginIndicators,
+  PluginPrimaryActions,
+  PluginTags,
+  pluginContributionsOf,
+  primarySplitActions,
+  runPluginAction,
+} from '../components/PluginAugmentations';
+
+function isGeyserGateway(server) {
+  return server?.kind === 'geyser_gateway' || String(server?.id || '').startsWith('gateway:');
+}
+
+
 function isBedrockConnect(server) {
   return server?.kind === 'bedrock_connect';
 }
 
 function isRemote(server) {
   return server?.kind === 'remote';
+}
+
+function isJava(server) {
+  return server?.kind === 'java';
+}
+
+function isBedrockEdition(server) {
+  return !isJava(server) && !isGeyserGateway(server);
 }
 
 function getRemoteReachableBadge(server) {
@@ -37,11 +61,19 @@ function getRemoteReachableBadge(server) {
   );
 }
 
-const STATUS_ORDER = { running: 0, starting: 1, creating: 2, stopped: 3 };
+const STATUS_ORDER = { running: 0, starting: 1, stopping: 2, creating: 3, failed: 4, stopped: 5 };
 
 function serverMatchesSearch(server, search) {
   if (!search) return true;
-  return String(server.name || '').toLowerCase().includes(search.toLowerCase());
+  const q = search.toLowerCase();
+  return [
+    server.name,
+    server.typeLabel,
+    server.targetSummary,
+    server.compatibilityMode,
+    server.connectAddress,
+    server.port,
+  ].some((value) => String(value || '').toLowerCase().includes(q));
 }
 
 function compareServers(a, b, sortBy) {
@@ -52,7 +84,14 @@ function compareServers(a, b, sortBy) {
     const delta = Number(a.port) - Number(b.port);
     if (delta) return delta;
   } else if (sortBy === 'type') {
-    const delta = (isRemote(a) ? 1 : 0) - (isRemote(b) ? 1 : 0);
+    const typeRank = (server) => {
+      if (isBedrockConnect(server)) return 0;
+      if (isGeyserGateway(server)) return 1;
+      if (isJava(server)) return 2;
+      if (isRemote(server)) return 4;
+      return 3;
+    };
+    const delta = typeRank(a) - typeRank(b);
     if (delta) return delta;
   } else if (isBedrockConnect(a) !== isBedrockConnect(b)) {
     return isBedrockConnect(a) ? -1 : 1;
@@ -62,7 +101,7 @@ function compareServers(a, b, sortBy) {
 
 function Dashboard() {
   const navigate = useNavigate();
-  const { servers, loading, refresh } = useApi();
+  const { servers, gateways, javaHostingAvailable, loading, refresh } = useApi();
   const { connected } = useSocket();
   const { can } = useAuth();
   const [actions, setActions] = useState({});
@@ -128,7 +167,36 @@ function Dashboard() {
       refresh();
       loadBcPreview();
     } catch (err) {
+      if (err.response?.data?.code === 'PLUGIN_ATTACHMENT') {
+        if (!confirm(`${err.response.data.error}\n\nOK detaches the attached gateway and deletes the server. Cancel keeps both.`)) return;
+        const alsoDelete = confirm('Also delete the attached gateway? Cancel keeps the gateway (target marked unresolved).');
+        try {
+          await serverApi.delete(serverId, {
+            detachAttachedPlugins: !alsoDelete,
+            deleteAttachedGateways: alsoDelete,
+          });
+          refresh();
+          loadBcPreview();
+        } catch (retryErr) {
+          console.error('Failed to delete server:', retryErr);
+        }
+        return;
+      }
       console.error('Failed to delete server:', err);
+    }
+  };
+
+  const handlePluginAction = async (server, action) => {
+    const key = `${server.id}-${action.pluginId}-${action.id}`;
+    setActions((prev) => ({ ...prev, [key]: true }));
+    setActionError('');
+    try {
+      await runPluginAction({ server, action });
+    } catch (err) {
+      setActionError(err.response?.data?.error || err.message || 'Plugin action failed');
+    } finally {
+      setActions((prev) => ({ ...prev, [key]: false }));
+      refresh();
     }
   };
 
@@ -193,7 +261,7 @@ function Dashboard() {
   const beginLanToggle = async (server, event) => {
     event?.stopPropagation();
     if (isBedrockConnect(server) || lanOf(server).native || server.status === 'creating') return;
-    if (servers.some(item => isBedrockConnect(item) && (item.status === 'running' || item.status === 'starting'))) return;
+    if (servers.some(item => isBedrockConnect(item) && (item.status === 'running' || item.status === 'starting' || item.status === 'stopping'))) return;
     const enabled = Boolean(lanOf(server).enabled);
     setLanError('');
     setLanMessage('');
@@ -256,16 +324,26 @@ function Dashboard() {
         return <span className="badge badge-success"><span className="w-1.5 h-1.5 bg-green-400 rounded-full mr-1.5" />Online</span>;
       case 'starting':
         return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Starting</span>;
+      case 'stopping':
+        return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Stopping</span>;
       case 'creating':
         return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Building</span>;
       case 'stopped':
         return <span className="badge badge-danger"><span className="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5" />Offline</span>;
+      case 'plugin_disabled':
+        return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-amber-400 rounded-full mr-1.5" />Plugin disabled</span>;
+      case 'failed':
+      case 'auth_misconfigured':
+      case 'protocol_incompatible':
+      case 'target_unreachable':
+      case 'port_conflict':
+        return <span className="badge badge-danger"><span className="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5" />{status.replace(/_/g, ' ')}</span>;
       default:
         return <span className="badge badge-info">{status}</span>;
     }
   };
 
-  if (loading && servers.length === 0) {
+  if (loading && servers.length === 0 && (!gateways || gateways.length === 0)) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="flex flex-col items-center gap-3">
@@ -278,15 +356,32 @@ function Dashboard() {
 
   const activeCount = servers.filter(s => s.status === 'running').length;
   const totalPlayers = servers.reduce((sum, s) => sum + (s.stats?.onlinePlayers || 0), 0);
+  const gatewayTiles = (gateways || []).map((gateway) => ({
+    ...gateway,
+    kind: 'geyser_gateway',
+    port: gateway.port,
+    connectAddress: gateway.connectAddress
+      ? `${gateway.connectAddress}:${gateway.port}`
+      : `UDP ${gateway.port}`,
+    stats: {},
+  }));
   const bcExists = Boolean(bcPreview?.exists || servers.some(isBedrockConnect));
   const bcPending = Boolean(bcPreview?.pending);
   const bcDisabled = bcExists || bcPending || bcBusy;
-  const bcRunning = servers.some(server => isBedrockConnect(server) && (server.status === 'running' || server.status === 'starting'));
+  const bcRunning = servers.some(server => isBedrockConnect(server) && (server.status === 'running' || server.status === 'starting' || server.status === 'stopping'));
   const buildingServers = servers.filter((server) => server.status === 'creating');
-  const visibleServers = [...servers]
+  const activeFilter = (!javaHostingAvailable && (filterType === 'java' || filterType === 'geyser'))
+    ? 'all'
+    : filterType;
+  const visibleServers = [...servers, ...gatewayTiles]
     .filter((server) => {
-      if (filterType === 'remote') return isRemote(server);
-      if (filterType === 'local') return !isRemote(server);
+      if (activeFilter === 'remote') return isRemote(server);
+      if (activeFilter === 'local') return !isRemote(server);
+      if (activeFilter === 'java') return isJava(server) && !isGeyserGateway(server);
+      if (activeFilter === 'bedrock') return isBedrockEdition(server);
+      if (activeFilter === 'geyser') {
+        return isGeyserGateway(server) || pluginContributionsOf(server).length > 0;
+      }
       return true;
     })
     .filter((server) => serverMatchesSearch(server, search))
@@ -389,6 +484,9 @@ function Dashboard() {
             <div>
               <p className="text-sm text-mc-textMuted">Total Servers</p>
               <p className="text-2xl font-bold text-white mt-1">{servers.length}</p>
+              {gatewayTiles.length > 0 && (
+                <p className="text-xs text-mc-textMuted mt-1">{gatewayTiles.length} Geyser {gatewayTiles.length === 1 ? 'gateway' : 'gateways'} shown separately</p>
+              )}
             </div>
             <div className="w-10 h-10 bg-blue-500/20 rounded-lg flex items-center justify-center">
               <Server className="w-5 h-5 text-blue-400" />
@@ -435,7 +533,7 @@ function Dashboard() {
       </div>
 
       {/* Server List */}
-      {servers.length === 0 ? (
+      {servers.length === 0 && gatewayTiles.length === 0 ? (
         <div className="card text-center py-16">
           <Server className="w-16 h-16 text-mc-textMuted mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">No servers yet</h3>
@@ -477,13 +575,16 @@ function Dashboard() {
               />
             </div>
             <select
-              value={filterType}
+              value={activeFilter}
               onChange={(e) => setFilterType(e.target.value)}
               className="input w-40"
             >
               <option value="all">All Types</option>
               <option value="local">Local</option>
               <option value="remote">Remote</option>
+              {javaHostingAvailable && <option value="java">Java</option>}
+              <option value="bedrock">Bedrock</option>
+              {javaHostingAvailable && <option value="geyser">Geyser</option>}
             </select>
             <select
               value={sortBy}
@@ -506,13 +607,20 @@ function Dashboard() {
         ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {visibleServers.map((server) => {
-            const lan = lanOf(server);
+            const geyser = isGeyserGateway(server);
+            const contributions = pluginContributionsOf(server);
+            const splitActions = primarySplitActions(server);
+            const javaControlsLocked = geyser || server.controlPolicy === 'remote-plugin-lifecycle' || server.coreActionsDisabled;
+            const javaLockReason = CONTROL_DISABLED_REASONS[server.disabledReasonId] || CONTROL_DISABLED_REASONS['remote-java'];
+            const lan = geyser ? { native: false, enabled: false, error: '' } : lanOf(server);
             const lanOn = Boolean(lan.native || lan.enabled);
             const isBuilding = server.status === 'creating';
             const createFailed = String(server.pending_restart_reason || '').startsWith('Create failed');
-            const lanLocked = isBedrockConnect(server) || lan.native || bcRunning || isBuilding;
+            const lanLocked = geyser || isBedrockConnect(server) || isJava(server) || lan.native || bcRunning || isBuilding;
             const lanTitle = isBedrockConnect(server)
               ? 'Bedrock Connect is a featured-server list, not a LAN game'
+              : isJava(server)
+                ? 'Java Edition does not use the Bedrock console LAN proxy'
               : isBuilding
                 ? 'Wait until this server finishes building'
                 : lan.native
@@ -546,19 +654,39 @@ function Dashboard() {
                 <div className="flex items-center gap-3">
                   <div className={`w-3 h-3 rounded-full ${
                     server.status === 'running' ? 'bg-green-400 animate-pulse-glow' : 
-                    server.status === 'starting' || server.status === 'creating' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'
+                    server.status === 'starting' || server.status === 'stopping' || server.status === 'creating' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'
                   }`} />
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-semibold text-white">{server.name}</h3>
-                      {isBedrockConnect(server) && (
+                      {geyser ? (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                          {server.typeLabel || 'Remote Java — Geyser'}
+                        </span>
+                      ) : isBedrockConnect(server) ? (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">
                           Console list
                         </span>
-                      )}
+                      ) : null}
                       {isRemote(server) && (
                         <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30">
                           Remote
+                        </span>
+                      )}
+                      {geyser ? null : isJava(server) ? (
+                        <>
+                          <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                            JAVA
+                          </span>
+                          {loaderDisplayName(serverLoaderId(server)) && (
+                            <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                              {loaderDisplayName(serverLoaderId(server))}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                          Bedrock
                         </span>
                       )}
                       {lan.active && !lan.native && !isBedrockConnect(server) && (
@@ -571,14 +699,22 @@ function Dashboard() {
                           LAN native
                         </span>
                       )}
+                      <PluginTags server={server} />
                     </div>
                     <p className="text-xs text-mc-textMuted" title={connectLabel}>
-                      {isRemote(server) ? 'remote' : `v${server.version}`} • <span className={connectLabel === 'Phantom Proxy' ? 'text-sky-300' : 'font-mono text-mc-text'}>{connectLabel}</span>
+                      {geyser
+                        ? `${server.targetSummary || 'Java target'} • ${connectLabel}`
+                        : isRemote(server) ? 'remote' : `v${server.version}`}
+                      {!geyser && <> • <span className={connectLabel === 'Phantom Proxy' ? 'text-sky-300' : 'font-mono text-mc-text'}>{connectLabel}</span></>}
                     </p>
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                  {contributions.length > 0 && !geyser && (
+                    <span className="text-[10px] uppercase tracking-wide text-mc-textMuted">Java</span>
+                  )}
                   {getStatusBadge(server.status)}
+                  <PluginIndicators server={server} />
                   {getRemoteReachableBadge(server)}
                 </div>
               </div>
@@ -588,14 +724,18 @@ function Dashboard() {
                   <Loader2 className="w-4 h-4 flex-shrink-0 mt-0.5 animate-spin" />
                   <div>
                     <p className="font-medium">Building Server</p>
-                    <p className="text-xs text-yellow-200/80 mt-1">Downloading Minecraft Bedrock Dedicated Server. Start and LAN unlock when this finishes.</p>
+                    <p className="text-xs text-yellow-200/80 mt-1">
+                      {isJava(server)
+                        ? 'Downloading Minecraft Java Edition server.jar. Start unlocks when this finishes.'
+                        : 'Downloading Minecraft Bedrock Dedicated Server. Start and LAN unlock when this finishes.'}
+                    </p>
                   </div>
                 </div>
               )}
-              {createFailed && server.pending_restart !== 1 && (
-                <div className="mb-4 p-2.5 rounded-lg border border-red-500/30 bg-red-500/10 text-red-300 text-xs flex items-start gap-2">
+              {isJava(server) && (missingModDependenciesOf(server)?.required || []).length > 0 && (
+                <div className="mb-4 p-2.5 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-yellow-300 text-xs flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  {server.pending_restart_reason}
+                  There are missing dependencies.
                 </div>
               )}
               {server.pending_restart === 1 && (
@@ -644,34 +784,89 @@ function Dashboard() {
 
               {/* Actions */}
               <div className="page-actions flex items-center gap-2">
-                {server.status === 'creating' && (
+                {(geyser || splitActions.length > 0) ? (
+                  <div className="primary-split">
+                    {geyser || javaControlsLocked ? (
+                      <button
+                        disabled
+                        title={javaLockReason}
+                        className="btn btn-secondary flex-1 text-sm opacity-50 cursor-not-allowed"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        Start Java Server
+                      </button>
+                    ) : server.status === 'creating' || server.status === 'starting' ? (
+                      <button disabled className="btn btn-secondary flex-1 text-sm">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        {server.status === 'creating' ? 'Building...' : 'Starting...'}
+                      </button>
+                    ) : server.status !== 'running' ? (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'start'); }}
+                        disabled={actions[`${server.id}-start`] || !canStart}
+                        className="btn btn-primary flex-1 text-sm"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        {actions[`${server.id}-start`] ? 'Starting...' : 'Start Java Server'}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'stop'); }}
+                        disabled={actions[`${server.id}-stop`] || !canStop}
+                        className="btn btn-danger flex-1 text-sm"
+                      >
+                        <Square className="w-3.5 h-3.5" />
+                        {actions[`${server.id}-stop`] ? 'Stopping...' : 'Stop Java Server'}
+                      </button>
+                    )}
+                    <PluginPrimaryActions
+                      server={server}
+                      pending={actions}
+                      onAction={(action) => handlePluginAction(server, action)}
+                    />
+                  </div>
+                ) : server.status === 'creating' ? (
                   <button disabled className="btn btn-secondary flex-1 text-sm">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     Building...
                   </button>
-                )}
-                {server.status === 'starting' && (
+                ) : server.status === 'starting' ? (
                   <button disabled className="btn btn-primary flex-1 text-sm">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     Starting...
                   </button>
-                )}
-                {server.status !== 'running' && server.status !== 'creating' && server.status !== 'starting' && canStart && (
+                ) : server.status === 'stopping' ? (
+                  <button disabled className="btn btn-danger flex-1 text-sm">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Stopping...
+                  </button>
+                ) : server.status !== 'running' ? (
+                  canStart ? (
+                  isJava(server) && (missingModDependenciesOf(server)?.required || []).length > 0 ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); navigate(`/servers/${server.id}#dependencies`); }}
+                      className="btn btn-warning flex-1 text-sm"
+                    >
+                      Resolve dependencies
+                    </button>
+                  ) : (
+
                   <button
                     onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'start'); }}
-                    disabled={actions[`${server.id}-start`]}
+                    disabled={actions[`${server.id}-start`] || !canStart}
                     className="btn btn-primary flex-1 text-sm"
                   >
                     <Play className="w-3.5 h-3.5" />
                     {actions[`${server.id}-start`] ? 'Starting...' : 'Start'}
                   </button>
-                )}
-                {server.status === 'running' && (
+                  )
+                  ) : null
+                ) : (
                   <>
                     {canStop && (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'stop'); }}
-                      disabled={actions[`${server.id}-stop`]}
+                      disabled={actions[`${server.id}-stop`] || !canStop}
                       className="btn btn-danger flex-1 text-sm"
                     >
                       <Square className="w-3.5 h-3.5" />
@@ -689,36 +884,50 @@ function Dashboard() {
                     )}
                   </>
                 )}
+                {!(geyser || javaControlsLocked) && server.status === 'running' && splitActions.length > 0 && canStart && canStop && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleAction(server.id, 'restart'); }}
+                    disabled={actions[`${server.id}-restart`]}
+                    className="btn btn-secondary text-sm"
+                    title="Restart Java server"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+                )}
+
                 {canOpen && (
+
                 <button
                   onClick={(e) => { e.stopPropagation(); navigate(`/servers/${server.id}`); }}
-                  className="btn btn-secondary text-sm"
-                  title="View Details"
+                  disabled={javaControlsLocked}
+                  title={javaControlsLocked ? javaLockReason : 'View Details'}
+                  className={`btn btn-secondary text-sm ${javaControlsLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <Terminal className="w-3.5 h-3.5" />
                 </button>
                 )}
                 {(can('servers.change_general_settings') || can('servers.change_game_settings') || can('servers.change_server_options') || can('servers.change_remote_local_ports') || can('servers.change_remote_target') || can('servers.update')) && (
                 <button
-                  onClick={(e) => { e.stopPropagation(); navigate(`/servers/${server.id}/properties`); }}
-                  className="btn btn-secondary text-sm"
-                  title="Properties"
+                  onClick={(e) => { e.stopPropagation(); if (!javaControlsLocked) navigate(`/servers/${server.id}/properties`); }}
+                  disabled={javaControlsLocked}
+                  title={javaControlsLocked ? javaLockReason : 'Properties'}
+                  className={`btn btn-secondary text-sm ${javaControlsLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <Settings className="w-3.5 h-3.5" />
                 </button>
                 )}
                 {can('servers.set_lan') && (
                 <button
-                  onClick={(e) => beginLanToggle(server, e)}
-                  disabled={lanLocked || lanBusy[server.id]}
+                  onClick={(e) => { if (javaControlsLocked) { e.stopPropagation(); return; } beginLanToggle(server, e); }}
+                  disabled={lanLocked || lanBusy[server.id] || javaControlsLocked}
                   className={`btn text-sm ${
-                    lanLocked
+                    lanLocked || javaControlsLocked
                       ? 'bg-mc-surfaceLight text-mc-textMuted'
                       : lanOn
                         ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 hover:bg-sky-500/30'
                         : 'btn-secondary'
                   }`}
-                  title={lanTitle}
+                  title={javaControlsLocked ? javaLockReason : lanTitle}
                 >
                   <Radio className="w-3.5 h-3.5" />
                   {lanBusy[server.id] ? '...' : 'LAN'}
@@ -726,12 +935,25 @@ function Dashboard() {
                 )}
                 {can('servers.delete') && (
                 <button
-                  onClick={(e) => { e.stopPropagation(); handleDelete(server.id, server.name); }}
-                  className="btn btn-secondary text-sm text-mc-danger hover:bg-red-500/20"
-                  title="Delete Server"
+                  onClick={(e) => { e.stopPropagation(); if (!javaControlsLocked) handleDelete(server.id, server.name); }}
+                  disabled={javaControlsLocked}
+                  className={`btn btn-secondary text-sm text-mc-danger hover:bg-red-500/20 ${javaControlsLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  title={javaControlsLocked ? javaLockReason : 'Delete Server'}
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
+                )}
+                {geyser && canOpen && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(server.managementUrl || `/plugins/gateway-geyser?gatewayId=${String(server.id).replace(/^gateway:/, '')}`);
+                    }}
+                    className="btn btn-secondary text-sm"
+                  >
+                    Manage
+                  </button>
+
                 )}
               </div>
             </div>

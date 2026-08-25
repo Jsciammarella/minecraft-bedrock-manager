@@ -1,0 +1,29 @@
+{
+  "id": "java-loader-fabric",
+  "name": "Fabric Loader",
+  "version": "1.0.0",
+  "author": "Minecraft Bedrock Manager",
+  "description": "Downloads Fabric server jars from official Fabric Meta on demand. Compatible with Fabric.",
+  "pages": [],
+  "menus": [],
+  "backend": "backend.js",
+  "capabilities": [
+    "provider:java-loader",
+    "download:official-sources",
+    "filesystem:server-java",
+    "filesystem:server-mods",
+    "runtime:java"
+  ],
+  "downloadHosts": [
+    "meta.fabricmc.net",
+    "maven.fabricmc.net"
+  ],
+  "providers": [
+    {
+      "type": "java-loader",
+      "id": "fabric",
+      "name": "Fabric",
+      "edition": "java"
+    }
+  ]
+}

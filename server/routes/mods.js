@@ -7,8 +7,6 @@ const modManager = require('../services/modManager');
 const catalog = require('../services/catalogService');
 const gitCatalog = require('../services/gitCatalogClient');
 const fileCatalog = require('../services/fileCatalogClient');
-const fileCatalogTemplate = require('../services/fileCatalogTemplate');
-const gitCatalogTemplate = require('../services/gitCatalogTemplate');
 const packFiles = require('../services/packFiles');
 const curseforgeImporter = require('../services/curseforgeImporter');
 const mcpedlImporter = require('../services/mcpedlImporter');
@@ -151,6 +149,7 @@ router.put('/:id', requirePermission('library.change_settings'), (req, res) => {
       const result = await modManager.updateMod(req.params.id, {
         description: req.body?.description,
         clearThumbnail: req.body?.clearThumbnail === '1' || req.body?.clearThumbnail === 'true',
+        loader: req.body?.loader,
       }, req.file || null);
       res.json(result);
     } catch (err) {
@@ -158,6 +157,49 @@ router.put('/:id', requirePermission('library.change_settings'), (req, res) => {
       res.status(400).json({ error: err.message });
     }
   });
+});
+
+router.post('/:id/files', (req, res) => {
+  upload.fields([
+    { name: 'files', maxCount: 20 },
+    { name: 'file', maxCount: 20 },
+  ])(req, res, async (uploadError) => {
+    if (uploadError) {
+      const tooLarge = uploadError.code === 'LIMIT_FILE_SIZE';
+      return res.status(tooLarge ? 413 : 400).json({
+        error: tooLarge ? 'The selected file exceeds the 1 GB upload limit.' : uploadError.message,
+      });
+    }
+    const files = collectedUploads(req);
+    try {
+      if (!files.length) return res.status(400).json({ error: 'No file uploaded' });
+      const result = await modManager.addFilesToMod(req.params.id, files, req.body);
+      res.json(result);
+    } catch (err) {
+      unlinkUploads(files);
+      res.status(err.status || 400).json({ error: err.message });
+    }
+  });
+});
+
+router.delete('/:id/files', async (req, res) => {
+  try {
+    const uninstallFromServers = req.query.uninstallFromAll === '1' || req.query.uninstallFromAll === 'true'
+      || req.body?.uninstallFromServers === true || req.body?.uninstallFromAll === true;
+    const result = await modManager.deleteModFile(req.params.id, {
+      sha256: req.body?.sha256 || req.query.sha256,
+      name: req.body?.name || req.query.name,
+      uninstallFromServers,
+    });
+    res.json(result || { success: true });
+  } catch (err) {
+    const status = err.status || 400;
+    res.status(status).json({
+      error: err.message,
+      code: err.code,
+      servers: err.servers || [],
+    });
+  }
 });
 
 router.get('/:id/thumbnail', async (req, res) => {
@@ -206,7 +248,10 @@ router.get('/installed/:serverId', async (req, res) => {
 // Install mod to server
 router.post('/:modId/install/:serverId', requirePermission('servers.add_mods'), async (req, res) => {
   try {
-    await modManager.installModToServer(req.params.serverId, req.params.modId);
+    await modManager.installModToServer(req.params.serverId, req.params.modId, {
+      fileSha256: req.body?.fileSha256,
+      override: false,
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -227,13 +272,22 @@ router.delete('/:modId/uninstall/:serverId', requirePermission('servers.remove_m
 
 router.get('/catalog/settings', async (req, res) => {
   try {
-    res.json(catalog.getSettings());
+    res.json({ multiFileMode: require('../services/settingsStore').getMultiFileMode() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+router.get('/catalog/multi-file-mode', (req, res) => {
+  try {
+    res.json({ multiFileMode: require('../services/settingsStore').getMultiFileMode() });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 router.put('/catalog/multi-file-mode', requirePermission('catalog.change_file_handling'), (req, res) => {
+
   try {
     res.json(catalog.setMultiFileMode(req.body?.mode));
   } catch (err) {
@@ -241,69 +295,15 @@ router.put('/catalog/multi-file-mode', requirePermission('catalog.change_file_ha
   }
 });
 
-router.put('/catalog/settings', async (req, res) => {
-  try {
-    const body = req.body || {};
-    const wantsGit = body.git != null;
-    const wantsFiles = body.files != null;
-    const wantsCurseforge = body.curseforgeApiKey != null || body.clearCurseforgeApiKey;
-    if (!wantsGit && !wantsFiles && !wantsCurseforge) {
-      const err = new Error('You do not have permission to do that');
-      err.status = 403;
-      throw err;
-    }
-    if (wantsCurseforge) assertPermission(req, 'catalog.set_curseforge_key');
-    if (wantsGit) assertPermission(req, 'catalog.enable_git');
-    if (wantsFiles) assertPermission(req, 'catalog.enable_file');
-    const previous = gitCatalog.getConfig();
-    const saved = catalog.saveSettings(body);
-    const next = gitCatalog.getConfig();
-    const gitChanged = previous.enabled !== next.enabled
-      || previous.url !== next.url
-      || previous.branch !== next.branch
-      || previous.username !== next.username
-      || previous.token !== next.token
-      || previous.subdir !== next.subdir;
-    if (gitChanged && gitCatalog.canSync()) {
-      gitCatalog.startSync('settings-save').catch(() => {});
-    }
-    res.json({
-      ...saved,
-      git: {
-        ...saved.git,
-        sync: gitCatalog.getSyncStatus(),
-      },
-    });
-  } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
-  }
-});
-
-router.get('/catalog/git/starter', (req, res) => {
-  const zip = gitCatalogTemplate.buildStarterZip();
-  res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', `attachment; filename="${gitCatalogTemplate.STARTER_FILENAME}"`);
-  res.send(zip);
-});
-
 router.get('/catalog/git/status', (req, res) => {
   res.json(gitCatalog.getSyncStatus());
-});
-
-router.post('/catalog/git/test', requirePermission('catalog.enable_git'), async (req, res) => {
-  try {
-    const result = await catalog.testGitConnection(req.body || {});
-    res.json(result);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
 });
 
 router.post('/catalog/git/sync', requirePermission('catalog.enable_git'), async (req, res) => {
   try {
     if (!gitCatalog.canSync()) {
       return res.status(400).json({
-        error: 'Save Git catalog settings with the catalog enabled and an access token before syncing.',
+        error: 'Save Git Catalog plugin settings with the catalog enabled and an access token before syncing.',
       });
     }
     gitCatalog.startSync('manual').catch(() => {});
@@ -322,22 +322,6 @@ router.get('/catalog/git/thumbnail/:slug', async (req, res) => {
     res.sendFile(path.resolve(filePath), {
       headers: { 'Cache-Control': 'no-cache' },
     });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.get('/catalog/file/starter', (req, res) => {
-  const zip = fileCatalogTemplate.buildStarterZip();
-  res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', `attachment; filename="${fileCatalogTemplate.STARTER_FILENAME}"`);
-  res.send(zip);
-});
-
-router.post('/catalog/file/test', requirePermission('catalog.enable_file'), async (req, res) => {
-  try {
-    const result = await catalog.testFileConnection(req.body || {});
-    res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -365,8 +349,32 @@ router.get('/catalog/search', async (req, res) => {
       page: parseInt(req.query.page) || 1,
       sortBy: req.query.sortBy || 'relevancy',
       source: req.query.source || 'all',
+      provider: req.query.provider || '',
+      edition: req.query.edition || 'all',
+      gameVersions: req.query.gameVersions,
+      loader: req.query.loader || '',
+      environment: req.query.environment || '',
     });
     res.json(result);
+  } catch (err) {
+    const body = { error: err.message };
+    if (err.code) body.code = err.code;
+    if (err.loaderId) body.loaderId = err.loaderId;
+    res.status(err.status || 500).json(body);
+  }
+});
+
+router.get('/catalog/filter-availability', (req, res) => {
+  try {
+    res.json(catalog.listFilterAvailability());
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
+  }
+});
+
+router.get('/catalog/providers', async (req, res) => {
+  try {
+    res.json(catalog.listProviders());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -374,7 +382,11 @@ router.get('/catalog/search', async (req, res) => {
 
 router.get('/catalog/categories', async (req, res) => {
   try {
-    const categories = await catalog.getCategories();
+    const categories = await catalog.getCategories({
+      edition: req.query.edition || 'all',
+      provider: req.query.provider || '',
+      source: req.query.source || 'all',
+    });
     res.json(categories);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -386,7 +398,7 @@ router.post('/catalog/download/:slug', requirePermission('catalog.download_mods'
     const result = await catalog.downloadMod(req.params.slug, req.body || {});
     res.json(result);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
   }
 });
 

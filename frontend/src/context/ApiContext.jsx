@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { serverApi } from '../services/api';
+import { serverApi, dashboardApi } from '../services/api';
 import { useAuth } from './AuthContext';
 
 const ApiContext = createContext(null);
@@ -7,6 +7,8 @@ const ApiContext = createContext(null);
 export function ApiProvider({ children }) {
   const { user } = useAuth();
   const [servers, setServers] = useState([]);
+  const [gateways, setGateways] = useState([]);
+  const [javaHostingAvailable, setJavaHostingAvailable] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   // Debounce ref to avoid too many rapid refreshes from real-time events
@@ -19,8 +21,15 @@ export function ApiProvider({ children }) {
       return;
     }
     try {
-      const res = await serverApi.getAll();
+      const [res, dash] = await Promise.all([
+        serverApi.getAll(),
+        dashboardApi.list().catch(() => ({ data: { gateways: [] } })),
+      ]);
       setServers(res.data);
+      setGateways(Array.isArray(dash.data?.gateways) ? dash.data.gateways : []);
+      if (dash.data && Object.prototype.hasOwnProperty.call(dash.data, 'javaHostingAvailable')) {
+        setJavaHostingAvailable(Boolean(dash.data.javaHostingAvailable));
+      }
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -70,7 +79,7 @@ export function ApiProvider({ children }) {
   }, [fetchServers]);
 
   const hasTransient = servers.some((server) => (
-    server.status === 'creating' || server.status === 'starting'
+    server.status === 'creating' || server.status === 'starting' || server.status === 'stopping'
   ));
   useEffect(() => {
     if (!hasTransient) return undefined;
@@ -84,7 +93,7 @@ export function ApiProvider({ children }) {
   }, [fetchServers]);
 
   return (
-    <ApiContext.Provider value={{ servers, loading, error, refresh, setServers }}>
+    <ApiContext.Provider value={{ servers, gateways, javaHostingAvailable, loading, error, refresh, setServers }}>
       {children}
     </ApiContext.Provider>
   );

@@ -3,10 +3,12 @@ const ANSI_OSC_RE = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
 const ANSI_CHAR_RE = /\u001b[@-Z\\-_]/g;
 const CSI_8BIT_RE = /\u009b[\d;]*[A-Za-z]/g;
 const BARE_SGR_RE = /\[(?:\d{1,3}(?:;\d{1,3})*)?m/g;
-const LIST_HEADER_RE = /There are\s+(\d+)\s*\/\s*(\d+)\s+players online:?/i;
+const LIST_HEADER_RE = /There are\s+(\d+)\s*(?:\/|of a max of)\s*(\d+)\s+players online:?/i;
 const LIST_NONE_RE = /No players currently online/i;
 const JOIN_RE = /Player (?:connected|spawned):\s*([^\r\n]+)/gi;
 const LEAVE_RE = /Player disconnected:\s*([^\r\n]+)/gi;
+const JAVA_JOIN_RE = /\]:\s*([A-Za-z0-9_]{1,16}) joined the game/gi;
+const JAVA_LEAVE_RE = /\]:\s*([A-Za-z0-9_]{1,16}) left the game/gi;
 
 function stripAnsi(text) {
   return String(text || '')
@@ -15,6 +17,8 @@ function stripAnsi(text) {
     .replace(ANSI_CHAR_RE, '')
     .replace(CSI_8BIT_RE, '')
     .replace(BARE_SGR_RE, '')
+    .replace(/\[\?[0-9;]*\$p/g, '')
+    .replace(/\[c(?=\[|$)/g, '')
     .replace(/\r/g, '');
 }
 
@@ -92,6 +96,15 @@ function parsePresenceEvents(text) {
     const username = normalizeUsername(match[1].split(',')[0]);
     if (!username) continue;
     events.push({ type: 'leave', username, xuid: extractXuid(match[1]) });
+  }
+
+  JAVA_JOIN_RE.lastIndex = 0;
+  while ((match = JAVA_JOIN_RE.exec(cleaned)) !== null) {
+    events.push({ type: 'join', username: match[1], xuid: null });
+  }
+  JAVA_LEAVE_RE.lastIndex = 0;
+  while ((match = JAVA_LEAVE_RE.exec(cleaned)) !== null) {
+    events.push({ type: 'leave', username: match[1], xuid: null });
   }
 
   return events;

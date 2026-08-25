@@ -12,23 +12,45 @@ const {
   requireServerUpdate,
   assertPermission,
 } = require('../middleware/auth');
+const pluginContributions = require('../services/pluginContributions');
+const javaHostingPolicy = require('../services/javaHostingPolicy');
 
+function sendServiceError(res, err) {
+  const status = Number(err.status) || 400;
+  return res.status(status).json({
+    error: err.message,
+    message: err.message,
+    code: err.code,
+  });
+}
+
+router.param('id', (req, res, next, id) => {
+  if (String(id).startsWith('gateway:')) {
+    return res.status(400).json({
+      error: 'Gateway identifiers cannot be used with server endpoints. Manage this Geyser server from the Geyser plugin.',
+    });
+  }
+  next();
+});
 // ========== SERVER CRUD ==========
 
 // Get all servers with stats
 router.get('/', async (req, res) => {
   try {
-    const servers = serverManager.getAllServers();
+    const servers = javaHostingPolicy.filterVisibleServers(serverManager.getAllServers());
     await serverManager.refreshRunningOnlinePlayers();
     const installedByServer = modManager.getInstalledModIdsByServer();
     const result = await Promise.all(servers.map(async (s) => {
       const stats = await serverManager.getServerStats(s.id);
       return connectHost.attach({
-        ...s,
-        stats,
-        lan: stats.lan,
-        remoteReachable: stats.remoteReachable,
-        installedModIds: installedByServer[String(s.id)] || [],
+        ...pluginContributions.attachToServer({
+          ...s,
+          ...serverManager.publicAttachFields(stats),
+          stats,
+          lan: stats.lan,
+          remoteReachable: stats.remoteReachable,
+          installedModIds: installedByServer[String(s.id)] || [],
+        }),
       }, req);
     }));
     res.json(result);
@@ -97,26 +119,35 @@ router.post('/bedrock-connect', requirePermission('servers.create_bedrock_connec
   }
 });
 
+router.get('/java/versions', async (req, res) => {
+  try {
+    const javaEdition = require('../services/javaEdition');
+    res.json(await javaEdition.listReleaseVersions());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get single server
 router.get('/:id', requirePermission('servers.view_details'), async (req, res) => {
   try {
-    const server = serverManager.getServer(req.params.id);
-    if (!server) return res.status(404).json({ error: 'Server not found' });
+    const server = javaHostingPolicy.assertServerVisible(serverManager.getServer(req.params.id));
     
     const stats = await serverManager.getServerStats(req.params.id);
     const onlinePlayers = await serverManager.getOnlinePlayers(req.params.id);
     const installedMods = await modManager.getInstalledMods(req.params.id);
     
-    res.json(connectHost.attach({
+    res.json(connectHost.attach(pluginContributions.attachToServer({
       ...server,
+      ...serverManager.publicAttachFields(stats),
       stats,
       lan: stats.lan,
       remoteReachable: stats.remoteReachable,
       onlinePlayers,
       installedMods,
-    }, req));
+    }), req));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServiceError(res, err.status ? err : Object.assign(err, { status: 500 }));
   }
 });
 
@@ -128,7 +159,7 @@ router.post('/', async (req, res) => {
     const result = await serverManager.createServer(req.body);
     res.status(201).json(result);
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
+    sendServiceError(res, err);
   }
 });
 
@@ -145,14 +176,44 @@ router.put('/:id', requireServerUpdate, async (req, res) => {
 // Delete server
 router.delete('/:id', requirePermission('servers.delete'), async (req, res) => {
   try {
-    await serverManager.deleteServer(req.params.id);
+    const truthy = (value) => value === true || value === '1' || value === 'true';
+    await serverManager.deleteServer(req.params.id, {
+      detachAttachedPlugins: truthy(req.query.detachAttachedPlugins) || truthy(req.body?.detachAttachedPlugins),
+      deleteAttachedGateways: truthy(req.query.deleteAttachedGateways) || truthy(req.body?.deleteAttachedGateways),
+    });
     res.json({ success: true });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    const status = Number(err.status) || 400;
+    res.status(status).json({
+      error: err.message,
+      code: err.code,
+      attachments: err.attachments,
+    });
   }
 });
 
 // ========== SERVER LIFECYCLE ==========
+
+router.post('/:id/plugin-actions', async (req, res) => {
+  try {
+    const pluginActions = require('../services/pluginActions');
+    const result = await pluginActions.invoke({
+      pluginId: req.body?.pluginId,
+      actionId: req.body?.actionId,
+      attachmentId: req.body?.attachmentId,
+      serverId: req.params.id,
+      resourceId: req.body?.resourceId,
+      url: req.body?.url,
+      href: req.body?.href,
+      command: req.body?.command,
+      actor: req.user?.username || 'local',
+       user: req.user,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(Number(err.status) || 400).json({ error: err.message, code: err.code });
+  }
+});
 
 // Start server
 router.post('/:id/start', requireServerStart, async (req, res) => {
@@ -160,7 +221,7 @@ router.post('/:id/start', requireServerStart, async (req, res) => {
     const result = await serverManager.startServer(req.params.id);
     res.json(result);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendServiceError(res, err);
   }
 });
 
@@ -180,7 +241,7 @@ router.post('/:id/restart', requireServerRestart, async (req, res) => {
     await serverManager.restartServer(req.params.id);
     res.json({ success: true });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendServiceError(res, err);
   }
 });
 
@@ -190,7 +251,7 @@ router.post('/:id/restart-with-warning', requireServerRestart, async (req, res) 
     const result = serverManager.scheduleWarnedRestart(req.params.id);
     res.json(result);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendServiceError(res, err);
   }
 });
 
@@ -224,7 +285,7 @@ router.post('/:id/update', requirePermission('servers.update'), async (req, res)
     const result = await serverManager.updateServer(req.params.id, version);
     res.json(result);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendServiceError(res, err);
   }
 });
 
@@ -286,6 +347,121 @@ router.put('/:id/lan-broadcast', requirePermission('servers.set_lan'), async (re
       return res.status(409).json({ error: err.message, code: err.code });
     }
     res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/:id/java/dependencies/resolve', async (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    if (server.kind !== 'java') return res.status(400).json({ error: 'Not a Java server' });
+    if (server.status === 'running' || server.status === 'starting') {
+      return res.status(400).json({ error: 'Stop the server before resolving dependencies' });
+    }
+    const javaModDependencies = require('../services/javaModDependencies');
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const overrides = req.body?.overrides && typeof req.body.overrides === 'object' ? req.body.overrides : {};
+    const result = await javaModDependencies.resolve(server, ids, overrides);
+    serverManager.invalidateServerCache(server.id);
+    const updated = serverManager.getServer(server.id);
+    res.json({
+      ...result,
+      missingModDependencies: javaModDependencies.publicState(updated),
+    });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
+  }
+});
+
+router.get('/:id/java/mods', (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    if (server.kind !== 'java') return res.status(400).json({ error: 'Not a Java server' });
+    const javaModInstall = require('../services/javaModInstall');
+    res.json({ mods: javaModInstall.list(server.id) });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
+  }
+});
+
+router.get('/:id/java/mods/pending', (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    const javaModInstall = require('../services/javaModInstall');
+    res.json({ pending: javaModInstall.pending(server.id) });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
+  }
+});
+
+router.post('/:id/java/mods/validate', (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    const db = require('../db/connection');
+    const mod = db.prepare('SELECT * FROM mods WHERE id = ?').get(req.body?.modId);
+    const javaModInstall = require('../services/javaModInstall');
+    res.json(javaModInstall.validate(server, mod));
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
+  }
+});
+
+router.post('/:id/java/mods', (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    const javaModInstall = require('../services/javaModInstall');
+    const result = javaModInstall.install(server, req.body?.modId, {
+      fileSha256: req.body?.fileSha256,
+      override: false,
+    });
+    if (result.restartRequired) {
+      serverManager.markRestartRequired(server.id, 'Java mods changed');
+    }
+    res.status(201).json({ ...result, mods: javaModInstall.list(server.id) });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
+  }
+});
+
+router.delete('/:id/java/mods/:installationId', (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    const javaModInstall = require('../services/javaModInstall');
+    const result = javaModInstall.remove(server, req.params.installationId);
+    if (result.restartRequired) {
+      serverManager.markRestartRequired(server.id, 'Java mods changed');
+    }
+    res.json({ ...result, mods: javaModInstall.list(server.id) });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
+  }
+});
+
+router.post('/:id/java/dependencies/reevaluate', async (req, res) => {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    if (server.kind !== 'java') return res.status(400).json({ error: 'Not a Java server' });
+    const javaModDependencies = require('../services/javaModDependencies');
+    javaModDependencies.pruneResolved(server);
+    if (server.status === 'running' || server.status === 'starting') {
+      await serverManager.restartServer(server.id);
+    } else if (server.status !== 'creating') {
+      await serverManager.startServer(server.id);
+    }
+    serverManager.invalidateServerCache(server.id);
+    const updated = serverManager.getServer(server.id);
+    res.json({
+      success: true,
+      missingModDependencies: javaModDependencies.publicState(updated),
+    });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
   }
 });
 

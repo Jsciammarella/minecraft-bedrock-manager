@@ -7,7 +7,6 @@ import CreateServer from './pages/CreateServer';
 import ServerProperties from './pages/ServerProperties';
 import ServerUsers from './pages/ServerUsers';
 import ModCatalog from './pages/ModCatalog';
-import ModCatalogSettings from './pages/ModCatalogSettings';
 import ModLibrary from './pages/ModLibrary';
 import PlayerManagement from './pages/PlayerManagement';
 import PortManager from './pages/PortManager';
@@ -56,6 +55,9 @@ function RequireUserManagement() {
   return <Outlet />;
 }
 
+import Gateways from './pages/Gateways';
+
+
 function App() {
   return (
     <Routes>
@@ -70,9 +72,10 @@ function App() {
           <Route path="servers/:id/properties" element={<ServerProperties />} />
           <Route path="mods" element={<ModLibrary />} />
           <Route path="mods/catalog" element={<ModCatalog />} />
-          <Route path="mods/catalog/settings" element={<ModCatalogSettings />} />
+          <Route path="mods/catalog/settings" element={<Navigate to="/plugins" replace />} />
           <Route path="players" element={<PlayerManagement />} />
           <Route path="bedrock-connect" element={<BedrockConnectPage />} />
+          <Route path="gateways" element={<Gateways />} />
           <Route path="ports" element={<PortManager />} />
           <Route path="plugins" element={<Plugins />} />
           <Route path="plugins/:pluginId" element={<PluginPage />} />
@@ -89,6 +92,7 @@ function App() {
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
+
       </Route>
     </Routes>
   );
