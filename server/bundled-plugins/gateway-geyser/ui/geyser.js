@@ -634,10 +634,6 @@
 
     var consoleCard = document.createElement('div');
     consoleCard.className = 'console-card';
-    var consoleHead = document.createElement('div');
-    consoleHead.className = 'console-head';
-    var consoleTitle = document.createElement('h2');
-    consoleTitle.textContent = 'Console';
     var toolbar = document.createElement('div');
     toolbar.className = 'console-toolbar';
     addLifecycleButtons(toolbar, gateway, false);
@@ -647,13 +643,14 @@
     save.id = 'detailSave';
     save.disabled = busy === String(gateway.id) || !detailIsDirty(gateway);
     toolbar.appendChild(save);
-    consoleHead.appendChild(consoleTitle);
-    consoleHead.appendChild(toolbar);
+    var consoleTitle = document.createElement('h2');
+    consoleTitle.textContent = 'Console:';
     var logs = document.createElement('pre');
     logs.className = 'logs';
     logs.id = 'detailLogs';
     logs.textContent = 'Loading logs…';
-    consoleCard.appendChild(consoleHead);
+    consoleCard.appendChild(toolbar);
+    consoleCard.appendChild(consoleTitle);
     consoleCard.appendChild(logs);
     root.appendChild(consoleCard);
   }

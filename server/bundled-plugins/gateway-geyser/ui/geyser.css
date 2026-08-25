@@ -522,29 +522,21 @@ label {
   color: #fca5a5;
 }
 
-.console-head {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0 0 0.75rem;
-}
-
-.overlay-panel .console-head h2 {
-  margin: 0;
-  flex: 0 0 auto;
-}
-
 .console-toolbar {
   display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
+  width: 100%;
   gap: 0.5rem;
+  margin: 0 0 0.75rem;
 }
 
 .console-toolbar button {
   flex: 1 1 0;
   min-width: 0;
   white-space: nowrap;
+}
+
+.overlay-panel .console-card h2 {
+  margin: 0 0 0.5rem;
 }
 
 .logs {
