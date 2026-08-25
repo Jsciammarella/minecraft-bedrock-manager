@@ -85,8 +85,8 @@ export function StatusNotice({ ok, message, className = '' }) {
 
 export function ToggleRow({ label, help, value, onChange, disabled }) {
   return (
-    <div className="flex items-center justify-between p-3 bg-mc-darker rounded-lg mb-4">
-      <div>
+    <div className="flex items-center justify-between gap-3 p-3 bg-mc-darker rounded-lg mb-4">
+      <div className="min-w-0 flex-1">
         <p className="text-sm font-medium text-white">{label}</p>
         {help ? <p className="text-xs text-mc-textMuted">{help}</p> : null}
       </div>
@@ -94,7 +94,7 @@ export function ToggleRow({ label, help, value, onChange, disabled }) {
         type="button"
         disabled={disabled}
         onClick={() => onChange(!value)}
-        className={`toggle ${value ? 'toggle-active' : 'toggle-inactive'}`}
+        className={`toggle flex-shrink-0 ${value ? 'toggle-active' : 'toggle-inactive'}`}
       >
         <span className={`toggle-thumb ${value ? 'translate-x-6' : 'translate-x-1'}`} />
       </button>
@@ -130,8 +130,8 @@ export function SecretField({
   onReplace,
   reveal,
   onToggleReveal,
-  clearLabel = 'Remove stored value',
-  replaceLabel = 'Replace',
+  clearLabel = 'Remove stored key',
+  replaceLabel = 'Replace key',
 }) {
   return (
     <div>
@@ -142,7 +142,7 @@ export function SecretField({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           className="input pr-12"
-          placeholder={placeholder || (configured ? 'Leave blank to keep the current value' : '')}
+          placeholder={placeholder || (configured ? 'Leave blank to keep current key' : 'Unconfigured')}
           disabled={disabled}
           autoComplete="off"
         />
@@ -407,13 +407,13 @@ function NativePluginSettings({ pluginId }) {
               setSecretDrafts((prev) => ({ ...prev, [field.id]: next }));
               setCleared((prev) => ({ ...prev, [field.id]: false }));
             }}
-            placeholder={configured ? `Leave blank to keep the current ${field.label.toLowerCase()}` : field.placeholder}
+            placeholder={configured ? 'Leave blank to keep current key' : (field.placeholder || 'Unconfigured')}
             disabled={disabled}
             configured={configured}
             reveal={Boolean(reveal[field.id])}
             onToggleReveal={() => setReveal((prev) => ({ ...prev, [field.id]: !prev[field.id] }))}
-            clearLabel={field.clearLabel || 'Remove stored value'}
-            replaceLabel={field.replaceLabel || 'Replace'}
+            clearLabel={field.clearLabel || 'Remove stored key'}
+            replaceLabel={field.replaceLabel || 'Replace key'}
             onReplace={() => {
               setCleared((prev) => ({ ...prev, [field.id]: false }));
               setSecretDrafts((prev) => ({ ...prev, [field.id]: '' }));
@@ -478,16 +478,13 @@ function NativePluginSettings({ pluginId }) {
       return (
         <div key={field.id} className={`p-3 bg-mc-darker rounded-lg space-y-3 ${wrapClass} ${disabled ? 'opacity-50' : ''}`}>
           <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-sm font-medium text-white">{field.title || field.label}</p>
-              {field.description ? <p className="text-xs text-mc-textMuted">{field.description}</p> : null}
-            </div>
+            <p className="text-sm font-medium text-white min-w-0 flex-1 truncate">{field.title || field.label}</p>
             {headerToggle ? (
               <button
                 type="button"
                 disabled={disabled}
                 onClick={() => setValue(headerToggle.id, !toggleOn)}
-                className={`toggle ${toggleOn ? 'toggle-active' : 'toggle-inactive'}`}
+                className={`toggle flex-shrink-0 ${toggleOn ? 'toggle-active' : 'toggle-inactive'}`}
                 aria-pressed={toggleOn}
                 title={headerToggle.label}
               >
@@ -495,6 +492,7 @@ function NativePluginSettings({ pluginId }) {
               </button>
             ) : null}
           </div>
+          {field.description ? <p className="text-xs text-mc-textMuted">{field.description}</p> : null}
           {rest.map((child) => renderField(child, disabled))}
         </div>
       );

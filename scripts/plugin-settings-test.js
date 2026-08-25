@@ -261,6 +261,30 @@ async function runPluginSettingsTests({ pluginHost, testRoot }) {
   assert.match(nativeSrc, /max-w-3xl/);
   assert.match(nativeSrc, /p-4 md:p-6/);
   assert.match(nativeSrc, /grid-cols-1 md:grid-cols-2/);
+  assert.match(nativeSrc, /min-w-0 flex-1/);
+  assert.match(nativeSrc, /toggle flex-shrink-0/);
+  assert.match(nativeSrc, /Unconfigured/);
+  assert.match(nativeSrc, /Leave blank to keep current key/);
+  const gitSettingsSrc = fs.readFileSync(
+    path.join(__dirname, '../server/bundled-plugins/catalog-git/settings.js'),
+    'utf8'
+  );
+  assert.doesNotMatch(gitSettingsSrc, /tokenStatus/);
+  assert.doesNotMatch(gitSettingsSrc, /secret-status/);
+  assert.match(gitSettingsSrc, /Replace key/);
+  assert.match(gitSettingsSrc, /Remove stored key/);
+  assert.match(gitSettingsSrc, /Unconfigured/);
+  const fileSettingsSrc = fs.readFileSync(
+    path.join(__dirname, '../server/bundled-plugins/catalog-file/settings.js'),
+    'utf8'
+  );
+  assert.match(fileSettingsSrc, /title: 'SMB share'/);
+  assert.doesNotMatch(
+    fileSettingsSrc,
+    /already mounted/,
+    'SMB group description should stay short enough to leave room for the toggle'
+  );
+  assert.match(pluginPageSrc, /absolute inset-0 w-full h-full/);
   assert.match(catalogSrc, /multi-file|multiFileMode/);
   assert.doesNotMatch(catalogSrc, /Settings className="w-5 h-5"/);
 

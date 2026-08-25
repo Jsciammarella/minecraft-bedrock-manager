@@ -64,7 +64,7 @@ module.exports = {
           id: 'smb',
           type: 'group',
           title: 'SMB share',
-          description: 'UNC path such as \\\\server\\share\\catalog, or a folder where the share is already mounted. On Windows, optional credentials can connect a UNC path. On Linux, mount the share on the host and enter that local path.',
+          description: 'UNC path or a mounted folder. Windows can use optional credentials.',
           dependsOn: { field: 'enabled', value: true },
           fields: [
             {

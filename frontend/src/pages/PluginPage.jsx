@@ -105,18 +105,16 @@ function PluginPage() {
   }
 
   return (
-    <div className="absolute inset-0">
-      <iframe
-        ref={iframeRef}
-        key={src}
-        title={page.title || plugin.name}
-        src={src}
-        className="w-full h-full border-0 bg-mc-dark"
-        style={{ colorScheme: 'dark' }}
-        sandbox="allow-scripts allow-forms allow-modals allow-downloads"
-        referrerPolicy="no-referrer"
-      />
-    </div>
+    <iframe
+      ref={iframeRef}
+      key={src}
+      title={page.title || plugin.name}
+      src={src}
+      className="absolute inset-0 w-full h-full border-0 bg-mc-dark"
+      style={{ colorScheme: 'dark' }}
+      sandbox="allow-scripts allow-forms allow-modals allow-downloads"
+      referrerPolicy="no-referrer"
+    />
   );
 }
 
