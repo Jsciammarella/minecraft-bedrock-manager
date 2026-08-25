@@ -58,7 +58,7 @@ function getRemoteReachableBadge(server) {
   );
 }
 
-const STATUS_ORDER = { running: 0, starting: 1, creating: 2, stopped: 3 };
+const STATUS_ORDER = { running: 0, starting: 1, stopping: 2, creating: 3, failed: 4, stopped: 5 };
 
 function serverMatchesSearch(server, search) {
   if (!search) return true;
@@ -257,7 +257,7 @@ function Dashboard() {
   const beginLanToggle = async (server, event) => {
     event?.stopPropagation();
     if (isBedrockConnect(server) || lanOf(server).native || server.status === 'creating') return;
-    if (servers.some(item => isBedrockConnect(item) && (item.status === 'running' || item.status === 'starting'))) return;
+    if (servers.some(item => isBedrockConnect(item) && (item.status === 'running' || item.status === 'starting' || item.status === 'stopping'))) return;
     const enabled = Boolean(lanOf(server).enabled);
     setLanError('');
     setLanMessage('');
@@ -320,6 +320,8 @@ function Dashboard() {
         return <span className="badge badge-success"><span className="w-1.5 h-1.5 bg-green-400 rounded-full mr-1.5" />Online</span>;
       case 'starting':
         return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Starting</span>;
+      case 'stopping':
+        return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Stopping</span>;
       case 'creating':
         return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Building</span>;
       case 'stopped':
@@ -362,7 +364,7 @@ function Dashboard() {
   const bcExists = Boolean(bcPreview?.exists || servers.some(isBedrockConnect));
   const bcPending = Boolean(bcPreview?.pending);
   const bcDisabled = bcExists || bcPending || bcBusy;
-  const bcRunning = servers.some(server => isBedrockConnect(server) && (server.status === 'running' || server.status === 'starting'));
+  const bcRunning = servers.some(server => isBedrockConnect(server) && (server.status === 'running' || server.status === 'starting' || server.status === 'stopping'));
   const buildingServers = servers.filter((server) => server.status === 'creating');
   const activeFilter = (!javaHostingAvailable && (filterType === 'java' || filterType === 'geyser'))
     ? 'all'
@@ -634,7 +636,7 @@ function Dashboard() {
                 <div className="flex items-center gap-3">
                   <div className={`w-3 h-3 rounded-full ${
                     server.status === 'running' ? 'bg-green-400 animate-pulse-glow' : 
-                    server.status === 'starting' || server.status === 'creating' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'
+                    server.status === 'starting' || server.status === 'stopping' || server.status === 'creating' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'
                   }`} />
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
@@ -814,6 +816,11 @@ function Dashboard() {
                   <button disabled className="btn btn-primary flex-1 text-sm">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     Starting...
+                  </button>
+                ) : server.status === 'stopping' ? (
+                  <button disabled className="btn btn-danger flex-1 text-sm">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Stopping...
                   </button>
                 ) : server.status !== 'running' ? (
                   isJava(server) && (missingModDependenciesOf(server)?.required || []).length > 0 ? (

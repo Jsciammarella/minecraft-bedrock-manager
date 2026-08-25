@@ -293,7 +293,7 @@ function ManagedServerDetail() {
   const beginLanToggle = async () => {
     const lan = server?.stats?.lan || server?.lan || {};
     if (server?.kind === 'bedrock_connect' || server?.kind === 'java' || lan.native || server?.status === 'creating') return;
-    if (servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting'))) return;
+    if (servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting' || item.status === 'stopping'))) return;
     setLanError('');
     setLanMessage('');
     if (lan.enabled) {
@@ -578,8 +578,12 @@ function ManagedServerDetail() {
         return <span className="badge badge-success"><span className="w-1.5 h-1.5 bg-green-400 rounded-full mr-1.5" />Online</span>;
       case 'starting':
         return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Starting</span>;
+      case 'stopping':
+        return <span className="badge badge-warning"><span className="w-1.5 h-1.5 bg-yellow-400 rounded-full mr-1.5 animate-pulse" />Stopping</span>;
       case 'stopped':
         return <span className="badge badge-danger"><span className="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5" />Offline</span>;
+      case 'failed':
+        return <span className="badge badge-danger"><span className="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5" />Failed</span>;
       default:
         return <span className="badge badge-info">{status}</span>;
     }
@@ -645,7 +649,7 @@ function ManagedServerDetail() {
   const createFailed = String(server.pending_restart_reason || '').startsWith('Create failed');
   const lan = server.stats?.lan || server.lan || {};
   const lanOn = Boolean(lan.native || lan.enabled);
-  const bcRunning = servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting'));
+  const bcRunning = servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting' || item.status === 'stopping'));
   const lanLocked = isBC || isJava || lan.native || bcRunning || isBuilding;
   const connectLabel = server.connectAddress || `Port ${server.port}`;
   const onlinePlayers = Array.isArray(server.onlinePlayers) ? server.onlinePlayers : [];
@@ -980,6 +984,10 @@ function ManagedServerDetail() {
         ) : server.status === 'starting' ? (
           <button disabled className="btn btn-primary">
             <Loader2 className="w-4 h-4 animate-spin" /> Starting...
+          </button>
+        ) : server.status === 'stopping' ? (
+          <button disabled className="btn btn-danger">
+            <Loader2 className="w-4 h-4 animate-spin" /> Stopping...
           </button>
         ) : server.status !== 'running' ? (
           isJava && missingDepItems.length > 0 ? (

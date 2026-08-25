@@ -220,7 +220,7 @@ function Layout() {
               >
                 <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
                   server.status === 'running' ? 'bg-green-400' : 
-                  server.status === 'starting' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'
+                  server.status === 'starting' || server.status === 'stopping' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'
                 }`} />
                 <span className="truncate">{server.name}</span>
               </button>

@@ -127,7 +127,8 @@ io.on('connection', (socket) => {
   socket.on('start-server', async (serverId) => {
     try {
       await serverManager.startServer(serverId);
-      io.emit('server-status', { serverId, status: 'starting' });
+      const status = serverManager.getServer(serverId)?.status || 'running';
+      io.emit('server-status', { serverId, status });
     } catch (err) {
       socket.emit('server-error', { serverId, error: err.message });
     }
@@ -137,7 +138,8 @@ io.on('connection', (socket) => {
   socket.on('stop-server', async (serverId) => {
     try {
       await serverManager.stopServer(serverId);
-      io.emit('server-status', { serverId, status: 'stopped' });
+      const status = serverManager.getServer(serverId)?.status || 'stopped';
+      io.emit('server-status', { serverId, status });
     } catch (err) {
       socket.emit('server-error', { serverId, error: err.message });
     }
@@ -221,6 +223,9 @@ server.listen(PORT, '0.0.0.0', () => {
   require('./services/gatewayManager').restoreRunning().catch((err) => {
     logger.warn(`Gateway restore failed: ${err.message}`);
   });
+  require('./services/bedrockConnectLifecycle').reconcileOnStartup().catch((err) => {
+    logger.warn(`Bedrock Connect startup reconcile failed: ${err.message}`);
+  });
 });
 
 // Graceful shutdown
@@ -229,10 +234,11 @@ const gracefulShutdown = (signal) => {
   autoUpdateScheduler.stop();
   gitCatalogScheduler.stop();
   dnsProxy.stop().catch(() => {});
-  serverManager.shutdown();
-  server.close(() => {
-    logger.info('Server closed');
-    process.exit(0);
+  Promise.resolve(serverManager.shutdown()).finally(() => {
+    server.close(() => {
+      logger.info('Server closed');
+      process.exit(0);
+    });
   });
 };
 

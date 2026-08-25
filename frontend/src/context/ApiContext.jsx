@@ -67,7 +67,7 @@ export function ApiProvider({ children }) {
   }, [fetchServers]);
 
   const hasTransient = servers.some((server) => (
-    server.status === 'creating' || server.status === 'starting'
+    server.status === 'creating' || server.status === 'starting' || server.status === 'stopping'
   ));
   useEffect(() => {
     if (!hasTransient) return undefined;

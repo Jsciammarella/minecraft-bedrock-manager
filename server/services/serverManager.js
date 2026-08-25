@@ -47,7 +47,7 @@ class ServerManager {
       UPDATE servers
       SET status = 'stopped', pid = NULL, started_at = NULL, restart_scheduled_at = NULL,
         updated_at = CURRENT_TIMESTAMP
-      WHERE status IN ('running', 'starting', 'creating')
+      WHERE status IN ('running', 'starting', 'creating', 'stopping', 'failed')
     `).run();
     if (reconciled.changes > 0) {
       logger.warn(`Reset ${reconciled.changes} stale server status record(s) during manager startup`);
@@ -213,7 +213,7 @@ class ServerManager {
 
   isBedrockConnectActive() {
     const bc = this.getBedrockConnectServer();
-    return Boolean(bc && (bc.status === 'running' || bc.status === 'starting'));
+    return Boolean(bc && (bc.status === 'running' || bc.status === 'starting' || bc.status === 'stopping'));
   }
 
   getPendingBedrockConnect() {
@@ -1552,58 +1552,7 @@ done
   }
 
   async startBedrockConnect(server) {
-    await this.releaseDiscoveryPortsForBedrockConnect();
-    const bedrockConnect = require('./bedrockConnect');
-    await bedrockConnect.assertJavaAvailable();
-    const installed = bedrockConnect.installedJar(server.data_path)
-      || bedrockConnect.installJarInto(server.data_path, server.version);
-    const list = require('./bedrockConnectList');
-    list.writeList();
-    const sessionKey = this.sessionKey(server.id);
-    try {
-      const { spawn: spawnPty } = require('node-pty');
-      const pty = spawnPty(platform.javaCommand(), [
-        '-jar', installed.jarPath,
-        ...list.spawnArgs(server.data_path),
-      ], {
-        name: 'xterm-color',
-        cols: 120,
-        rows: 30,
-        cwd: server.data_path,
-        env: { ...process.env },
-      });
-
-      this.ptySessions.set(sessionKey, pty);
-      this.setupPtyOutputBroadcast(server.id, pty);
-      db.prepare('UPDATE servers SET status = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-        .run('starting', server.id);
-      this.invalidateServerCache(server.id);
-      this.broadcastServerStatus(server.id);
-
-      setTimeout(() => {
-        if (this.ptySessions.has(sessionKey)) {
-          db.prepare(`
-            UPDATE servers
-            SET status = ?, pending_restart = 0, pending_restart_reason = NULL,
-              pending_restart_at = NULL, restart_scheduled_at = NULL,
-              updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `).run('running', server.id);
-          this.invalidateServerCache(server.id);
-          logger.info('Bedrock Connect started');
-          this.broadcastServerStatus(server.id);
-        }
-      }, 3000);
-
-      return { success: true, message: 'Bedrock Connect starting...' };
-    } catch (err) {
-      logger.error(`Failed to start Bedrock Connect: ${err.message}`);
-      db.prepare('UPDATE servers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-        .run('stopped', server.id);
-      this.invalidateServerCache(server.id);
-      await this.restoreLanBroadcasts();
-      throw new Error(`Failed to start Bedrock Connect: ${err.message}`);
-    }
+    return require('./bedrockConnectLifecycle').start(server);
   }
 
   async startJavaServer(server) {
@@ -1691,6 +1640,7 @@ done
     if (!server) throw new Error('Server not found');
     if (server.status === 'running') throw new Error('Server already running');
     if (server.status === 'starting') throw new Error('Server is already starting');
+    if (server.status === 'stopping') throw new Error('Server is stopping');
     if (server.status === 'creating') throw new Error('Server is still being built');
 
     if (server.pending_port) {
@@ -1819,6 +1769,9 @@ done
     if (server.status === 'creating') {
       throw new Error('Server is still being built');
     }
+    if (this.isBedrockConnect(server)) {
+      return require('./bedrockConnectLifecycle').stop(server);
+    }
     if (server.status === 'stopped') throw new Error('Server already stopped');
 
     const pty = this.ptySessions.get(sessionKey);
@@ -1828,28 +1781,17 @@ done
       require('./lanBroadcast').stop(serverId);
       require('./lanBroadcast').killOrphanPhantoms();
     } else if (pty) {
-      if (this.isBedrockConnect(server)) {
-        try { pty.kill(); } catch { /* ignore */ }
-        await new Promise((resolve) => {
-          const timeout = setTimeout(resolve, 3000);
-          pty.on('exit', () => {
-            clearTimeout(timeout);
-            resolve();
-          });
+      pty.write('stop\n');
+      await new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          pty.kill();
+          resolve();
+        }, 15000);
+        pty.on('exit', () => {
+          clearTimeout(timeout);
+          resolve();
         });
-      } else {
-        pty.write('stop\n');
-        await new Promise((resolve) => {
-          const timeout = setTimeout(() => {
-            pty.kill();
-            resolve();
-          }, 15000);
-          pty.on('exit', () => {
-            clearTimeout(timeout);
-            resolve();
-          });
-        });
-      }
+      });
       this.ptySessions.delete(sessionKey);
     }
 
@@ -1860,11 +1802,6 @@ done
 
     logger.info(`Server ${server.name} stopped`);
     this.broadcastServerStatus(serverId);
-    if (this.isBedrockConnect(server)) {
-      await this.waitForUdpPort(portRanges.DISCOVERY_IPV4, 'ipv4');
-      await this.waitForUdpPort(portRanges.DISCOVERY_IPV6, 'ipv6');
-      await this.restoreLanBroadcasts();
-    }
     return { success: true, message: 'Server stopped' };
   }
 
@@ -1872,6 +1809,9 @@ done
     const server = this.getServer(serverId);
     if (server && this.isJava(server)) {
       require('./javaHostingPolicy').assertServerEditionAvailable('java', 'restart');
+    }
+    if (server && this.isBedrockConnect(server)) {
+      return require('./bedrockConnectLifecycle').restart(server);
     }
     await this.stopServer(serverId);
     await this.startServer(serverId);
@@ -2379,9 +2319,7 @@ done
         VALUES (?, ?, ?, 'completed', ?)
       `).run(serverId, fromVersion, installed.tag, 'Bedrock Connect JAR updated');
       this.invalidateServerCache(serverId);
-      if (server.status === 'running') {
-        this.markRestartRequired(serverId, `Bedrock Connect ${installed.tag} is ready`);
-      }
+      await require('./bedrockConnectLifecycle').afterJarUpdate(serverId);
       return { success: true, fromVersion, toVersion: installed.tag };
     }
 
@@ -3614,6 +3552,11 @@ done
     });
 
     pty.on('exit', () => {
+      const lifecycle = require('./bedrockConnectLifecycle');
+      if (lifecycle.currentSession(serverId) || this.isBedrockConnect(this.getServer(serverId))) {
+        lifecycle.handlePtyExit(serverId, pty);
+        return;
+      }
       const sessionKey = this.sessionKey(serverId);
       if (this.ptySessions.get(sessionKey) !== pty) return;
       const current = this.getServer(serverId);
@@ -3667,12 +3610,19 @@ done
   }
 
   // Cleanup on shutdown
-  shutdown() {
+  async shutdown() {
     for (const { timers } of this.scheduledRestarts.values()) {
       timers.forEach(timer => clearTimeout(timer));
     }
     this.scheduledRestarts.clear();
+    try {
+      await require('./bedrockConnectLifecycle').shutdown();
+    } catch (err) {
+      logger.error(`Bedrock Connect shutdown failed: ${err.message}`);
+    }
     for (const [id, pty] of this.ptySessions) {
+      const server = this.getServer(id);
+      if (server && this.isBedrockConnect(server)) continue;
       try { pty.kill(); } catch {}
     }
     this.ptySessions.clear();

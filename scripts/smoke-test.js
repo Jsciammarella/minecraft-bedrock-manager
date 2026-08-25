@@ -32,6 +32,7 @@ const { runJavaProviderTests } = require('./java-provider-test');
 const { runCatalogProviderTests } = require('./catalog-provider-test');
 const { runPluginSettingsTests } = require('./plugin-settings-test');
 const { runModrinthProviderTests } = require('./modrinth-provider-test');
+const { runBedrockConnectLifecycleTests } = require('./bedrock-connect-lifecycle-test');
 
 function zipStore(files) {
   const locals = [];
@@ -1153,6 +1154,7 @@ async function run() {
   assert(listed.some((item) => item.name === `aaa-${suffix}` && item.port === 40120));
   assert(!listed.some((item) => item.name === 'Bedrock Connect'));
   assert(bedrockConnectList.spawnArgs(bcPath).includes('featured_servers=false'));
+  assert(bedrockConnectList.spawnArgs(bcPath).includes('server_limit=100'));
   assert(bedrockConnectList.spawnArgs(bcPath).some((arg) => arg.startsWith('custom_servers=')));
   await assert.rejects(
     () => serverManager.setLanBroadcast(bc.lastInsertRowid, true),
@@ -1539,6 +1541,8 @@ async function run() {
     /At most 10 remote servers/
   );
 
+  await runBedrockConnectLifecycleTests({ testRoot, db, serverManager });
+
   console.log(JSON.stringify({
     databaseMigration: 'ok',
     udpPortDetection: 'ok',
@@ -1548,6 +1552,7 @@ async function run() {
     packInstall: 'ok',
     dnsProxy: 'ok',
     bedrockConnectList: 'ok',
+    bedrockConnectLifecycle: 'ok',
     curseforgeUrlImport: 'ok',
     remoteGateway: 'ok',
     mcpedlUrlImport: 'ok',
