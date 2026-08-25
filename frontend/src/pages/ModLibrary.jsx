@@ -1497,6 +1497,26 @@ function typeFromFileName(name) {
   return 'addon';
 }
 
+function environmentBadge(mod) {
+  if (!isJavaLibraryMod(mod)) return null;
+  const env = String(mod.environment || 'unknown').toLowerCase();
+  const label = env === 'client'
+    ? 'Client'
+    : env === 'server'
+      ? 'Server'
+      : env === 'both'
+        ? 'Both'
+        : 'Unknown';
+  const color = env === 'client'
+    ? 'badge-warning'
+    : env === 'server'
+      ? 'badge-success'
+      : env === 'both'
+        ? 'badge-info'
+        : 'badge-muted';
+  return <span className={`badge ${color}`}>{label}</span>;
+}
+
 function extraArchiveNames(mod) {
   if (Array.isArray(mod?.files) && mod.files.length) {
     return mod.files.slice(1).map((item) => item.name).filter(Boolean);
@@ -1641,14 +1661,15 @@ function LibraryTile({
           </div>
         )}
       </div>
-      <ModTileTags>
+      <ModTileTags expanded={expanded}>
         {getTypeBadge(mod.type)}
         {getSourceBadge(mod.source)}
         {isJavaLibraryMod(mod) && <span className="badge badge-warning">Java</span>}
+        {environmentBadge(mod)}
         {modLoaderIds(mod).map((id) => (
           loaderDisplayName(id) ? <span key={id} className="badge badge-info">{loaderDisplayName(id)}</span> : null
         ))}
-        {modVersionTags(mod).slice(0, 4).map((version) => (
+        {modVersionTags(mod).map((version) => (
           <span key={version} className="badge badge-success">{version}</span>
         ))}
       </ModTileTags>
