@@ -93,9 +93,10 @@
     top.className = 'row';
     var info = document.createElement('div');
     var title = document.createElement('div');
-    title.innerHTML = '<strong></strong> <span class="status"></span>';
+    title.innerHTML = '<strong></strong> <span class="badge"></span>';
     title.querySelector('strong').textContent = gateway.name;
-    title.querySelector('.status').textContent = gateway.status || 'stopped';
+    title.querySelector('.badge').textContent = gateway.status || 'stopped';
+    title.querySelector('.badge').className = 'badge ' + (running ? 'badge-success' : 'badge-muted');
     var meta = document.createElement('p');
     meta.className = 'meta';
     meta.textContent = 'Bedrock UDP ' + gateway.bedrock_udp_port
@@ -116,6 +117,7 @@
       extra.textContent = 'Another Geyser gateway is shown on this Java server tile. This gateway is managed only from this page.';
       info.appendChild(extra);
     }
+    if (gateway.lastError) {
       var notice = document.createElement('p');
       notice.className = 'notice';
       notice.textContent = gateway.lastError;
@@ -177,7 +179,9 @@
     if (!gateways.length) {
       var empty = document.createElement('div');
       empty.className = 'card';
-      empty.textContent = 'No Geyser gateways yet. Standalone can target a local Java server on this manager or a remote Java host.';
+      var emptyText = document.createElement('p');
+      emptyText.textContent = 'No Geyser gateways yet. Standalone can target a local Java server on this manager or a remote Java host.';
+      empty.appendChild(emptyText);
       list.appendChild(empty);
       return gateways;
     }
@@ -384,6 +388,7 @@
     applyTheme();
     $('add').addEventListener('click', function () {
       $('create').classList.remove('hidden');
+      if ($('create').scrollIntoView) $('create').scrollIntoView({ block: 'nearest' });
     });
     $('cancel').addEventListener('click', function () {
       $('create').classList.add('hidden');
