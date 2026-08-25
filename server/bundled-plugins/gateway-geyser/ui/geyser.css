@@ -221,6 +221,14 @@ body.modal-open { overflow: hidden; }
   border-radius: 0.5rem;
 }
 
+.info-cell .icon {
+  width: 1rem;
+  height: 1rem;
+  color: var(--muted);
+  display: block;
+  margin: 0 auto 0.25rem;
+}
+
 .info-cell .value {
   font-size: 0.875rem;
   font-weight: 500;
@@ -233,6 +241,7 @@ body.modal-open { overflow: hidden; }
 .info-cell .label {
   font-size: 0.75rem;
   color: var(--muted);
+  white-space: normal;
 }
 
 .tile-actions, .page-actions, .form-actions {
@@ -298,6 +307,46 @@ body.modal-open { overflow: hidden; }
   margin-bottom: 1.5rem;
 }
 
+.detail-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 0.4rem;
+  row-gap: 0.85rem;
+  margin: 1.25rem 0;
+  font-size: 0.875rem;
+}
+
+.detail-fields dt { color: var(--muted); }
+.detail-fields dd {
+  margin: 0.15rem 0 0;
+  color: #fff;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.detail-fields select {
+  font-family: inherit;
+  margin-top: 0.2rem;
+}
+
+.detail-toolbar,
+.detail-confirms {
+  grid-column: 1 / -1;
+}
+
+.detail-toolbar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(max-content, 1fr));
+  gap: 0.4rem;
+}
+
+.detail-toolbar button {
+  width: 100%;
+  white-space: nowrap;
+}
+
+.detail-confirms .check {
+  margin-top: 0.5rem;
+}
+
 .detail-dl {
   display: grid;
   grid-template-columns: 1fr;
@@ -335,7 +384,7 @@ button, .btn {
   white-space: nowrap;
 }
 
-button:hover:not(:disabled):not(.secondary):not(.danger) {
+button:hover:not(:disabled):not(.secondary):not(.danger):not(.outlined) {
   background: var(--accent-hover);
 }
 
@@ -345,6 +394,17 @@ button.secondary, .btn.secondary {
 }
 
 button.secondary:hover:not(:disabled) { background: var(--line); }
+
+button.outlined, .btn.outlined {
+  background: #32325a;
+  color: var(--text);
+  border: 1px solid rgb(226 232 240 / 0.22);
+}
+
+button.outlined:hover:not(:disabled) {
+  background: #3a3a66;
+  border-color: rgb(226 232 240 / 0.38);
+}
 
 button.danger {
   background: rgb(239 68 68 / 0.15);
@@ -455,10 +515,21 @@ label {
 }
 
 .extra-actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.5rem;
   margin: 1rem 0 1.5rem;
+}
+
+.extra-actions > * {
+  min-height: 2.75rem;
+  width: 100%;
+  white-space: normal;
+  line-height: 1.2;
+}
+
+.extra-actions .slot {
+  min-height: 2.75rem;
 }
 
 .close-btn {

@@ -14,6 +14,11 @@
       restart: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
       trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
       close: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+      save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+      radio: '<circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/>',
+      shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+      layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
+      download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
     };
     return '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (paths[name] || '') + '</svg>';
   }
@@ -34,17 +39,70 @@
     if (t.textMuted) root.setProperty('--muted', t.textMuted);
   }
 
-  function showError(message, kind) {
-    var box = $('error');
+  var detailNotice = { message: '', kind: '' };
+  var detailDraft = null;
+
+  function advertiseValue(gateway) {
+    return gateway.advertiseInBedrockConnect === false ? 'hidden' : 'advertised';
+  }
+
+  function resetDetailDraft(gateway) {
+    detailDraft = {
+      id: String(gateway.id),
+      authentication: gateway.authentication || 'online',
+      advertise: advertiseValue(gateway),
+      confirmOffline: false,
+      confirmFloodgate: false,
+      confirmFloodgateInstall: false,
+      confirmJavaRestart: false,
+      preview: null,
+    };
+  }
+
+  function ensureDetailDraft(gateway) {
+    if (!detailDraft || String(detailDraft.id) !== String(gateway.id)) resetDetailDraft(gateway);
+  }
+
+  function readDetailDraft() {
+    if (!detailDraft) return;
+    if ($('detailAuth')) detailDraft.authentication = $('detailAuth').value;
+    if ($('detailAdvertise')) detailDraft.advertise = $('detailAdvertise').value;
+    if ($('detailConfirmOffline')) detailDraft.confirmOffline = $('detailConfirmOffline').checked;
+    if ($('detailConfirmFloodgate')) detailDraft.confirmFloodgate = $('detailConfirmFloodgate').checked;
+    if ($('detailConfirmFloodgateInstall')) detailDraft.confirmFloodgateInstall = $('detailConfirmFloodgateInstall').checked;
+    if ($('detailConfirmJavaRestart')) detailDraft.confirmJavaRestart = $('detailConfirmJavaRestart').checked;
+  }
+
+  function detailIsDirty(gateway) {
+    if (!detailDraft) return false;
+    return detailDraft.authentication !== (gateway.authentication || 'online')
+      || detailDraft.advertise !== advertiseValue(gateway);
+  }
+
+  function applyBanner(el, message, kind) {
+    if (!el) return;
     if (!message) {
-      box.classList.add('hidden');
-      box.classList.remove('info');
-      box.textContent = '';
+      el.classList.add('hidden');
+      el.classList.remove('info');
+      el.textContent = '';
       return;
     }
-    box.textContent = message;
-    box.classList.toggle('info', kind === 'info');
-    box.classList.remove('hidden');
+    el.textContent = message;
+    el.classList.toggle('info', kind === 'info');
+    el.classList.remove('hidden');
+  }
+
+  function showError(message, kind) {
+    if (selectedId && $('detailOverlay') && !$('detailOverlay').classList.contains('hidden')) {
+      detailNotice = { message: message || '', kind: kind || '' };
+      applyBanner($('detailNotice'), detailNotice.message, detailNotice.kind);
+      return;
+    }
+    if ($('createOverlay') && !$('createOverlay').classList.contains('hidden') && $('createNotice')) {
+      applyBanner($('createNotice'), message, kind);
+      return;
+    }
+    applyBanner($('error'), message, kind);
   }
 
   function stripLog(text) {
@@ -155,7 +213,7 @@
       ? makeButton(busy === String(gateway.id) ? 'Stopping...' : 'Stop', 'danger' + (growStart ? ' grow' : ''), function () { act(gateway.id, 'stop'); }, 'stop')
       : makeButton(busy === String(gateway.id) ? 'Starting...' : 'Start', (growStart ? 'grow' : ''), function () { act(gateway.id, 'start'); }, 'play');
     startStop.disabled = disabled;
-    var restart = makeButton('Restart', 'secondary', function () { act(gateway.id, 'restart'); }, 'restart');
+    var restart = makeButton('Restart', 'outlined', function () { act(gateway.id, 'restart'); }, 'restart');
     restart.disabled = disabled;
     var remove = makeButton('Delete', 'secondary danger', function () { removeGateway(gateway); }, 'trash');
     remove.title = 'Delete gateway';
@@ -254,12 +312,14 @@
     var info = document.createElement('div');
     info.className = 'info-grid';
     [
-      [String(gateway.bedrock_udp_port || '—'), 'UDP port'],
-      [authLabel(gateway.authentication), 'Auth'],
-      [modeLabel(gateway), 'Mode'],
+      [String(gateway.bedrock_udp_port || '—'), 'UDP port', 'radio'],
+      [authLabel(gateway.authentication), 'Authentication', 'shield'],
+      [modeLabel(gateway), 'Mode', 'layers'],
     ].forEach(function (row) {
       var cell = document.createElement('div');
       cell.className = 'info-cell';
+      cell.innerHTML = icon(row[2]);
+      cell.querySelector('svg').classList.add('info-icon');
       var value = document.createElement('p');
       value.className = 'value';
       value.textContent = row[0];
@@ -279,6 +339,51 @@
     return tile;
   }
 
+  function detailField(label, content) {
+    var wrap = document.createElement('div');
+    var dt = document.createElement('dt');
+    dt.textContent = label;
+    var dd = document.createElement('dd');
+    if (typeof content === 'string') dd.textContent = content;
+    else dd.appendChild(content);
+    wrap.appendChild(dt);
+    wrap.appendChild(dd);
+    return wrap;
+  }
+
+  function detailSelect(id, options, value) {
+    var select = document.createElement('select');
+    select.id = id;
+    options.forEach(function (opt) {
+      var option = document.createElement('option');
+      option.value = opt.value;
+      option.textContent = opt.label;
+      select.appendChild(option);
+    });
+    select.value = value;
+    select.addEventListener('change', function () {
+      readDetailDraft();
+      renderDetail();
+      if (selectedId) showLogs(selectedId);
+    });
+    return select;
+  }
+
+  function detailCheck(id, checked, text) {
+    var label = document.createElement('label');
+    label.className = 'check';
+    var input = document.createElement('input');
+    input.type = 'checkbox';
+    input.id = id;
+    input.checked = Boolean(checked);
+    input.addEventListener('change', readDetailDraft);
+    var span = document.createElement('span');
+    span.textContent = text;
+    label.appendChild(input);
+    label.appendChild(span);
+    return label;
+  }
+
   function findGateway(id) {
     return gatewaysCache.find(function (item) { return String(item.id) === String(id); }) || null;
   }
@@ -293,6 +398,7 @@
       return;
     }
     var running = isRunning(gateway);
+    ensureDetailDraft(gateway);
 
     var head = document.createElement('div');
     head.className = 'detail-head';
@@ -347,54 +453,123 @@
       root.appendChild(viaNotice);
     }
 
-    var actions = document.createElement('div');
-    actions.className = 'page-actions';
-    addLifecycleButtons(actions, gateway, false);
-    root.appendChild(actions);
+    var fields = document.createElement('div');
+    fields.className = 'detail-fields';
+    fields.appendChild(detailField('Bedrock UDP port', String(gateway.bedrock_udp_port || '—')));
+    fields.appendChild(detailField('Java target', targetLabel(gateway)));
 
-    var dl = document.createElement('dl');
-    dl.className = 'detail-dl';
-    [
-      ['Bedrock UDP port', String(gateway.bedrock_udp_port || '—')],
-      ['Java target', targetLabel(gateway)],
-      ['Authentication', authLabel(gateway.authentication)],
-      ['Compatibility', gateway.compatibilityMode === 'viaproxy' ? 'ViaProxy' : 'Direct Geyser'],
-      ['Geyser version', gateway.geyser_version || '—'],
-      ['ViaProxy version', gateway.viaproxyVersion || 'not installed'],
-      ['Bedrock Connect', gateway.advertiseInBedrockConnect === false ? 'Hidden' : 'Advertised'],
-    ].forEach(function (row) {
-      var dt = document.createElement('dt');
-      dt.textContent = row[0];
-      var wrap = document.createElement('div');
-      var dd = document.createElement('dd');
-      dd.textContent = row[1];
-      wrap.appendChild(dt);
-      wrap.appendChild(dd);
-      dl.appendChild(wrap);
-    });
-    root.appendChild(dl);
+    var toolbar = document.createElement('div');
+    toolbar.className = 'detail-toolbar';
+    addLifecycleButtons(toolbar, gateway, false);
+    var save = makeButton(busy === String(gateway.id) ? 'Saving...' : 'Save Changes', '', function () {
+      saveChanges(gateway);
+    }, 'save');
+    save.id = 'detailSave';
+    save.disabled = busy === String(gateway.id) || !detailIsDirty(gateway);
+    toolbar.appendChild(save);
+    fields.appendChild(toolbar);
+
+    fields.appendChild(detailField('Authentication', detailSelect('detailAuth', [
+      { value: 'online', label: 'Online (recommended)' },
+      { value: 'offline', label: 'Offline (insecure)' },
+      { value: 'floodgate', label: 'Floodgate' },
+    ], detailDraft.authentication)));
+    fields.appendChild(detailField(
+      'Compatibility',
+      gateway.compatibilityMode === 'viaproxy' ? 'ViaProxy' : 'Direct Geyser'
+    ));
+    fields.appendChild(detailField('Geyser version', gateway.geyser_version || '—'));
+    fields.appendChild(detailField('ViaProxy version', gateway.viaproxyVersion || 'not installed'));
+    fields.appendChild(detailField('Bedrock Connect', detailSelect('detailAdvertise', [
+      { value: 'advertised', label: 'Advertised' },
+      { value: 'hidden', label: 'Hidden' },
+    ], detailDraft.advertise)));
+    var rightHint = document.createElement('div');
+    if (detailDraft.authentication === 'online' && gateway.compatibilityMode === 'viaproxy') {
+      var viaAuth = document.createElement('p');
+      viaAuth.className = 'notice notice-error';
+      viaAuth.textContent = 'ViaProxy cannot use online authentication. Choose Floodgate or Offline.';
+      rightHint.appendChild(viaAuth);
+    }
+    fields.appendChild(rightHint);
+
+    var confirms = document.createElement('div');
+    confirms.className = 'detail-confirms';
+    if (detailDraft.authentication === 'offline' && gateway.authentication !== 'offline') {
+      confirms.appendChild(detailCheck(
+        'detailConfirmOffline',
+        detailDraft.confirmOffline,
+        'I understand offline mode disables Java authentication and must not be used on a public network.'
+      ));
+    }
+    if (detailDraft.authentication === 'floodgate' && gateway.target_type === 'remote-address') {
+      if (gateway.authentication !== 'floodgate') {
+        confirms.appendChild(detailCheck(
+          'detailConfirmFloodgate',
+          detailDraft.confirmFloodgate,
+          'The remote Java server already has Floodgate installed, and I will copy the gateway key.pem into its Floodgate folder.'
+        ));
+      }
+    }
+    if (detailDraft.authentication === 'floodgate' && gateway.target_type === 'local-server') {
+      confirms.appendChild(detailCheck(
+        'detailConfirmFloodgateInstall',
+        detailDraft.confirmFloodgateInstall,
+        'Download Floodgate onto the local Java server if it is missing, and copy the matching key.pem.'
+      ));
+      confirms.appendChild(detailCheck(
+        'detailConfirmJavaRestart',
+        detailDraft.confirmJavaRestart,
+        'Restart the Java server if it is running so Floodgate can load the new key.'
+      ));
+    }
+    if (detailDraft.preview && detailDraft.preview.missingConfirmations && detailDraft.preview.missingConfirmations.length) {
+      var need = document.createElement('p');
+      need.className = 'notice';
+      need.textContent = 'Confirm the items above, then save again.';
+      confirms.appendChild(need);
+    }
+    if (confirms.childNodes.length) fields.appendChild(confirms);
+    root.appendChild(fields);
 
     var extras = document.createElement('div');
     extras.className = 'extra-actions';
-    extras.appendChild(makeButton('Check compatibility', 'secondary', function () { checkCompat(gateway.id); }));
-    if (gateway.compatibilityMode === 'viaproxy') {
-      extras.appendChild(makeButton('Upgrade ViaProxy', 'secondary', function () { installVia(gateway.id, running); }));
-      extras.appendChild(makeButton('Remove ViaProxy', 'secondary', function () { removeVia(gateway.id); }));
-    } else {
-      extras.appendChild(makeButton('Install ViaProxy', 'secondary', function () { installVia(gateway.id, running); }));
-    }
-    if (gateway.authentication === 'floodgate' && gateway.target_type === 'local-server') {
-      extras.appendChild(makeButton('Install Floodgate on Java', 'secondary', function () { installFloodgate(gateway.id, running); }));
-    }
-    extras.appendChild(makeButton(
-      gateway.advertiseInBedrockConnect === false ? 'Advertise in Bedrock Connect' : 'Hide from Bedrock Connect',
-      'secondary',
-      function () { toggleAdvertise(gateway); }
-    ));
-    if (gateway.dashboardAttachment && gateway.dashboardAttachment.primary === false) {
-      extras.appendChild(makeButton('Show on dashboard tile', 'secondary', function () { setPrimary(gateway.id); }));
-    }
+    var extraSlots = [
+      makeButton('Check compatibility', 'outlined', function () { checkCompat(gateway.id); }),
+      gateway.compatibilityMode === 'viaproxy'
+        ? makeButton('Upgrade ViaProxy', 'outlined', function () { installVia(gateway.id, running); })
+        : makeButton('Install ViaProxy', 'outlined', function () { installVia(gateway.id, running); }),
+      gateway.compatibilityMode === 'viaproxy'
+        ? makeButton('Remove ViaProxy', 'outlined', function () { removeVia(gateway.id); })
+        : null,
+      gateway.authentication === 'floodgate' && gateway.target_type === 'local-server'
+        ? makeButton('Install Floodgate on Java', 'outlined', function () { installFloodgate(gateway.id, running); })
+        : null,
+      gateway.authentication === 'floodgate' && gateway.target_type === 'remote-address'
+        ? makeButton('Download Floodgate key', 'outlined', function () { downloadFloodgateKey(gateway.id); }, 'download')
+        : null,
+      null,
+    ];
+    extraSlots.forEach(function (item) {
+      if (item) extras.appendChild(item);
+      else {
+        var slot = document.createElement('div');
+        slot.className = 'slot';
+        extras.appendChild(slot);
+      }
+    });
     root.appendChild(extras);
+    if (gateway.dashboardAttachment && gateway.dashboardAttachment.primary === false) {
+      var dash = makeButton('Show on dashboard tile', 'outlined', function () { setPrimary(gateway.id); });
+      dash.style.marginBottom = '1rem';
+      root.appendChild(dash);
+    }
+
+    var banner = document.createElement('div');
+    banner.id = 'detailNotice';
+    banner.className = 'error hidden';
+    root.appendChild(banner);
+    applyBanner(banner, detailNotice.message, detailNotice.kind);
 
     var consoleCard = document.createElement('div');
     var consoleTitle = document.createElement('h2');
@@ -409,6 +584,10 @@
   }
 
   function openDetail(id) {
+    if (String(selectedId) !== String(id)) {
+      detailNotice = { message: '', kind: '' };
+      detailDraft = null;
+    }
     selectedId = String(id);
     renderDetail();
     setOverlay('detailOverlay', true);
@@ -417,6 +596,8 @@
 
   function closeDetail() {
     selectedId = '';
+    detailNotice = { message: '', kind: '' };
+    detailDraft = null;
     setOverlay('detailOverlay', false);
   }
 
@@ -576,16 +757,60 @@
     }
   }
 
-  async function toggleAdvertise(gateway) {
+  async function downloadFloodgateKey(id) {
+    showError('');
+    try {
+      var data = await MBM.get(API + '/gateways/' + encodeURIComponent(id) + '/floodgate/key');
+      var raw = atob(data.contentBase64 || '');
+      var bytes = new Uint8Array(raw.length);
+      for (var i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+      var url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = data.filename || 'key.pem';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showError('Floodgate key downloaded. Place the same key.pem in the remote Java Floodgate folder.', 'info');
+    } catch (err) {
+      showError(err.message || 'Could not download the Floodgate key');
+    }
+  }
+
+  async function saveChanges(gateway) {
+    readDetailDraft();
+    if (!detailIsDirty(gateway)) return;
     busy = String(gateway.id);
     showError('');
-    await loadGateways();
+    var saveBtn = $('detailSave');
+    if (saveBtn) saveBtn.disabled = true;
     try {
-      await MBM.patch(API + '/gateways/' + encodeURIComponent(gateway.id), {
-        advertiseInBedrockConnect: gateway.advertiseInBedrockConnect === false,
+      var result = await MBM.post(API + '/gateways/' + encodeURIComponent(gateway.id) + '/apply-settings', {
+        authentication: detailDraft.authentication,
+        advertiseInBedrockConnect: detailDraft.advertise === 'advertised',
+        confirmOffline: Boolean(detailDraft.confirmOffline),
+        confirmFloodgate: Boolean(detailDraft.confirmFloodgate),
+        confirmFloodgateInstall: Boolean(detailDraft.confirmFloodgateInstall),
+        confirmJavaRestart: Boolean(detailDraft.confirmJavaRestart),
+        restartGateway: isRunning(gateway),
       });
+      var message = 'Changes have been saved.';
+      if (result && result.gatewayRestarted) message += ' The gateway was restarted.';
+      if (result && result.javaRestarted) message += ' The Java server was restarted.';
+      else if (result && result.javaRestartRequired) message += ' Restart the Java server so Floodgate can load the new key.';
+      if (result && result.warnings && result.warnings.length) {
+        message += ' ' + result.warnings.join(' ');
+      }
+      detailNotice = { message: message, kind: 'info' };
+      resetDetailDraft(result || gateway);
     } catch (err) {
-      showError(err.message || 'Could not update advertisement');
+      if (err.data && err.data.code === 'CONFIRMATION_REQUIRED') {
+        detailDraft.preview = err.data.preview || {};
+        showError(err.message || 'This change needs confirmation');
+      } else {
+        showError(err.message || 'Could not save changes');
+      }
     } finally {
       busy = '';
       await loadGateways();

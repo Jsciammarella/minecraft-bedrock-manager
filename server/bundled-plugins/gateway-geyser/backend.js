@@ -139,7 +139,11 @@ function ensureFloodgateJoinPlugin(record) {
 }
 
 function sendError(res, err) {
-  res.status(err.status || 400).json({ error: err.message, code: err.code });
+  res.status(err.status || 400).json({
+    error: err.message,
+    code: err.code,
+    preview: err.preview,
+  });
 }
 
 function createProvider() {
@@ -533,9 +537,29 @@ function registerRoutes(router, gateways) {
     }
   });
 
-  router.patch('/gateways/:id', (req, res) => {
+  router.patch('/gateways/:id', async (req, res) => {
     try {
-      res.json(gateways.updateOwn(req.params.id, req.body || {}));
+      res.json(await gateways.updateOwn(req.params.id, req.body || {}));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.post('/gateways/:id/apply-settings', async (req, res) => {
+    try {
+      res.json(await gateways.applySettingsOwn(req.params.id, req.body || {}));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  router.get('/gateways/:id/floodgate/key', (req, res) => {
+    try {
+      const file = gateways.exportFloodgateKeyOwn(req.params.id);
+      res.json({
+        filename: file.filename,
+        contentBase64: Buffer.from(file.bytes).toString('base64'),
+      });
     } catch (err) {
       sendError(res, err);
     }

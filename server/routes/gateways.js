@@ -27,11 +27,19 @@ router.get('/:id', (req, res) => {
   }
 });
 
-router.patch('/:id', (req, res) => {
+router.patch('/:id', async (req, res) => {
   try {
-    res.json(gatewayManager.patch(req.params.id, req.body || {}));
+    res.json(await gatewayManager.patch(req.params.id, req.body || {}));
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message, code: err.code, preview: err.preview });
+  }
+});
+
+router.post('/:id/apply-settings', async (req, res) => {
+  try {
+    res.json(await gatewayManager.applySettings(req.params.id, req.body || {}));
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, code: err.code, preview: err.preview });
   }
 });
 

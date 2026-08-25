@@ -46,7 +46,7 @@ function scopedGatewayService(plugin) {
   }
 
   return {
-    create(config = {}) {
+    async create(config = {}) {
       const providerId = resolveProviderId(config.providerId);
       return gatewayManager.create({ ...config, providerId });
     },
@@ -58,13 +58,21 @@ function scopedGatewayService(plugin) {
       assertOwn(id);
       return gatewayManager.status(id);
     },
-    updateOwn(id, config = {}) {
+    async updateOwn(id, config = {}) {
       assertOwn(id);
       if (config.providerId && !providers().includes(String(config.providerId))) {
         throw forbidden('This plugin cannot manage another gateway provider');
       }
       const { providerId, ...rest } = config;
       return gatewayManager.patch(id, rest);
+    },
+    async applySettingsOwn(id, config = {}) {
+      assertOwn(id);
+      return gatewayManager.applySettings(id, config);
+    },
+    exportFloodgateKeyOwn(id) {
+      assertOwn(id);
+      return gatewayManager.exportFloodgateKey(id);
     },
     async startOwn(id) {
       assertOwn(id);
@@ -120,5 +128,4 @@ function scopedGatewayService(plugin) {
 module.exports = {
   ownedProviderIds,
   scopedGatewayService,
-  scopedGatewayService: scopedGatewayService,
 };

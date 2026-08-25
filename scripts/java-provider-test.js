@@ -544,6 +544,14 @@ versionRange="[13.0.8,)"
   assert.match(geyserUi, /if \(gateway\.lastError\)/);
   assert.match(geyserUi, /openDetail/);
   assert.match(geyserUi, /Delete gateway/);
+  assert.match(geyserUi, /detailNotice/);
+  assert.match(geyserUi, /'outlined'/);
+  assert.match(geyserUi, /extra-actions/);
+  assert.match(geyserUi, /Save Changes/);
+  assert.match(geyserUi, /apply-settings/);
+  assert.match(geyserUi, /detailAuth/);
+  assert.match(geyserUi, /'Authentication'/);
+  assert.doesNotMatch(geyserUi, /Hide from Bedrock Connect/);
   assert.doesNotThrow(() => new Function(geyserUi), 'Geyser plugin UI script must parse');
   assert.doesNotMatch(geyserUi, /\/api\/gateways/);
   assert.equal(pluginHost.isAllowedPluginApiPath('hello-world', '/api/plugins/gateway-geyser/gateways'), false);
@@ -678,6 +686,8 @@ versionRange="[13.0.8,)"
     assert.match(uiHtml, /max-width:\s*80rem/);
     assert.match(uiHtml, /tile-grid/);
     assert.match(uiHtml, /detailOverlay/);
+    assert.match(uiHtml, /repeat\(3/);
+    assert.match(uiHtml, /button\.outlined/);
     assert.match(uiHtml, /\.hidden\s*\{/);
     assert.match(uiHtml, /function applyTheme/);
     assert.doesNotMatch(uiHtml, /href=["']geyser\.css["']/);
@@ -752,6 +762,7 @@ versionRange="[13.0.8,)"
     javaLoaderHost.executeInstallPlan = originalInstall;
   }
 
+  const integrations = gatewayManager.integrationsForServer({ id: 99999, kind: 'java' });
   const geyserLink = integrations.find((item) => item.id === 'geyser');
   assert.ok(geyserLink);
   assert.equal(geyserLink.action, 'configure');
@@ -812,7 +823,7 @@ versionRange="[13.0.8,)"
   );
   await assert.rejects(
     () => gatewayManager.installFloodgate(created.id, {}),
-    /not installed unless you confirm/
+    /unless you confirm/
   );
   const tinyVia = path.join(storedDirect.data_path, 'ViaProxy.jar');
   fs.writeFileSync(tinyVia, 'jar');
@@ -938,8 +949,8 @@ versionRange="[13.0.8,)"
   const javaDir = path.join(testRoot, 'attached-java');
   fs.mkdirSync(javaDir, { recursive: true });
   const javaRow = db.prepare(`
-    INSERT INTO servers (name, version, port, data_path, kind, status)
-    VALUES (?, '1.21.8', ?, ?, 'java', 'stopped')
+    INSERT INTO servers (name, version, port, data_path, kind, status, loader_provider_id)
+    VALUES (?, '1.21.8', ?, ?, 'java', 'stopped', 'vanilla')
   `).run('Attached Java', 25580, javaDir);
   const javaId = javaRow.lastInsertRowid;
   const localGw = await gatewayManager.create({
@@ -1062,11 +1073,254 @@ versionRange="[13.0.8,)"
   assert.match(dashUi, /pluginContributions/);
   assert.match(dashUi, /primary-split/);
   const gatewayDetailUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/GatewayDetail.jsx'), 'utf8');
-  assert.match(gatewayDetailUi, /remote Java server/);
+  assert.match(gatewayDetailUi, /Remote Java/);
   assert.match(gatewayDetailUi, /PluginPrimaryActions/);
   const geyserUiSrc = fs.readFileSync(path.join(__dirname, '../server/bundled-plugins/gateway-geyser/ui/geyser.js'), 'utf8');
   assert.match(geyserUiSrc, /confirmViaProxy/);
   assert.match(geyserUiSrc, /Install ViaProxy/);
+  assert.match(geyserUiSrc, /Save Changes/);
+  assert.match(geyserUiSrc, /apply-settings/);
+  assert.doesNotMatch(geyserUiSrc, /Hide from Bedrock Connect/);
+
+  javaLoaderHost.executeInstallPlan = async (plan, opts) => {
+    for (const item of plan?.downloads || []) {
+      if (!opts?.serverDir || !item?.destination) continue;
+      const dest = path.join(opts.serverDir, item.destination);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, 'jar');
+    }
+    return {};
+  };
+
+  await assert.rejects(
+    () => gatewayManager.applySettings(created.id, { authentication: 'online' }),
+    (err) => err.code === 'AUTH_INCOMPATIBLE'
+  );
+
+  const authRemote = await gatewayManager.create({
+    name: 'Auth Remote',
+    providerId: 'geyser',
+    targetType: 'remote-address',
+    targetHost: '192.168.9.9',
+    targetTcpPort: 25565,
+    authentication: 'online',
+  });
+  await assert.rejects(
+    () => gatewayManager.applySettings(authRemote.id, { authentication: 'offline' }),
+    (err) => err.status === 409 && err.code === 'CONFIRMATION_REQUIRED' && err.preview.missingConfirmations.includes('confirmOffline')
+  );
+  const offlineApplied = await gatewayManager.applySettings(authRemote.id, {
+    authentication: 'offline',
+    confirmOffline: true,
+  });
+  assert.equal(offlineApplied.authentication, 'offline');
+  assert.equal(db.prepare('SELECT offline_confirmed FROM gateways WHERE id = ?').get(authRemote.id).offline_confirmed, 1);
+  assert.ok(db.prepare("SELECT action FROM audit_log WHERE target_id = ? AND action = 'gateway.authentication.change'").get(String(authRemote.id)));
+
+  await assert.rejects(
+    () => gatewayManager.applySettings(authRemote.id, { authentication: 'floodgate' }),
+    (err) => err.code === 'CONFIRMATION_REQUIRED' && err.preview.missingConfirmations.includes('confirmFloodgate')
+  );
+  const remoteFg = await gatewayManager.applySettings(authRemote.id, {
+    authentication: 'floodgate',
+    confirmFloodgate: true,
+  });
+  assert.equal(remoteFg.authentication, 'floodgate');
+  assert.equal(remoteFg.keyExportAvailable, true);
+  assert.ok(remoteFg.warnings.some((item) => /cannot install Floodgate or copy the key/i.test(item)));
+  const exported = gatewayManager.exportFloodgateKey(authRemote.id);
+  assert.equal(exported.filename, 'key.pem');
+  assert.equal(exported.bytes.length, 16);
+  assert.equal(JSON.stringify({ filename: exported.filename, contentBase64: exported.bytes.toString('base64') }).includes(authRemote.data_path || ''), false);
+  const storedKeyPath = db.prepare('SELECT floodgate_key_path, data_path FROM gateways WHERE id = ?').get(authRemote.id);
+  fs.mkdirSync(path.join(storedKeyPath.data_path, 'plugins'), { recursive: true });
+  fs.writeFileSync(path.join(storedKeyPath.data_path, 'plugins', 'FloodgateJoin.jar'), 'keep-me');
+  const leaveFg = await gatewayManager.applySettings(authRemote.id, { authentication: 'online' });
+  assert.equal(leaveFg.authentication, 'online');
+  assert.ok(leaveFg.preservedInactive.includes('key.pem'));
+  assert.ok(fs.existsSync(path.join(storedKeyPath.data_path, 'key.pem')));
+  assert.ok(fs.existsSync(path.join(storedKeyPath.data_path, 'plugins', 'FloodgateJoin.jar')));
+  assert.match(fs.readFileSync(path.join(storedKeyPath.data_path, 'config.yml'), 'utf8'), /auth-type:\s*online/);
+
+  db.prepare(`UPDATE gateways SET status = 'running', health_status = 'running' WHERE id = ?`).run(authRemote.id);
+  await assert.rejects(
+    () => gatewayManager.applySettings(authRemote.id, { authentication: 'offline', confirmOffline: true }),
+    (err) => err.code === 'GATEWAY_RUNNING'
+  );
+
+  const javaRuntime = require('../server/services/javaRuntime');
+  const origEnsureJava = javaRuntime.ensureJava;
+  const ptyPath = require.resolve('node-pty');
+  const origPtyModule = require.cache[ptyPath];
+  javaRuntime.ensureJava = async () => process.execPath;
+  require.cache[ptyPath] = {
+    id: ptyPath,
+    filename: ptyPath,
+    loaded: true,
+    exports: {
+      spawn() {
+        const exit = [];
+        return {
+          onData() {},
+          onExit(cb) { exit.push(cb); },
+          kill() { exit.forEach((cb) => cb({ exitCode: 0 })); },
+        };
+      },
+    },
+  };
+  try {
+    fs.writeFileSync(path.join(storedKeyPath.data_path, 'Geyser.jar'), 'jar');
+    const restarted = await gatewayManager.applySettings(authRemote.id, {
+      authentication: 'offline',
+      confirmOffline: true,
+      restartGateway: true,
+    });
+    assert.equal(restarted.authentication, 'offline');
+    assert.equal(restarted.gatewayRestarted, true);
+    assert.equal(db.prepare('SELECT status FROM gateways WHERE id = ?').get(authRemote.id).status, 'running');
+    gatewayManager.stop(authRemote.id);
+  } finally {
+    javaRuntime.ensureJava = origEnsureJava;
+    if (origPtyModule) require.cache[ptyPath] = origPtyModule;
+    else delete require.cache[ptyPath];
+    try { gatewayManager.stop(authRemote.id); } catch { /* ignore */ }
+  }
+
+  const paperDir = path.join(testRoot, 'paper-floodgate');
+  fs.mkdirSync(paperDir, { recursive: true });
+  const paperRow = db.prepare(`
+    INSERT INTO servers (name, version, port, data_path, kind, status, loader_provider_id)
+    VALUES (?, '1.21.8', ?, ?, 'java', 'stopped', 'paper')
+  `).run('Paper Floodgate', 25581, paperDir);
+  const paperId = paperRow.lastInsertRowid;
+  const localFgGw = await gatewayManager.create({
+    name: 'Local Floodgate Auth',
+    providerId: 'geyser',
+    targetType: 'local-server',
+    targetServerId: paperId,
+    authentication: 'online',
+  });
+  await assert.rejects(
+    () => gatewayManager.applySettings(localFgGw.id, { authentication: 'floodgate' }),
+    (err) => err.code === 'CONFIRMATION_REQUIRED' && err.preview.floodgateInstallRequired
+  );
+  db.prepare(`UPDATE servers SET status = 'running' WHERE id = ?`).run(paperId);
+  let javaRestarts = 0;
+  const origRestartServer = serverManager.restartServer.bind(serverManager);
+  serverManager.restartServer = async () => { javaRestarts += 1; };
+  try {
+    const withoutJavaRestart = await gatewayManager.applySettings(localFgGw.id, {
+      authentication: 'floodgate',
+      confirmFloodgateInstall: true,
+    });
+    assert.equal(withoutJavaRestart.authentication, 'floodgate');
+    assert.equal(withoutJavaRestart.floodgateInstall.installed, true);
+    assert.equal(withoutJavaRestart.keySynchronized, true);
+    assert.equal(withoutJavaRestart.javaRestarted, false);
+    assert.equal(withoutJavaRestart.javaRestartRequired, true);
+    assert.equal(javaRestarts, 0);
+    assert.equal(fs.readFileSync(path.join(paperDir, 'plugins', 'floodgate', 'key.pem')).length, 16);
+    const taggedLocal = pluginContributions.listForServer({ id: paperId, status: 'running' });
+    assert.ok(taggedLocal.some((item) => item.tags.some((tag) => tag.label === 'Floodgate')));
+
+    await gatewayManager.applySettings(localFgGw.id, { authentication: 'online' });
+    const withJavaRestart = await gatewayManager.applySettings(localFgGw.id, {
+      authentication: 'floodgate',
+      confirmJavaRestart: true,
+    });
+    assert.equal(withJavaRestart.authentication, 'floodgate');
+    assert.equal(withJavaRestart.javaRestarted, true);
+    assert.equal(javaRestarts, 1);
+    const leaveLocal = await gatewayManager.applySettings(localFgGw.id, { authentication: 'online' });
+    assert.ok(fs.existsSync(path.join(paperDir, 'plugins', 'floodgate-spigot.jar')));
+    assert.ok(leaveLocal.preservedInactive.includes('Floodgate JARs'));
+  } finally {
+    serverManager.restartServer = origRestartServer;
+    db.prepare(`UPDATE servers SET status = 'stopped' WHERE id = ?`).run(paperId);
+  }
+
+  const rollbackGw = await gatewayManager.create({
+    name: 'Auth Rollback',
+    providerId: 'geyser',
+    targetType: 'remote-address',
+    targetHost: '192.168.9.10',
+    targetTcpPort: 25565,
+    authentication: 'online',
+  });
+  const geyserProviderLive = gatewayRegistry.get('geyser').provider;
+  const origDefaultConfig = geyserProviderLive.getDefaultConfig.bind(geyserProviderLive);
+  geyserProviderLive.getDefaultConfig = () => {
+    throw Object.assign(new Error('config write failed'), { status: 500 });
+  };
+  try {
+    await assert.rejects(
+      () => gatewayManager.applySettings(rollbackGw.id, { authentication: 'offline', confirmOffline: true }),
+      /config write failed/
+    );
+    const rolled = db.prepare('SELECT authentication, status FROM gateways WHERE id = ?').get(rollbackGw.id);
+    assert.equal(rolled.authentication, 'online');
+    assert.notEqual(rolled.status, 'running');
+  } finally {
+    geyserProviderLive.getDefaultConfig = origDefaultConfig;
+  }
+
+  const origInstallPlan = javaLoaderHost.executeInstallPlan;
+  const busyGw = await gatewayManager.create({
+    name: 'Auth Busy',
+    providerId: 'geyser',
+    targetType: 'remote-address',
+    targetHost: '192.168.9.11',
+    targetTcpPort: 25565,
+    authentication: 'online',
+  });
+  let releaseInstall;
+  const hungInstall = new Promise((resolve) => { releaseInstall = resolve; });
+  javaLoaderHost.executeInstallPlan = () => hungInstall.then(() => ({}));
+  const pendingCompat = gatewayManager.installCompatibility(busyGw.id, {
+    confirmViaProxy: true,
+    confirmModeSwitch: true,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  try {
+    await assert.rejects(
+      () => gatewayManager.applySettings(busyGw.id, { authentication: 'offline', confirmOffline: true }),
+      (err) => err.code === 'GATEWAY_BUSY'
+    );
+    await assert.rejects(
+      () => gatewayManager.start(busyGw.id),
+      (err) => err.code === 'GATEWAY_BUSY'
+    );
+  } finally {
+    releaseInstall({});
+    try { await pendingCompat; } catch { /* ignore hung install errors */ }
+    javaLoaderHost.executeInstallPlan = origInstallPlan;
+  }
+
+  const pluginRoutesAuth = require('../server/routes/plugins');
+  const authApp = require('express')();
+  authApp.use(require('express').json());
+  authApp.use('/api/plugins', pluginRoutesAuth);
+  const authServer = authApp.listen(0);
+  try {
+    const origin = `http://127.0.0.1:${authServer.address().port}`;
+    const hideRes = await fetch(`${origin}/api/plugins/gateway-geyser/gateways/${authRemote.id}/apply-settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ advertiseInBedrockConnect: false }),
+    });
+    const hideBody = await hideRes.json();
+    assert.equal(hideRes.status, 200, hideBody.error || 'apply-settings should succeed');
+    assert.equal(hideBody.advertiseInBedrockConnect, false);
+    const keyRes = await fetch(`${origin}/api/plugins/gateway-geyser/gateways/${authRemote.id}/floodgate/key`);
+    assert.equal(keyRes.status, 400);
+  } finally {
+    await new Promise((resolve) => authServer.close(resolve));
+  }
+
+  try { gatewayManager.remove(authRemote.id); } catch { /* ignore */ }
+  try { gatewayManager.remove(localFgGw.id); } catch { /* ignore */ }
+  try { gatewayManager.remove(rollbackGw.id); } catch { /* ignore */ }
+  try { gatewayManager.remove(busyGw.id); } catch { /* ignore */ }
 
   const audits = db.prepare('SELECT action FROM audit_log WHERE target_id = ?').all(String(created.id)).map((row) => row.action);
   assert.ok(audits.includes('gateway.create'));
@@ -1081,7 +1335,8 @@ versionRange="[13.0.8,)"
   pluginHost.setPluginEnabled('gateway-geyser', false);
   const stoppedRunning = db.prepare('SELECT status FROM gateways WHERE id = ?').get(created.id);
   assert.equal(stoppedRunning.status, 'stopped');
-  const disabledTile = pluginDashboard.list().find((item) => item.id === `gateway:${created.id}`);
+  const listedDisabled = pluginDashboard.list();
+  const disabledTile = listedDisabled.find((item) => item.id === `gateway:${created.id}`);
   assert.ok(disabledTile);
   assert.equal(disabledTile.status, 'plugin_disabled');
   assert.equal(disabledTile.typeLabel, 'Remote Java — Geyser');
@@ -1287,8 +1542,8 @@ versionRange="[13.0.8,)"
   const taken = gatewayManager.takenPorts();
   assert.ok(taken instanceof Set);
 
-  const migrated = db.prepare("SELECT loader_provider_id FROM servers WHERE kind = 'java' LIMIT 1").get();
-  if (migrated) assert.equal(migrated.loader_provider_id, 'vanilla');
+  const attachedLoader = db.prepare("SELECT loader_provider_id FROM servers WHERE name = 'Attached Java'").get();
+  if (attachedLoader) assert.equal(attachedLoader.loader_provider_id, 'vanilla');
 
   if (prevBundled == null) delete process.env.MC_MANAGER_BUNDLED_PLUGINS_DIR;
   else process.env.MC_MANAGER_BUNDLED_PLUGINS_DIR = prevBundled;

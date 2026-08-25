@@ -15,8 +15,34 @@ const playerPresence = require('./playerPresence');
 
 const BASE_DIR = path.join(__dirname, '../../data/gateways');
 const ptySessions = new Map();
-const startInflight = new Map();
+const lifecycleLocks = new Map();
 const COMPAT_MODES = new Set(['direct', 'viaproxy']);
+const RUNTIME_BACKUP_FILES = ['config.yml', 'viaproxy.yml', path.join('plugins', 'Geyser', 'config.yml')];
+const BUSY_ERROR = 'Another lifecycle operation is already in progress for this gateway';
+
+function withLifecycle(id, fn) {
+  const key = String(id);
+  if (lifecycleLocks.has(key)) {
+    throw Object.assign(new Error(BUSY_ERROR), { status: 409, code: 'GATEWAY_BUSY' });
+  }
+  const token = {};
+  lifecycleLocks.set(key, token);
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (lifecycleLocks.get(key) === token) lifecycleLocks.delete(key);
+    });
+}
+
+function assertLifecycleIdle(id) {
+  if (lifecycleLocks.has(String(id))) {
+    throw Object.assign(new Error(BUSY_ERROR), { status: 409, code: 'GATEWAY_BUSY' });
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function consoleLogFile(dataPath) {
   return path.join(dataPath, 'console.log');
@@ -272,7 +298,7 @@ function checkCompatibility(id) {
   return { ...result, gateway: publicRecord(get(id)) };
 }
 
-async function installCompatibility(id, { confirmViaProxy = false, confirmModeSwitch = false } = {}) {
+async function installCompatibilityUnlocked(id, { confirmViaProxy = false, confirmModeSwitch = false } = {}) {
   const row = get(id);
   if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
   if (!confirmViaProxy) {
@@ -283,7 +309,7 @@ async function installCompatibility(id, { confirmViaProxy = false, confirmModeSw
   }
   const entry = gatewayRegistry.requireGateway(row.provider_id);
   const wasRunning = row.status === 'running' || ptySessions.has(String(id));
-  if (wasRunning) stop(id);
+  if (wasRunning) stopNow(id);
   if (typeof entry.provider.planCompatibilityInstallation !== 'function') {
     throw Object.assign(new Error('This gateway provider does not support ViaProxy compatibility'), { status: 400 });
   }
@@ -322,7 +348,7 @@ async function installCompatibility(id, { confirmViaProxy = false, confirmModeSw
       detail: { viaproxyVersion: plan.result?.viaproxyVersion || 'latest' },
     });
     pluginEvents.emit('gateway.updated', { gatewayId: id });
-    if (wasRunning) await start(id);
+    if (wasRunning) await startNow(id);
     return publicRecord(get(id));
   } catch (err) {
     for (const item of backups) {
@@ -336,13 +362,17 @@ async function installCompatibility(id, { confirmViaProxy = false, confirmModeSw
     });
     if (wasRunning) {
       persistGatewayExtras(id, { compatibility_mode: row.compatibility_mode || 'direct' });
-      try { await start(id); } catch { /* keep failed */ }
+      try { await startNow(id); } catch { /* keep failed */ }
     }
     throw err;
   }
 }
 
-async function removeCompatibility(id, { confirm = false } = {}) {
+function installCompatibility(id, opts) {
+  return withLifecycle(id, () => installCompatibilityUnlocked(id, opts));
+}
+
+async function removeCompatibilityUnlocked(id, { confirm = false } = {}) {
   const row = get(id);
   if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
   if (!confirm) throw Object.assign(new Error('Removing ViaProxy requires confirmation'), { status: 400 });
@@ -366,11 +396,20 @@ async function removeCompatibility(id, { confirm = false } = {}) {
   return publicRecord(get(id));
 }
 
-function assertAuth(config) {
-  const auth = String(config.authentication || 'online').toLowerCase();
+function removeCompatibility(id, opts) {
+  return withLifecycle(id, () => removeCompatibilityUnlocked(id, opts));
+}
+
+function normalizeAuth(value) {
+  const auth = String(value || 'online').toLowerCase();
   if (!['online', 'floodgate', 'offline'].includes(auth)) {
     throw Object.assign(new Error('Authentication must be online, floodgate, or offline'), { status: 400 });
   }
+  return auth;
+}
+
+function assertAuth(config) {
+  const auth = normalizeAuth(config.authentication);
   if (auth === 'offline' && !config.confirmOffline) {
     throw Object.assign(new Error('Offline authentication requires an explicit security confirmation'), { status: 400 });
   }
@@ -378,6 +417,109 @@ function assertAuth(config) {
     throw Object.assign(new Error('Remote Floodgate targets require confirmation that Floodgate is installed on the Java server'), { status: 400 });
   }
   return auth;
+}
+
+function snapshotRuntime(row) {
+  const files = {};
+  for (const rel of RUNTIME_BACKUP_FILES) {
+    const full = path.join(row.data_path, rel);
+    try {
+      if (fs.existsSync(full)) files[rel] = fs.readFileSync(full);
+    } catch { /* ignore */ }
+  }
+  return {
+    files,
+    db: {
+      authentication: row.authentication,
+      floodgate_key_path: row.floodgate_key_path,
+      offline_confirmed: row.offline_confirmed,
+      floodgate_confirmed: row.floodgate_confirmed,
+      advertise_in_bedrock_connect: row.advertise_in_bedrock_connect,
+      status: row.status,
+      health_status: row.health_status,
+    },
+  };
+}
+
+function restoreRuntime(id, snap) {
+  const row = get(id);
+  if (!row || !snap) return;
+  for (const rel of Object.keys(snap.files || {})) {
+    const full = path.join(row.data_path, rel);
+    try {
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, snap.files[rel]);
+    } catch { /* ignore */ }
+  }
+  db.prepare(`
+    UPDATE gateways
+    SET authentication = ?, floodgate_key_path = ?, offline_confirmed = ?, floodgate_confirmed = ?,
+      advertise_in_bedrock_connect = ?, status = ?, health_status = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(
+    snap.db.authentication,
+    snap.db.floodgate_key_path,
+    snap.db.offline_confirmed,
+    snap.db.floodgate_confirmed,
+    snap.db.advertise_in_bedrock_connect,
+    snap.db.status === 'running' || snap.db.status === 'starting' ? 'stopped' : snap.db.status,
+    snap.db.status === 'running' || snap.db.status === 'starting' ? 'stopped' : (snap.db.health_status || 'stopped'),
+    id
+  );
+}
+
+function planSettingsChange(row, config = {}) {
+  const nextAuth = config.authentication != null ? normalizeAuth(config.authentication) : row.authentication;
+  const nextAdvertise = config.advertiseInBedrockConnect != null
+    ? Boolean(config.advertiseInBedrockConnect)
+    : Number(row.advertise_in_bedrock_connect) !== 0;
+  if (nextAuth === 'online' && compatibilityModeOf(row.compatibility_mode) === 'viaproxy') {
+    throw Object.assign(
+      new Error('ViaProxy CLI mode cannot join an online-mode Java server without Floodgate. Enable Floodgate on the Java server or use offline authentication (insecure).'),
+      { status: 400, code: 'AUTH_INCOMPATIBLE' }
+    );
+  }
+
+  const enteringOffline = nextAuth === 'offline' && row.authentication !== 'offline';
+  const enteringFloodgate = nextAuth === 'floodgate' && row.authentication !== 'floodgate';
+  const leavingFloodgate = row.authentication === 'floodgate' && nextAuth !== 'floodgate';
+  let floodgateInstallRequired = false;
+  let javaRestartRequired = false;
+  let keySyncRequired = false;
+  let remoteFloodgateConfirmRequired = false;
+
+  if (nextAuth === 'floodgate' && row.target_type === 'local-server' && row.target_server_id) {
+    const server = db.prepare('SELECT * FROM servers WHERE id = ? AND kind = ?').get(row.target_server_id, 'java');
+    if (!server) {
+      throw Object.assign(new Error('The associated Java server no longer exists. Choose a new target before using Floodgate.'), { status: 400 });
+    }
+    keySyncRequired = true;
+    floodgateInstallRequired = !floodgatePresentOnServer(server.data_path);
+    javaRestartRequired = server.status === 'running' || server.status === 'starting';
+  }
+  if (enteringFloodgate && row.target_type === 'remote-address') {
+    remoteFloodgateConfirmRequired = true;
+  }
+
+  const missingConfirmations = [];
+  if (enteringOffline && !config.confirmOffline) missingConfirmations.push('confirmOffline');
+  if (remoteFloodgateConfirmRequired && !config.confirmFloodgate) missingConfirmations.push('confirmFloodgate');
+  if (floodgateInstallRequired && !config.confirmFloodgateInstall) missingConfirmations.push('confirmFloodgateInstall');
+
+  return {
+    authentication: nextAuth,
+    advertiseInBedrockConnect: nextAdvertise,
+    enteringOffline,
+    enteringFloodgate,
+    leavingFloodgate,
+    floodgateInstallRequired,
+    javaRestartRequired,
+    keySyncRequired,
+    remoteFloodgateConfirmRequired,
+    keyExportAvailable: nextAuth === 'floodgate' && row.target_type === 'remote-address',
+    missingConfirmations,
+    changed: nextAuth !== row.authentication || nextAdvertise !== (Number(row.advertise_in_bedrock_connect) !== 0),
+  };
 }
 
 function resolveTarget(config) {
@@ -533,7 +675,11 @@ async function ensureFloodgateOnLocalServer(row, { restartJava = true } = {}) {
   return { installed: true, restarted, alreadyPresent: false };
 }
 
-async function installFloodgate(id, { confirm = false } = {}) {
+async function installFloodgate(id, opts) {
+  return withLifecycle(id, () => installFloodgateUnlocked(id, opts));
+}
+
+async function installFloodgateUnlocked(id, { confirm = false } = {}) {
   require('./javaHostingPolicy').assertServerEditionAvailable('java', 'install-floodgate');
   if (!confirm) {
     throw Object.assign(new Error('Floodgate is not installed onto the Java server unless you confirm that choice'), { status: 400 });
@@ -633,7 +779,7 @@ async function create(config) {
   }
 }
 
-function patch(id, config) {
+function patchNow(id, config) {
   const row = get(id);
   if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
   if (row.status === 'running' || row.status === 'starting') {
@@ -711,6 +857,197 @@ function patch(id, config) {
   return publicRecord(get(id));
 }
 
+function patch(id, config) {
+  return withLifecycle(id, () => patchNow(id, config));
+}
+
+function exportFloodgateKey(id) {
+  const row = get(id);
+  if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
+  if (row.authentication !== 'floodgate') {
+    throw Object.assign(new Error('Floodgate is not the active authentication mode for this gateway'), { status: 400 });
+  }
+  const keyPath = row.floodgate_key_path || path.join(row.data_path, 'key.pem');
+  if (!floodgateKeyIsValid(keyPath)) {
+    throw Object.assign(new Error('A Floodgate key is not available for download yet'), { status: 404 });
+  }
+  return {
+    filename: 'key.pem',
+    bytes: fs.readFileSync(keyPath),
+  };
+}
+
+async function waitUntilStopped(id, timeoutMs = 8000) {
+  stopNow(id);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!ptySessions.has(String(id))) {
+      const row = get(id);
+      if (!row || row.status === 'stopped' || row.status === 'failed') return;
+    }
+    await sleep(50);
+  }
+  if (ptySessions.has(String(id))) {
+    throw Object.assign(new Error('Gateway did not stop before the configuration change'), { status: 500 });
+  }
+}
+
+async function applySettings(id, config = {}) {
+  return withLifecycle(id, async () => {
+    const row = get(id);
+    if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
+    require('./javaHostingPolicy').assertServerEditionAvailable('java', 'update-gateway');
+    const plan = planSettingsChange(row, config);
+    if (plan.missingConfirmations.length) {
+      throw Object.assign(new Error('This authentication change needs confirmation'), {
+        status: 409,
+        code: 'CONFIRMATION_REQUIRED',
+        preview: {
+          authentication: plan.authentication,
+          floodgateInstallRequired: plan.floodgateInstallRequired,
+          javaRestartRequired: plan.javaRestartRequired,
+          remoteFloodgateConfirmRequired: plan.remoteFloodgateConfirmRequired,
+          keyExportAvailable: plan.keyExportAvailable,
+          leavingFloodgate: plan.leavingFloodgate,
+          missingConfirmations: plan.missingConfirmations,
+        },
+      });
+    }
+
+    const wasRunning = row.status === 'running' || row.status === 'starting' || ptySessions.has(String(id));
+    if (wasRunning && !config.restartGateway) {
+      throw Object.assign(
+        new Error('Stop the gateway before changing its configuration, or set restartGateway to apply the change as one operation'),
+        { status: 409, code: 'GATEWAY_RUNNING' }
+      );
+    }
+    if (!plan.changed) {
+      return {
+        ...publicRecord(get(id)),
+        authentication: plan.authentication,
+        gatewayRestarted: false,
+        javaRestartRequired: plan.javaRestartRequired,
+        javaRestarted: false,
+        floodgateInstall: { installed: false, alreadyPresent: !plan.floodgateInstallRequired },
+        keySynchronized: false,
+        preservedInactive: [],
+        warnings: [],
+        errors: [],
+      };
+    }
+
+    const backup = snapshotRuntime(row);
+    const warnings = [];
+    let floodgateInstall = { installed: false, alreadyPresent: false, restarted: false };
+    let keySynchronized = false;
+    let javaRestarted = false;
+    let gatewayRestarted = false;
+    try {
+      if (wasRunning) await waitUntilStopped(id);
+      const entry = gatewayRegistry.requireGateway(row.provider_id);
+      let floodgateKeyPath = row.floodgate_key_path;
+      if (plan.authentication === 'floodgate') {
+        floodgateKeyPath = ensureFloodgateKey(row.data_path);
+      }
+      db.prepare(`
+        UPDATE gateways
+        SET authentication = ?, floodgate_key_path = ?, offline_confirmed = ?, floodgate_confirmed = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        plan.authentication,
+        floodgateKeyPath,
+        plan.authentication === 'offline' ? 1 : row.offline_confirmed,
+        plan.authentication === 'floodgate' ? 1 : row.floodgate_confirmed,
+        id
+      );
+      persistGatewayExtras(id, {
+        advertise_in_bedrock_connect: plan.advertiseInBedrockConnect ? 1 : 0,
+      });
+
+      if (plan.authentication === 'floodgate' && row.target_type === 'local-server') {
+        const latest = get(id);
+        if (plan.floodgateInstallRequired) {
+          floodgateInstall = await ensureFloodgateOnLocalServer(latest, {
+            restartJava: Boolean(config.confirmJavaRestart),
+          });
+          javaRestarted = Boolean(floodgateInstall.restarted);
+          keySynchronized = true;
+        } else {
+          const server = db.prepare('SELECT * FROM servers WHERE id = ? AND kind = ?').get(row.target_server_id, 'java');
+          const copied = copyFloodgateKeyToLocalServer(ensureFloodgateKey(row.data_path), server);
+          keySynchronized = copied.length > 0;
+          floodgateInstall = { installed: false, alreadyPresent: true, restarted: false };
+          if (plan.javaRestartRequired && config.confirmJavaRestart && server) {
+            await require('./serverManager').restartServer(server.id);
+            javaRestarted = true;
+          }
+        }
+      } else if (plan.authentication === 'floodgate' && row.target_type === 'remote-address') {
+        ensureFloodgateKey(row.data_path);
+        warnings.push('The manager cannot install Floodgate or copy the key onto a remote Java server. Download the gateway key and place it in the remote Floodgate folder.');
+      }
+
+      writeRuntimeFiles(get(id), entry.provider);
+      try { require('./serverPluginAttachments').syncForGateway(get(id), { actor: 'system' }); } catch { /* ignore */ }
+      if (row.authentication !== plan.authentication) {
+        pluginAudit.record('gateway.authentication.change', {
+          targetType: 'gateway',
+          targetId: String(id),
+          detail: {
+            from: row.authentication,
+            to: plan.authentication,
+            advertiseInBedrockConnect: plan.advertiseInBedrockConnect,
+            offlineConfirmed: Boolean(config.confirmOffline),
+            floodgateConfirmed: Boolean(config.confirmFloodgate),
+          },
+        });
+      }
+      pluginAudit.record('gateway.update', { targetType: 'gateway', targetId: String(id), detail: { authentication: plan.authentication } });
+      pluginEvents.emit('gateway.updated', { gatewayId: id });
+      require('./pluginDashboard').snapshotAllGateways();
+
+      if (wasRunning && config.restartGateway) {
+        await startNow(id);
+        gatewayRestarted = true;
+        const latest = get(id);
+        if (latest.status !== 'running' && latest.status !== 'starting') {
+          throw Object.assign(new Error('Gateway did not start after the authentication change'), { status: 500 });
+        }
+      }
+
+      const preservedInactive = plan.leavingFloodgate
+        ? ['Floodgate JARs', 'Floodgate configuration', 'key.pem', 'ViaProxy helper files']
+        : [];
+      if (plan.leavingFloodgate) {
+        warnings.push('Floodgate remains installed but inactive for this gateway. Files were not deleted.');
+      }
+
+      return {
+        ...publicRecord(get(id)),
+        authentication: plan.authentication,
+        gatewayRestarted,
+        javaRestartRequired: plan.javaRestartRequired && !javaRestarted,
+        javaRestarted,
+        floodgateInstall,
+        keySynchronized,
+        keyExportAvailable: plan.keyExportAvailable,
+        preservedInactive,
+        warnings,
+        errors: [],
+      };
+    } catch (err) {
+      try { restoreRuntime(id, backup); } catch { /* ignore */ }
+      const latest = get(id);
+      if (latest && (latest.status === 'running' || latest.status === 'starting') && !ptySessions.has(String(id))) {
+        db.prepare(`UPDATE gateways SET status = 'stopped', health_status = 'failed', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+          .run(String(err.message || err), id);
+      }
+      throw err;
+    }
+  });
+}
+
 function syncLocalTargetPort(serverId, tcpPort) {
   const rows = db.prepare(`SELECT * FROM gateways WHERE target_type = 'local-server' AND target_server_id = ?`).all(serverId);
   for (const row of rows) {
@@ -721,11 +1058,7 @@ function syncLocalTargetPort(serverId, tcpPort) {
 }
 
 async function start(id) {
-  const key = String(id);
-  if (startInflight.has(key)) return startInflight.get(key);
-  const work = startNow(id).finally(() => startInflight.delete(key));
-  startInflight.set(key, work);
-  return work;
+  return withLifecycle(id, () => startNow(id));
 }
 
 function isActive(id) {
@@ -785,7 +1118,7 @@ async function startNow(id) {
         : null;
       const jar = path.join(current.data_path, 'ViaProxy.jar');
       if (wanted && (!fs.existsSync(jar) || String(current.viaproxy_version || '') !== String(wanted))) {
-        await installCompatibility(id, { confirmViaProxy: true, confirmModeSwitch: true });
+        await installCompatibilityUnlocked(id, { confirmViaProxy: true, confirmModeSwitch: true });
       } else if (!fs.existsSync(jar)) {
         throw Object.assign(new Error('ViaProxy is not installed for this gateway. Install compatibility mode from the Geyser plugin first.'), { status: 400 });
       }
@@ -871,7 +1204,7 @@ async function startNow(id) {
   }
 }
 
-function stop(id) {
+function stopNow(id) {
   const row = get(id);
   const session = ptySessions.get(String(id));
   if (session) {
@@ -887,15 +1220,23 @@ function stop(id) {
   return { success: true };
 }
 
+function stop(id) {
+  assertLifecycleIdle(id);
+  return stopNow(id);
+}
+
 async function restart(id) {
-  stop(id);
-  return start(id);
+  return withLifecycle(id, async () => {
+    stopNow(id);
+    return startNow(id);
+  });
 }
 
 function remove(id) {
+  assertLifecycleIdle(id);
   const row = get(id);
   if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
-  stop(id);
+  stopNow(id);
   unregisterGatewayPort(id);
   try {
     const attachments = require('./serverPluginAttachments');
@@ -1059,4 +1400,7 @@ module.exports = {
   syncLocalTargetPort,
   takenPorts,
   writeFloodgateKey,
+  applySettings,
+  exportFloodgateKey,
+  planSettingsChange,
 };

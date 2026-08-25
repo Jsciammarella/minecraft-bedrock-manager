@@ -58,7 +58,8 @@ function decorateEntity(entity, row, { pluginDisabled = false } = {}) {
 }
 
 function sanitizeEntity(raw, fallback = {}) {
-  const gatewayId = Number(raw?.gatewayId || fallback.gatewayId);
+  const fromId = String(raw?.id || fallback.id || '').replace(/^gateway:/, '');
+  const gatewayId = Number(raw?.gatewayId || fallback.gatewayId || fromId);
   if (!Number.isInteger(gatewayId) || gatewayId < 1) return null;
   const kind = KINDS.has(raw?.kind) ? raw.kind : (fallback.kind || 'geyser_gateway');
   const status = STATUSES.has(raw?.status) ? raw.status : (fallback.status || 'stopped');
@@ -184,7 +185,8 @@ function buildEntity(row, { pluginDisabled = false, enabledPlugins = null } = {}
     const snap = db.prepare('SELECT payload FROM plugin_dashboard_snapshots WHERE entity_id = ?').get(`gateway:${row.id}`);
     if (snap?.payload) {
       try {
-        entity = sanitizeEntity({ ...JSON.parse(snap.payload), pluginDisabled: true, status: 'plugin_disabled', managementUrl: '/plugins' }, entity);
+        const next = sanitizeEntity({ ...JSON.parse(snap.payload), pluginDisabled: true, status: 'plugin_disabled', managementUrl: '/plugins' }, entity);
+        if (next) entity = next;
       } catch { /* keep live fallback */ }
     }
     if (entity) {
