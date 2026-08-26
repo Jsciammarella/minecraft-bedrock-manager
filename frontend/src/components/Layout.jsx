@@ -95,23 +95,12 @@ function Layout() {
       : []),
   ];
 
-  const visiblePluginMenus = pluginMenus.filter((item) => can(item.permissionKey || pluginMenuKey(item.pluginId, item.id)));
-  const contributedNav = visiblePluginMenus
-    .filter((item) => item.renderer === 'native-core')
-    .map((item) => ({
-      order: Number.isFinite(Number(item.order)) ? Number(item.order) : 65,
-      icon: pluginIcon(item.icon),
-      label: item.label,
-      path: item.path,
-      menuKey: item.permissionKey || pluginMenuKey(item.pluginId, item.id),
-    }));
-  const extraPluginMenus = visiblePluginMenus.filter((item) => item.renderer !== 'native-core');
-  const navItems = [...coreNavItems, ...contributedNav]
+  const extraPluginMenus = pluginMenus.filter((item) => can(item.permissionKey || pluginMenuKey(item.pluginId, item.id)));
+  const navItems = coreNavItems
     .filter((item) => !item.menuKey || can(item.menuKey))
     .sort((a, b) => a.order - b.order);
   const canViewPlugins = can('plugins.view');
 
-  const activeServers = servers.filter(s => s.status === 'running').length;
   const isCoreNavActive = (item) => (
     item.exact
       ? location.pathname === item.path
@@ -213,38 +202,51 @@ function Layout() {
           )}
         </div>
         {showLabels && (
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <p className="text-xs text-mc-textMuted truncate min-w-0" title={managerVersion ? `Manager version ${managerVersion}` : undefined}>
-              {managerVersion ? `v. ${managerVersion}` : '\u00a0'}
-            </p>
-            {canViewPlugins && (
-            <button
-              type="button"
-              onClick={() => goTo('/plugins')}
-              className={`text-xs shrink-0 ${
-                location.pathname === '/plugins'
-                  ? 'text-mc-accent'
-                  : 'text-mc-textMuted hover:text-mc-text'
-              }`}
-            >
-              Plugins
-            </button>
-            )}
+          <div className="mt-2 space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs text-mc-textMuted truncate min-w-0" title={managerVersion ? `Manager version ${managerVersion}` : undefined}>
+                {managerVersion ? `v. ${managerVersion}` : '\u00a0'}
+              </p>
+              {canViewPlugins && (
+              <button
+                type="button"
+                onClick={() => goTo('/plugins')}
+                className={`text-xs shrink-0 ${
+                  location.pathname === '/plugins'
+                    ? 'text-mc-accent'
+                    : 'text-mc-textMuted hover:text-mc-text'
+                }`}
+              >
+                Plugins
+              </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2 min-w-0">
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${connected ? 'bg-green-400' : 'bg-red-400'}`} />
+              <span className="text-xs text-mc-textMuted truncate">{connected ? 'Connected' : 'Disconnected'}</span>
+            </div>
           </div>
         )}
-        {canViewPlugins && !showLabels && (
-          <button
-            type="button"
-            onClick={() => goTo('/plugins')}
-            className={`mt-2 w-full text-xs ${
-              location.pathname === '/plugins'
-                ? 'text-mc-accent'
-                : 'text-mc-textMuted hover:text-mc-text'
-            }`}
-            title="Plugins"
-          >
-            Plugins
-          </button>
+        {!showLabels && (
+          <div className="mt-2 space-y-2">
+            {canViewPlugins && (
+              <button
+                type="button"
+                onClick={() => goTo('/plugins')}
+                className={`w-full text-xs ${
+                  location.pathname === '/plugins'
+                    ? 'text-mc-accent'
+                    : 'text-mc-textMuted hover:text-mc-text'
+                }`}
+                title="Plugins"
+              >
+                Plugins
+              </button>
+            )}
+            <div className="flex items-center justify-center" title={connected ? 'Connected' : 'Disconnected'}>
+              <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`} />
+            </div>
+          </div>
         )}
       </div>
 
@@ -273,44 +275,35 @@ function Layout() {
       )}
 
       <div className="p-3 border-t border-mc-surfaceLight space-y-2 flex-shrink-0">
-        <div className="flex items-center gap-2 px-1">
-          <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`} />
-          {showLabels && <span className="text-xs text-mc-textMuted">{connected ? 'Connected' : 'Disconnected'}</span>}
-        </div>
-
         {showLabels && user && (
           <div className="px-1 text-xs text-mc-textMuted truncate" title={user.username}>
             User: {user.username}
           </div>
         )}
 
-        {showLabels && (
-          <div className="px-1 text-xs text-mc-textMuted">
-            {activeServers}/{servers.length} servers active
-          </div>
-        )}
-
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          className="hidden md:flex w-full items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs 
-            text-mc-textMuted hover:text-mc-text hover:bg-mc-surfaceLight transition-all"
-        >
-          {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-          {showLabels && <span>Collapse</span>}
-        </button>
-
-        {authenticationRequired && (
+        <div className="flex items-center gap-1">
           <button
-            type="button"
-            onClick={logout}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs
+            onClick={() => setCollapsed(!collapsed)}
+            className="hidden md:flex flex-1 items-center justify-center gap-2 px-2 py-2 rounded-lg text-xs
               text-mc-textMuted hover:text-mc-text hover:bg-mc-surfaceLight transition-all"
-            title="Sign out"
+            title={collapsed ? 'Expand' : 'Collapse'}
           >
-            <LogOut className="w-4 h-4" />
-            {showLabels && <span>Sign out</span>}
+            {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+            {showLabels && <span>Collapse</span>}
           </button>
-        )}
+          {authenticationRequired && (
+            <button
+              type="button"
+              onClick={logout}
+              className="flex-1 flex items-center justify-center gap-2 px-2 py-2 rounded-lg text-xs
+                text-mc-textMuted hover:text-mc-text hover:bg-mc-surfaceLight transition-all"
+              title="Sign out"
+            >
+              <LogOut className="w-4 h-4" />
+              {showLabels && <span>Sign out</span>}
+            </button>
+          )}
+        </div>
       </div>
     </>
   );
@@ -328,9 +321,6 @@ function Layout() {
         </button>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-bold text-white truncate">{pageTitle}</p>
-          <p className="text-[11px] text-mc-textMuted truncate">
-            {activeServers}/{servers.length} servers active
-          </p>
         </div>
         <span
           className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${connected ? 'bg-green-400' : 'bg-red-400'}`}
