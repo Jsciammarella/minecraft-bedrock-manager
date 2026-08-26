@@ -268,27 +268,41 @@ function syncDynamicPermissions() {
   seedUnusedDefaultGroupPerms();
 }
 
-function ensureDefaultAdmin() {
-  const count = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
-  if (count > 0) return;
-  const userId = createUserRecord({
-    username: DEFAULT_USERNAME,
-    fullName: DEFAULT_FULL_NAME,
-    password: DEFAULT_PASSWORD,
-    isAdmin: true,
-    isActive: true,
-    skipDefaultGroup: true,
-  }).id;
-  const adminGroup = db.prepare("SELECT id FROM groups WHERE slug = 'administrators'").get();
-  if (adminGroup) {
-    db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)').run(userId, adminGroup.id);
-  }
-}
-
 function ensureSeed() {
   ensurePermissionRows();
   ensureDefaultGroups();
-  ensureDefaultAdmin();
+}
+
+function needsAdministratorBootstrap() {
+  return countAdmins({ onlyActive: true }) === 0;
+}
+
+function bootstrapAdministrator({ username, password, fullName } = {}) {
+  if (!needsAdministratorBootstrap()) {
+    const err = new Error('Administrator bootstrap is not available');
+    err.status = 404;
+    throw err;
+  }
+  const pass = String(password || '');
+  if (!pass) {
+    const err = new Error('An initial administrator password is required');
+    err.status = 400;
+    throw err;
+  }
+  ensureSeed();
+  const user = createUserRecord({
+    username: username || DEFAULT_USERNAME,
+    fullName: fullName || DEFAULT_FULL_NAME,
+    password: pass,
+    isAdmin: true,
+    isActive: true,
+    skipDefaultGroup: true,
+  });
+  const adminGroup = db.prepare("SELECT id FROM groups WHERE slug = 'administrators'").get();
+  if (adminGroup) {
+    db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)').run(user.id, adminGroup.id);
+  }
+  return getUser(user.id, { includePermissions: true });
 }
 
 function countAdmins({ excludeUserId, onlyActive = false } = {}) {
@@ -1011,4 +1025,6 @@ module.exports = {
   loadGroupsForUser,
   countAdmins,
   syncDynamicPermissions,
+  needsAdministratorBootstrap,
+  bootstrapAdministrator,
 };

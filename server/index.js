@@ -23,12 +23,11 @@ const pluginHost = require('./services/pluginHost');
 const pluginRoutes = require('./routes/plugins');
 const dnsProxy = require('./services/dnsProxy');
 const authRoutes = require('./routes/auth');
-const userManagementRoutes = require('./routes/userManagement');
 const security = require('./security');
 const { attachPrincipal, isPublicApiPath } = require('./security/middleware');
-const catalog = require('./services/permissionCatalog');
 const pluginActions = require('./services/pluginActions');
 const pluginSettings = require('./services/pluginSettings');
+const socketAuth = require('./security/socketAuth');
 
 try {
   security.ensureReady();
@@ -38,13 +37,15 @@ try {
 }
 
 pluginActions.setPermissionResolver((permission, context = {}) => {
+  if (!permission) return false;
   const current = context.user || context.principal;
   return security.authorize(current, permission, context.resource, context);
 });
 
 pluginSettings.setPermissionResolver((permission, context = {}) => {
+  if (!permission) return false;
   const current = context.user || context.principal;
-  return security.authorize(current, permission || 'catalog:settings:view', null, context);
+  return security.authorize(current, permission, context.resource, context);
 });
 
 const app = express();
@@ -89,7 +90,7 @@ app.use((req, res, next) => {
 
 app.use('/api/auth', authRoutes);
 if (security.supports('userManagement')) {
-  app.use('/api/user-management', userManagementRoutes);
+  app.use('/api/user-management', require('./routes/userManagement'));
 } else {
   app.use('/api/user-management', (_req, res) => {
     res.status(404).json({ error: 'User management is not available' });
@@ -152,101 +153,19 @@ app.get('*', (req, res, next) => {
 
 // ========== WEBSOCKET HANDLERS ==========
 
-io.use((socket, next) => {
-  try {
-    const { principal } = security.authenticate({
-      headers: {
-        cookie: socket.handshake.headers?.cookie || '',
-        authorization: socket.handshake.auth?.token ? `Bearer ${socket.handshake.auth.token}` : '',
-      },
-    });
-    if (!principal) return next(new Error('Authentication required'));
-    socket.principal = principal;
-    socket.user = principal;
-    next();
-  } catch (err) {
-    next(err);
-  }
-});
+socketAuth.attach(io);
 
 io.on('connection', (socket) => {
-  logger.info(`Client connected: ${socket.id} (${socket.user?.username || 'unknown'})`);
-
-  // Join server-specific room
-  socket.on('join-server', (serverId) => {
-    socket.join(`server-${serverId}`);
-    logger.info(`Client ${socket.id} joined server-${serverId}`);
-  });
-
-  socket.on('leave-server', (serverId) => {
-    socket.leave(`server-${serverId}`);
-  });
-
-  // Send command to server
-  socket.on('send-command', async ({ serverId, command }) => {
-    try {
-      if (!security.authorize(socket.user, 'servers.console')) {
-        throw new Error('You do not have permission to send console commands');
-      }
-      await serverManager.sendCommand(serverId, command);
-      socket.emit('command-sent', { success: true, command });
-    } catch (err) {
-      socket.emit('command-error', { error: err.message });
-    }
-  });
-
-  // Start server
-  socket.on('start-server', async (serverId) => {
-    try {
-      const target = serverManager.getServer(serverId);
-      if (!target) throw new Error('Server not found');
-      if (!security.authorize(socket.user, catalog.startPermissionForKind(target.kind), target)) {
-        throw new Error('You do not have permission to start this server');
-      }
-      await serverManager.startServer(serverId);
-      const status = serverManager.getServer(serverId)?.status || 'running';
-      io.emit('server-status', { serverId, status });
-    } catch (err) {
-      socket.emit('server-error', { serverId, error: err.message });
-    }
-  });
-
-  // Stop server
-  socket.on('stop-server', async (serverId) => {
-    try {
-      const target = serverManager.getServer(serverId);
-      if (!target) throw new Error('Server not found');
-      if (!security.authorize(socket.user, catalog.stopPermissionForKind(target.kind), target)) {
-        throw new Error('You do not have permission to stop this server');
-      }
-      await serverManager.stopServer(serverId);
-      const status = serverManager.getServer(serverId)?.status || 'stopped';
-      io.emit('server-status', { serverId, status });
-    } catch (err) {
-      socket.emit('server-error', { serverId, error: err.message });
-    }
-  });
-
-  // Server output listener - relay PTY output to connected clients
   const ptyOutputListener = async () => {
     const servers = serverManager.getAllServers();
     for (const srv of servers) {
       if (srv.status === 'running') {
-        const pty = serverManager.ptySessions.get(String(srv.id));
-        if (pty) {
-          // Read any available output (non-blocking)
-          // This is handled by the PTY data event below
-        }
+        serverManager.ptySessions.get(String(srv.id));
       }
     }
   };
-
-  // Listen for server output
   const checkServers = setInterval(ptyOutputListener, 5000);
-
-  // Disconnect
   socket.on('disconnect', () => {
-    logger.info(`Client disconnected: ${socket.id}`);
     clearInterval(checkServers);
   });
 });

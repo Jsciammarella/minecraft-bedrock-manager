@@ -979,6 +979,16 @@ versionRange="[13.0.8,)"
   javaLoaderHost.executeInstallPlan = async () => ({});
   const pluginContributions = require('../server/services/pluginContributions');
   const pluginActions = require('../server/services/pluginActions');
+  const testPrincipal = require('../server/security').createSystemPrincipal('java-provider-test');
+  const restrictedPrincipal = {
+    id: 99,
+    username: 'restricted',
+    type: 'user',
+    authenticated: true,
+    isAdmin: false,
+    isActive: true,
+    permissions: [],
+  };
   const serverPluginAttachments = require('../server/services/serverPluginAttachments');
   const javaDir = path.join(testRoot, 'attached-java');
   fs.mkdirSync(javaDir, { recursive: true });
@@ -1023,6 +1033,7 @@ versionRange="[13.0.8,)"
       actionId: 'toggle-gateway',
       serverId: javaId,
       attachmentId: att.id,
+      user: testPrincipal,
     }),
     /Start the Java server before starting Geyser|already in progress|Unknown/
   );
@@ -1032,6 +1043,7 @@ versionRange="[13.0.8,)"
       actionId: 'https://evil.example/start',
       serverId: javaId,
       attachmentId: att.id,
+      user: testPrincipal,
     }),
     /Unknown plugin action/
   );
@@ -1042,20 +1054,22 @@ versionRange="[13.0.8,)"
       serverId: javaId,
       resourceId: String(created.id),
       url: 'https://evil.example',
+      user: testPrincipal,
     }),
     /cannot supply URLs|does not belong|not owned|cannot target|Plugin actions cannot supply URLs/
   );
-  pluginActions.setPermissionResolver(() => false);
-  await assert.rejects(
-    () => pluginActions.invoke({
-      pluginId: 'gateway-geyser',
-      actionId: 'toggle-gateway',
-      serverId: javaId,
-      attachmentId: att.id,
-    }),
-    /permission/
-  );
-  pluginActions.resetPermissionResolver();
+  if (require('../server/security').supports('authentication')) {
+    await assert.rejects(
+      () => pluginActions.invoke({
+        pluginId: 'gateway-geyser',
+        actionId: 'toggle-gateway',
+        serverId: javaId,
+        attachmentId: att.id,
+        user: restrictedPrincipal,
+      }),
+      /permission/
+    );
+  }
   db.prepare(`UPDATE gateways SET status = 'running', health_status = 'running' WHERE id = ?`).run(localGw.id);
   const runningContrib = pluginContributions.listForServer({ id: javaId, status: 'stopped' })[0];
   const stopAction = runningContrib.actions.find((item) => item.id === 'toggle-gateway');

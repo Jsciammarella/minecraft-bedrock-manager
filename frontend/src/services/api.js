@@ -257,6 +257,8 @@ export const authApi = {
   logout: () => api.post('/auth/logout'),
   me: () => api.get('/auth/me'),
   security: () => api.get('/auth/security'),
+  bootstrapStatus: () => api.get('/auth/bootstrap-status'),
+  bootstrap: (data) => api.post('/auth/bootstrap', data),
   changePassword: (data) => api.put('/auth/password', data),
   passwordPolicy: () => api.get('/auth/password-policy'),
 };

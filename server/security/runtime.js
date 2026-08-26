@@ -4,13 +4,28 @@ const profiles = require('./profiles');
 const principal = require('./principal');
 const errors = require('./errors');
 const audit = require('./audit');
-const LocalRbacProvider = require('./providers/localRbac');
-const NoAuthProvider = require('./providers/noAuth');
 
-function builtInProviders() {
+const PROVIDER_MODULES = {
+  [profiles.PROFILE_NO_AUTH]: './providers/noAuth',
+  [profiles.PROFILE_LOCAL_RBAC]: './providers/localRbac',
+};
+
+function loadTrustedProvider(profile) {
+  const rel = PROVIDER_MODULES[profile];
+  if (!rel) return null;
+  try {
+    return require(rel);
+  } catch (err) {
+    logger.error(`Could not load security provider "${profile}": ${err.message}`);
+    return null;
+  }
+}
+
+function providerRegistry(profile, options = {}) {
+  if (options.providers) return options.providers;
   const map = new Map();
-  map.set(profiles.PROFILE_LOCAL_RBAC, LocalRbacProvider);
-  map.set(profiles.PROFILE_NO_AUTH, NoAuthProvider);
+  const Ctor = loadTrustedProvider(profile);
+  if (Ctor) map.set(profile, Ctor);
   return map;
 }
 
@@ -19,7 +34,7 @@ function createRuntime(options = {}) {
     version: options.version,
     env: options.env,
   });
-  const registry = options.providers || builtInProviders();
+  const registry = providerRegistry(selection.profile, options);
   profiles.assertProfileStartable(selection, { providers: registry });
 
   const Ctor = registry.get(selection.profile);
@@ -88,6 +103,7 @@ function createRuntime(options = {}) {
       return {
         securityProfile: selection.profile,
         authenticationRequired: selection.profile !== profiles.PROFILE_NO_AUTH,
+        needsBootstrap: false,
         features: {
           userManagement: Boolean(provider.supports('userManagement')),
           roleManagement: Boolean(provider.supports('roleManagement')),
@@ -101,6 +117,7 @@ function createRuntime(options = {}) {
       return {
         securityProfile: selection.profile,
         authenticationRequired: Boolean(caps.authenticationRequired),
+        needsBootstrap: Boolean(caps.needsBootstrap),
         features: caps.features || {
           userManagement: runtime.supports('userManagement'),
           roleManagement: runtime.supports('roleManagement'),
@@ -173,5 +190,5 @@ module.exports = {
   setRuntime,
   resetRuntime,
   ensureReady,
-  builtInProviders,
+  loadTrustedProvider,
 };

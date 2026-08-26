@@ -77,6 +77,10 @@ function zipStore(files) {
 function testUserManagement() {
   const auth = require('../server/services/authService');
   const catalog = require('../server/services/permissionCatalog');
+  auth.ensureSeed();
+  if (auth.needsAdministratorBootstrap()) {
+    auth.bootstrapAdministrator({ username: 'admin', password: 'mcadmin' });
+  }
   const login = auth.login('admin', 'mcadmin');
   assert.equal(login.user.username, 'admin');
   assert.equal(login.user.isAdmin, true);

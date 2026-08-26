@@ -4,12 +4,25 @@ const path = require('path');
 
 async function runPluginSettingsTests({ pluginHost, testRoot }) {
   const pluginSettings = require('../server/services/pluginSettings');
+  const security = require('../server/security');
   const pluginSettingsSchema = require('../server/services/pluginSettingsSchema');
   const catalogProviderRegistry = require('../server/services/catalogProviderRegistry');
   const settingsStore = require('../server/services/settingsStore');
   const catalogPluginConfig = require('../server/services/catalogPluginConfig');
   const gitCatalogTemplate = require('../server/services/gitCatalogTemplate');
   const fileCatalogTemplate = require('../server/services/fileCatalogTemplate');
+
+  function systemCtx() {
+    return { user: security.createSystemPrincipal('plugin-settings-test') };
+  }
+
+  function settingsPage(pluginId) {
+    return pluginSettings.publicPage(pluginId, systemCtx());
+  }
+
+  function settingsAction(pluginId, actionId, body) {
+    return pluginSettings.invokeAction(pluginId, actionId, body, systemCtx());
+  }
 
   pluginSettings.clear();
   pluginHost.resetForTests();
@@ -59,14 +72,14 @@ async function runPluginSettingsTests({ pluginHost, testRoot }) {
     ))
   );
 
-  const page = pluginSettings.publicPage('catalog-curseforge');
+  const page = settingsPage('catalog-curseforge');
   assert.equal(page.renderer, 'native-settings');
   assert.equal(JSON.stringify(page).includes('<script'), false);
   assert.equal(page.secrets.apiKey && typeof page.secrets.apiKey.configured, 'boolean');
   assert.equal(JSON.stringify(page).includes('cf-test-secret'), false);
 
   settingsStore.set(settingsStore.KEYS.CURSEFORGE_API_KEY, 'cf-test-secret-key-value');
-  const withKey = pluginSettings.publicPage('catalog-curseforge');
+  const withKey = settingsPage('catalog-curseforge');
   assert.equal(withKey.secrets.apiKey.configured, true);
   assert.equal(JSON.stringify(withKey).includes('cf-test-secret'), false);
 
@@ -76,7 +89,7 @@ async function runPluginSettingsTests({ pluginHost, testRoot }) {
     /own catalog sources/
   );
 
-  const saved = await pluginSettings.invokeAction('catalog-curseforge', 'save', {
+  const saved = await settingsAction('catalog-curseforge', 'save', {
     values: { bedrockEnabled: true, javaEnabled: false },
   });
   assert.equal(catalogProviderRegistry.get('curseforge-bedrock') != null, true);
@@ -84,20 +97,20 @@ async function runPluginSettingsTests({ pluginHost, testRoot }) {
   assert.ok(saved.secrets.apiKey.configured);
   assert.equal(JSON.stringify(saved).includes('cf-test-secret'), false);
 
-  await pluginSettings.invokeAction('catalog-curseforge', 'save', {
+  await settingsAction('catalog-curseforge', 'save', {
     values: { bedrockEnabled: false, javaEnabled: false },
   });
   assert.equal(catalogProviderRegistry.get('curseforge-bedrock'), null);
   assert.equal(catalogProviderRegistry.get('curseforge-java'), null);
   assert.ok(pluginHost.getPlugin('catalog-curseforge').enabled, 'plugin stays enabled with both sources off');
 
-  await pluginSettings.invokeAction('catalog-curseforge', 'save', {
+  await settingsAction('catalog-curseforge', 'save', {
     values: { bedrockEnabled: false, javaEnabled: true },
   });
   assert.equal(catalogProviderRegistry.get('curseforge-bedrock'), null);
   assert.ok(catalogProviderRegistry.get('curseforge-java'));
 
-  await pluginSettings.invokeAction('catalog-curseforge', 'save', {
+  await settingsAction('catalog-curseforge', 'save', {
     values: { bedrockEnabled: true, javaEnabled: true },
   });
   assert.ok(catalogProviderRegistry.get('curseforge-bedrock'));
@@ -105,13 +118,13 @@ async function runPluginSettingsTests({ pluginHost, testRoot }) {
 
   pluginSettings.setPermissionResolver(() => false);
   await assert.rejects(
-    () => pluginSettings.invokeAction('catalog-curseforge', 'save', { values: { bedrockEnabled: true } }),
+    () => settingsAction('catalog-curseforge', 'save', { values: { bedrockEnabled: true } }),
     /permission/
   );
   pluginSettings.resetPermissionResolver();
 
   settingsStore.remove(settingsStore.KEYS.CURSEFORGE_API_KEY);
-  const cleared = await pluginSettings.invokeAction('catalog-curseforge', 'save', {
+  const cleared = await settingsAction('catalog-curseforge', 'save', {
     values: { bedrockEnabled: true, javaEnabled: true },
     secrets: { apiKey: { clear: true } },
   });
@@ -131,26 +144,26 @@ async function runPluginSettingsTests({ pluginHost, testRoot }) {
   const again = catalogPluginConfig.migrateCurseForge();
   assert.equal(again.javaEnabled, false, 'migration is idempotent');
 
-  const gitPage = pluginSettings.publicPage('catalog-git');
+  const gitPage = settingsPage('catalog-git');
   assert.equal(gitPage.values.enabled, false);
   assert.equal(catalogProviderRegistry.get('git'), null);
-  await pluginSettings.invokeAction('catalog-git', 'save', {
+  await settingsAction('catalog-git', 'save', {
     values: { enabled: true, url: '', branch: 'main', username: '', subdir: '' },
   });
   assert.ok(catalogProviderRegistry.get('git'), 'enabling Git source registers the provider');
-  await pluginSettings.invokeAction('catalog-git', 'save', {
+  await settingsAction('catalog-git', 'save', {
     values: { enabled: false, url: '', branch: 'main', username: '', subdir: '' },
   });
   assert.equal(catalogProviderRegistry.get('git'), null);
 
-  const filePage = pluginSettings.publicPage('catalog-file');
+  const filePage = settingsPage('catalog-file');
   assert.equal(filePage.values.enabled, true);
   assert.ok(catalogProviderRegistry.get('file'));
-  await pluginSettings.invokeAction('catalog-file', 'save', {
+  await settingsAction('catalog-file', 'save', {
     values: { enabled: false },
   });
   assert.equal(catalogProviderRegistry.get('file'), null);
-  await pluginSettings.invokeAction('catalog-file', 'save', {
+  await settingsAction('catalog-file', 'save', {
     values: { enabled: true, localEnabled: true },
   });
   assert.ok(catalogProviderRegistry.get('file'));
@@ -162,16 +175,16 @@ async function runPluginSettingsTests({ pluginHost, testRoot }) {
 
   settingsStore.set(settingsStore.KEYS.GIT_TOKEN, 'git-secret-token-value');
   settingsStore.set(settingsStore.KEYS.FILE_SMB_PASSWORD, 'smb-secret-password');
-  const gitSecrets = pluginSettings.publicPage('catalog-git');
-  const fileSecrets = pluginSettings.publicPage('catalog-file');
+  const gitSecrets = settingsPage('catalog-git');
+  const fileSecrets = settingsPage('catalog-file');
   assert.equal(gitSecrets.secrets.token.configured, true);
   assert.equal(fileSecrets.secrets.smbPassword.configured, true);
   assert.equal(JSON.stringify(gitSecrets).includes('git-secret'), false);
   assert.equal(JSON.stringify(fileSecrets).includes('smb-secret'), false);
-  await pluginSettings.invokeAction('catalog-git', 'save', {
+  await settingsAction('catalog-git', 'save', {
     values: { enabled: false, url: '', branch: 'main', username: '', subdir: '' },
   });
-  await pluginSettings.invokeAction('catalog-file', 'save', {
+  await settingsAction('catalog-file', 'save', {
     values: { enabled: true, localEnabled: true },
   });
   assert.equal(settingsStore.get(settingsStore.KEYS.GIT_TOKEN), 'git-secret-token-value');
@@ -181,24 +194,24 @@ async function runPluginSettingsTests({ pluginHost, testRoot }) {
 
   settingsStore.remove(settingsStore.KEYS.CURSEFORGE_API_KEY);
   process.env.CURSEFORGE_API_KEY = 'env-cf-secret-value';
-  const envPage = pluginSettings.publicPage('catalog-curseforge');
+  const envPage = settingsPage('catalog-curseforge');
   assert.equal(envPage.secrets.apiKey.configured, true, 'environment API key should count as configured');
   assert.equal(JSON.stringify(envPage).includes('env-cf-secret'), false);
   delete process.env.CURSEFORGE_API_KEY;
 
-  const gitDownload = await pluginSettings.invokeAction('catalog-git', 'download-template', {});
+  const gitDownload = await settingsAction('catalog-git', 'download-template', {});
   assert.equal(gitDownload.download, true);
   assert.ok(Buffer.isBuffer(gitDownload.buffer) && gitDownload.buffer.length > 20);
-  const fileDownload = await pluginSettings.invokeAction('catalog-file', 'download-template', {});
+  const fileDownload = await settingsAction('catalog-file', 'download-template', {});
   assert.equal(fileDownload.download, true);
   assert.ok(Buffer.isBuffer(fileDownload.buffer) && fileDownload.buffer.length > 20);
 
   await assert.rejects(
-    () => pluginSettings.invokeAction('catalog-git', 'test-local-path', {}),
+    () => settingsAction('catalog-git', 'test-local-path', {}),
     /Unknown settings action/
   );
   await assert.rejects(
-    () => pluginSettings.invokeAction('catalog-curseforge', 'save', { command: 'rm -rf /', values: {} }),
+    () => settingsAction('catalog-curseforge', 'save', { command: 'rm -rf /', values: {} }),
     /URLs or commands/
   );
 

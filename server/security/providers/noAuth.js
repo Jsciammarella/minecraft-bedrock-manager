@@ -2,10 +2,7 @@ const catalog = require('../../services/permissionCatalog');
 const { localSystemPrincipal, publicPrincipal } = require('../principal');
 const { PROFILE_NO_AUTH } = require('../profiles');
 const { isRecognized, denyUnknown, isPluginAction } = require('../recognized');
-
-function auth() {
-  return require('../../services/authService');
-}
+const { supportsCore } = require('../features');
 
 function NoAuthProvider() {
   this.id = PROFILE_NO_AUTH;
@@ -13,16 +10,12 @@ function NoAuthProvider() {
 }
 
 NoAuthProvider.prototype.init = function init() {
-  // Keep user/role schema for upgrades; do not expose management APIs.
-  auth().ensureSeed();
+  // Schema migrations may retain RBAC tables. This profile must not seed
+  // users, groups, permission assignments, sessions, or passwords.
 };
 
 NoAuthProvider.prototype.supports = function supports(feature) {
-  return feature !== 'userManagement'
-    && feature !== 'roleManagement'
-    && feature !== 'authentication'
-    && feature !== 'sessions'
-    && feature !== 'passwordManagement';
+  return supportsCore(feature);
 };
 
 NoAuthProvider.prototype.authenticate = function authenticate() {
@@ -46,6 +39,7 @@ NoAuthProvider.prototype.getCapabilities = function getCapabilities(principal) {
   return {
     securityProfile: this.id,
     authenticationRequired: false,
+    needsBootstrap: false,
     features: {
       userManagement: false,
       roleManagement: false,

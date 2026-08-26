@@ -17,8 +17,14 @@ const RATE_LIMITED_ACTIONS = new Set([
 
 function defaultPermissionResolver(permission, ctx = {}) {
   try {
+    if (!permission) return false;
     const security = require('../security');
-    return security.authorize(ctx.user || ctx.principal, permission || 'catalog:settings:view', null, ctx);
+    return security.authorize(
+      ctx.user || ctx.principal,
+      permission,
+      ctx.resource || { type: 'plugin-settings', id: ctx.pluginId },
+      ctx,
+    );
   } catch {
     return false;
   }
@@ -75,7 +81,8 @@ function get(pluginId) {
 function publicPage(pluginId, { actor = 'local', user = null } = {}) {
   const page = get(pluginId);
   if (!page) fail(404, 'That plugin does not expose native settings', 'SETTINGS_NOT_FOUND');
-  if (!permissionResolver('catalog:settings:view', { pluginId, actor, user })) {
+  const permission = permissionFor('view', page);
+  if (!permission || !permissionResolver(permission, settingsAuthContext('view', page, { actor, user }))) {
     fail(403, 'You do not have permission to view catalog settings');
   }
   const state = page.getState() || {};
@@ -96,14 +103,20 @@ function publicPage(pluginId, { actor = 'local', user = null } = {}) {
   };
 }
 
+function settingsAuthContext(actionId, spec, { actor, user } = {}) {
+  return {
+    pluginId: spec.pluginId,
+    actionId,
+    actor,
+    user,
+    principal: user,
+    resource: { type: 'plugin-settings', id: spec.pluginId },
+  };
+}
+
 function permissionFor(actionId, spec) {
   if (spec.permissions && spec.permissions[actionId]) return spec.permissions[actionId];
-  if (actionId === 'save') return 'catalog:settings:write';
-  if (actionId === 'sync-now') return 'catalog:settings:sync';
-  if (actionId.startsWith('test-')) return 'catalog:settings:test';
-  if (actionId === 'download-template') return 'catalog:settings:template';
-  if (actionId.includes('secret') || actionId === 'clear' || actionId === 'replace') return 'catalog:settings:secrets';
-  return 'catalog:settings:write';
+  return require('../security/catalogSettingsPermissions').permissionFor(spec.pluginId, actionId);
 }
 
 function sanitizeValues(schema, raw) {
@@ -156,7 +169,7 @@ async function invokeAction(pluginId, actionId, body = {}, { actor = 'local', pe
     fail(400, 'Settings actions cannot supply URLs or commands');
   }
   const permission = permissionFor(id, page);
-  if (!permissionResolver(permission, { pluginId, actionId: id, actor, user })) {
+  if (!permission || !permissionResolver(permission, settingsAuthContext(id, page, { actor, user }))) {
     fail(403, 'You do not have permission to change catalog settings');
   }
   const lock = `${pluginId}::${id}`;
@@ -250,6 +263,7 @@ module.exports = {
   clear,
   get,
   invokeAction,
+  permissionFor,
   publicPage,
   register,
   resetPermissionResolver,

@@ -19,6 +19,7 @@ export function AuthProvider({ children }) {
   const [features, setFeatures] = useState(DEFAULT_FEATURES);
   const [permissionList, setPermissionList] = useState([]);
   const [networkWarning, setNetworkWarning] = useState(false);
+  const [needsBootstrap, setNeedsBootstrap] = useState(false);
 
   const applySession = useCallback((data) => {
     const payload = data || {};
@@ -31,6 +32,7 @@ export function AuthProvider({ children }) {
     }
     if (Array.isArray(payload.permissions)) setPermissionList(payload.permissions);
     if (payload.networkWarning != null) setNetworkWarning(Boolean(payload.networkWarning));
+    if (payload.needsBootstrap != null) setNeedsBootstrap(Boolean(payload.needsBootstrap));
     if (payload.user) setUser(payload.user);
   }, []);
 
@@ -90,7 +92,15 @@ export function AuthProvider({ children }) {
   const login = useCallback(async (username, password) => {
     setError('');
     const res = await authApi.login(username, password);
-    applySession(res.data);
+    applySession({ ...res.data, needsBootstrap: false });
+    setUser(res.data.user);
+    return res.data.user;
+  }, [applySession]);
+
+  const bootstrap = useCallback(async ({ username, password, fullName }) => {
+    setError('');
+    const res = await authApi.bootstrap({ username, password, fullName });
+    applySession({ ...res.data, needsBootstrap: false });
     setUser(res.data.user);
     return res.data.user;
   }, [applySession]);
@@ -142,7 +152,9 @@ export function AuthProvider({ children }) {
       authenticationRequired,
       features,
       networkWarning,
+      needsBootstrap,
       login,
+      bootstrap,
       logout,
       refresh,
       can,
@@ -164,7 +176,7 @@ export function AuthProvider({ children }) {
     };
   }, [
     user, loading, error, securityError, securityProfile, authenticationRequired,
-    features, networkWarning, login, logout, refresh, can, canAny,
+    features, networkWarning, needsBootstrap, login, bootstrap, logout, refresh, can, canAny,
   ]);
 
   return (

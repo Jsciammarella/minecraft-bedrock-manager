@@ -508,4 +508,3 @@ db.exec(`
 
 module.exports = db;
 
-require('../services/authService').ensureSeed();

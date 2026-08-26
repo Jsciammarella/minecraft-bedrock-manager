@@ -9,6 +9,11 @@ function getRuntime() {
   return runtime.getRuntime();
 }
 
+function auditCall(event, extra) {
+  return getRuntime().audit(event, extra);
+}
+Object.assign(auditCall, audit);
+
 module.exports = {
   getRuntime,
   createRuntime: runtime.createRuntime,
@@ -18,7 +23,7 @@ module.exports = {
   profiles,
   principal,
   errors,
-  audit,
+  audit: auditCall,
   ...middleware,
   authenticate(request) {
     return getRuntime().authenticate(request);

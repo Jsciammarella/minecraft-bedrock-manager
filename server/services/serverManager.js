@@ -3594,11 +3594,10 @@ done
   // ========== BROADCAST ==========
 
   broadcastServerStatus(serverId) {
-    // This will be connected to Socket.IO in the main server
     if (global.io) {
       const server = this.getServer(serverId);
       if (server) {
-        global.io.emit('server-status', {
+        require('../security/socketAuth').emitServerStatus(global.io, {
           serverId,
           name: server.name,
           status: server.status,

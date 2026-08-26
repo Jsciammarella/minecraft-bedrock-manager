@@ -4,7 +4,6 @@ const catalog = require('../services/permissionCatalog');
 const SPECIAL_ACTIONS = new Set([
   'admin',
   'gateway:lifecycle',
-  'catalog:settings:view',
 ]);
 
 function isPluginAction(action) {

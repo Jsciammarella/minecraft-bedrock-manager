@@ -154,7 +154,9 @@ function isPublicApiPath(req) {
   if (req.method === 'GET' && (path === '/api/health' || path === '/health' || path === '/api/system' || path === '/system')) return true;
   if (req.method === 'GET' && (path === '/api/auth/password-policy' || path === '/auth/password-policy')) return true;
   if (req.method === 'GET' && (path === '/api/auth/security' || path === '/auth/security')) return true;
+  if (req.method === 'GET' && (path === '/api/auth/bootstrap-status' || path === '/auth/bootstrap-status')) return true;
   if (req.method === 'POST' && (path === '/api/auth/login' || path === '/auth/login')) return true;
+  if (req.method === 'POST' && (path === '/api/auth/bootstrap' || path === '/auth/bootstrap')) return true;
   if (req.method === 'POST' && (path === '/api/auth/logout' || path === '/auth/logout')) return true;
   return false;
 }

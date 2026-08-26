@@ -3,13 +3,23 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { Loader2, Server } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { authApi } from '../services/api';
-import { DEFAULT_PASSWORD_POLICY, validateLogin } from '../utils/passwordPolicy';
+import { DEFAULT_PASSWORD_POLICY, validateLogin, validatePassword, validateUsername } from '../utils/passwordPolicy';
 
 function Login() {
-  const { user, loading, login, authenticationRequired, securityError } = useAuth();
+  const {
+    user,
+    loading,
+    login,
+    bootstrap,
+    authenticationRequired,
+    securityError,
+    needsBootstrap,
+  } = useAuth();
   const location = useLocation();
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = useState(needsBootstrap ? 'admin' : '');
+  const [fullName, setFullName] = useState('Administrator');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [policy, setPolicy] = useState(DEFAULT_PASSWORD_POLICY);
@@ -21,6 +31,10 @@ function Login() {
       .catch(() => setPolicy(DEFAULT_PASSWORD_POLICY));
     return undefined;
   }, [authenticationRequired]);
+
+  useEffect(() => {
+    if (needsBootstrap && !username) setUsername('admin');
+  }, [needsBootstrap, username]);
 
   if (loading) {
     return (
@@ -48,17 +62,31 @@ function Login() {
 
   const handleSubmit = async (event) => {
     event.preventDefault();
-    const validationError = validateLogin(username, password, policy);
-    if (validationError) {
-      setError(validationError);
-      return;
+    if (needsBootstrap) {
+      const usernameError = validateUsername(username, policy);
+      const passwordError = validatePassword(password, policy, { confirm: confirmPassword });
+      const validationError = usernameError || passwordError;
+      if (validationError) {
+        setError(validationError);
+        return;
+      }
+    } else {
+      const validationError = validateLogin(username, password, policy);
+      if (validationError) {
+        setError(validationError);
+        return;
+      }
     }
     setBusy(true);
     setError('');
     try {
-      await login(username, password);
+      if (needsBootstrap) {
+        await bootstrap({ username, password, fullName });
+      } else {
+        await login(username, password);
+      }
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Login failed');
+      setError(err.response?.data?.error || err.message || (needsBootstrap ? 'Setup failed' : 'Login failed'));
     } finally {
       setBusy(false);
     }
@@ -73,7 +101,9 @@ function Login() {
           </div>
           <div>
             <h1 className="text-2xl font-bold text-white">MC Manager</h1>
-            <p className="text-sm text-mc-textMuted">Sign in to continue</p>
+            <p className="text-sm text-mc-textMuted">
+              {needsBootstrap ? 'Create the first administrator' : 'Sign in to continue'}
+            </p>
           </div>
         </div>
         <form onSubmit={handleSubmit} className="card space-y-4">
@@ -81,6 +111,12 @@ function Login() {
             <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-sm text-red-400">
               {error}
             </div>
+          )}
+          {needsBootstrap && (
+            <p className="text-sm text-mc-textMuted">
+              No administrator exists yet. Choose a username and password for this installation.
+              A default password is not created automatically.
+            </p>
           )}
           <div>
             <label className="block text-sm font-medium text-mc-text mb-2" htmlFor="username">Username</label>
@@ -100,13 +136,25 @@ function Login() {
               {policy.usernameMin}–{policy.usernameMax} characters. Use {policy.usernameAllowed} only.
             </p>
           </div>
+          {needsBootstrap && (
+            <div>
+              <label className="block text-sm font-medium text-mc-text mb-2" htmlFor="fullName">Display name</label>
+              <input
+                id="fullName"
+                name="fullName"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                className="input"
+              />
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-mc-text mb-2" htmlFor="password">Password</label>
             <input
               id="password"
               name="password"
               type="password"
-              autoComplete="current-password"
+              autoComplete={needsBootstrap ? 'new-password' : 'current-password'}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="input"
@@ -114,9 +162,27 @@ function Login() {
               maxLength={policy.maxLength}
             />
           </div>
+          {needsBootstrap && (
+            <div>
+              <label className="block text-sm font-medium text-mc-text mb-2" htmlFor="confirmPassword">Confirm password</label>
+              <input
+                id="confirmPassword"
+                name="confirmPassword"
+                type="password"
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="input"
+                required
+                maxLength={policy.maxLength}
+              />
+            </div>
+          )}
           <button type="submit" disabled={busy} className="btn btn-primary w-full">
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-            {busy ? 'Signing in...' : 'Sign in'}
+            {busy
+              ? (needsBootstrap ? 'Creating administrator...' : 'Signing in...')
+              : (needsBootstrap ? 'Create administrator' : 'Sign in')}
           </button>
         </form>
       </div>

@@ -2,33 +2,29 @@ const catalog = require('../../services/permissionCatalog');
 const { publicPrincipal, isSystemPrincipal } = require('../principal');
 const { PROFILE_LOCAL_RBAC } = require('../profiles');
 const { isRecognized, denyUnknown, isPluginAction } = require('../recognized');
+const { supportsCore, supportsRbac } = require('../features');
 const audit = require('../audit');
 
 function auth() {
   return require('../../services/authService');
 }
 
-const SETTINGS_KEYS = {
-  'catalog-curseforge': 'catalog.set_curseforge_key',
-  'catalog-git': 'catalog.enable_git',
-  'catalog-file': 'catalog.enable_file',
-};
-
 function LocalRbacProvider() {
   this.id = PROFILE_LOCAL_RBAC;
 }
 
 LocalRbacProvider.prototype.init = function init() {
-  auth().ensureSeed();
-  auth().syncDynamicPermissions();
+  const service = auth();
+  service.ensureSeed();
+  service.syncDynamicPermissions();
+  if (service.needsAdministratorBootstrap()) {
+    const logger = require('../../services/logger');
+    logger.warn('No administrator account exists. Complete /api/auth/bootstrap before signing in.');
+  }
 };
 
 LocalRbacProvider.prototype.supports = function supports(feature) {
-  return feature === 'userManagement'
-    || feature === 'roleManagement'
-    || feature === 'authentication'
-    || feature === 'sessions'
-    || feature === 'passwordManagement';
+  return supportsCore(feature) || supportsRbac(feature);
 };
 
 LocalRbacProvider.prototype.authenticate = function authenticate(request) {
@@ -49,7 +45,7 @@ LocalRbacProvider.prototype.getCurrentPrincipal = function getCurrentPrincipal(r
   return this.authenticate(request).principal;
 };
 
-LocalRbacProvider.prototype.authorize = function authorize(principal, action, _resource, context = {}) {
+LocalRbacProvider.prototype.authorize = function authorize(principal, action, _resource, _context = {}) {
   const key = String(action || '');
   if (!principal || principal.authenticated === false || principal.isActive === false) return false;
 
@@ -66,12 +62,6 @@ LocalRbacProvider.prototype.authorize = function authorize(principal, action, _r
       && auth().hasPermission(principal, 'servers.stop');
   }
 
-  if (key === 'catalog:settings:view') {
-    const mapped = SETTINGS_KEYS[String(context.pluginId || '')];
-    if (mapped) return auth().hasPermission(principal, mapped);
-    return Boolean(principal.isAdmin);
-  }
-
   if (!auth().hasPermission(principal, key)) return false;
   return true;
 };
@@ -84,6 +74,7 @@ LocalRbacProvider.prototype.getCapabilities = function getCapabilities(principal
   return {
     securityProfile: this.id,
     authenticationRequired: true,
+    needsBootstrap: auth().needsAdministratorBootstrap(),
     features: {
       userManagement: true,
       roleManagement: true,
@@ -148,6 +139,14 @@ LocalRbacProvider.prototype.verifyPassword = function verifyPassword(password, s
 
 LocalRbacProvider.prototype.canAccessUserManagement = function canAccessUserManagement(principal) {
   return auth().canAccessUserManagement(principal);
+};
+
+LocalRbacProvider.prototype.needsAdministratorBootstrap = function needsAdministratorBootstrap() {
+  return auth().needsAdministratorBootstrap();
+};
+
+LocalRbacProvider.prototype.bootstrapAdministrator = function bootstrapAdministrator(input) {
+  return auth().bootstrapAdministrator(input);
 };
 
 module.exports = LocalRbacProvider;

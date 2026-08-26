@@ -136,7 +136,11 @@ async function invoke(input = {}) {
     actor,
     serverId: resolved.serverId,
     resourceId: resolved.resourceId,
-    user: input.user || principal,
+    user: principal,
+    principal,
+    resource: resolved.javaServer || (resolved.resourceId != null
+      ? { type: spec.resourceType, id: resolved.resourceId }
+      : null),
   })) {
     reject(spec, {
       pluginId, actionId, actor, serverId: resolved.serverId, resourceId: resolved.resourceId,
