@@ -803,7 +803,7 @@ function Dashboard() {
                         className="btn btn-secondary flex-1 text-sm opacity-50 cursor-not-allowed"
                       >
                         <Play className="w-3.5 h-3.5" />
-                        Start Java Server
+                        Start Java
                       </button>
                     ) : server.status === 'creating' || server.status === 'starting' ? (
                       <button disabled className="btn btn-secondary flex-1 text-sm">
@@ -817,7 +817,7 @@ function Dashboard() {
                         className="btn btn-primary flex-1 text-sm"
                       >
                         <Play className="w-3.5 h-3.5" />
-                        {actions[`${server.id}-start`] ? 'Starting...' : 'Start Java Server'}
+                        {actions[`${server.id}-start`] ? 'Starting...' : 'Start Java'}
                       </button>
                     ) : (
                       <button
