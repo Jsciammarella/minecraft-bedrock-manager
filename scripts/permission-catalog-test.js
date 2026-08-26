@@ -169,8 +169,12 @@ function runPermissionCatalogTests({ auth, catalog, db, pluginHost }) {
 
   pluginHost.resetForTests();
   pluginHost.loadPlugins();
+  const listedPlugins = pluginHost.getPlugins();
+  assert.ok(listedPlugins.some((item) => item.id === 'server-edition-bedrock-connect'), 'BedrockConnect is listed as a bundled plugin');
   const bc = pluginHost.getPlugin('server-edition-bedrock-connect');
   assert.ok(bc?.permissions.some((item) => item.key === 'bedrock_connect.view'));
+  const pluginsPage = fs.readFileSync(path.join(frontendRoot, 'pages/Plugins.jsx'), 'utf8');
+  assert.match(pluginsPage, /const canUpload = can\('plugins\.install'\)/);
 
   const defs = auth.listPermissionDefs();
   assert.ok(defs.some((item) => item.key === 'dashboard.view'));

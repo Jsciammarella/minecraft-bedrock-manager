@@ -12,6 +12,7 @@ function notifyPluginMenus() {
 function Plugins() {
   const navigate = useNavigate();
   const { can } = useAuth();
+  const canUpload = can('plugins.install');
   const canEnable = can('plugins.enable');
   const canDisable = can('plugins.disable');
   const canToggleBackend = can('plugins.enable_backend');
