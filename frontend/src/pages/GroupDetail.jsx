@@ -80,7 +80,7 @@ function GroupDetail() {
       }));
   }, [users, memberFilter]);
 
-  const { actions: actionCatalog, menu: menuCatalog } = useMemo(
+  const { actions: actionCatalog } = useMemo(
     () => splitPermissionCatalog(catalog),
     [catalog],
   );
@@ -92,8 +92,8 @@ function GroupDetail() {
     setSuccess('');
     try {
       const payload = { name: form.name };
-      if (isAdmin || can('users.change_group_membership')) payload.userIds = form.userIds;
-      if (isAdmin || can('users.change_group_permissions')) payload.permissions = form.permissions;
+      if (isAdmin || can('groups.add_members') || can('groups.remove_members')) payload.userIds = form.userIds;
+      if (isAdmin || can('groups.assign_permissions')) payload.permissions = form.permissions;
       await userManagementApi.updateGroup(id, payload);
       setSuccess('Group saved');
       await load();
@@ -146,7 +146,7 @@ function GroupDetail() {
             <p className="text-sm text-mc-textMuted">{group.userCount || 0} members</p>
           </div>
         </div>
-        {(isAdmin || can('users.delete_groups')) && (
+        {(isAdmin || can('groups.delete')) && (
           <button type="button" className="btn btn-secondary text-mc-danger" onClick={handleDelete}>
             <Trash2 className="w-4 h-4" />
             Delete
@@ -176,7 +176,7 @@ function GroupDetail() {
           filterValue={memberFilter}
           onFilterChange={setMemberFilter}
           filterOptions={filterOptions}
-          disabled={!isAdmin && !can('users.change_group_membership')}
+          disabled={!isAdmin && !can('groups.add_members') && !can('groups.remove_members')}
           onToggle={(userId, checked) => {
             setForm((prev) => ({
               ...prev,
@@ -184,30 +184,6 @@ function GroupDetail() {
                 ? [...prev.userIds, userId]
                 : prev.userIds.filter((uid) => uid !== userId),
             }));
-          }}
-        />
-      </div>
-
-      <div className="card">
-        <h3 className="text-lg font-semibold text-white mb-1">Menu visibility</h3>
-        <p className="text-xs text-mc-textMuted mb-4">
-          Menu items are visible by default. Deny hides an item. Allow keeps it visible unless another group deny wins. Plugin menu items appear here when a plugin is installed.
-        </p>
-        <PermissionEditor
-          catalog={menuCatalog}
-          values={form.permissions}
-          assignmentKey="allowGroup"
-          hideCategoryFilter
-          searchPlaceholder="Search menu items..."
-          emptyText="No menu items match this search."
-          disabled={!isAdmin && !can('users.change_group_permissions')}
-          onChange={(key, next) => {
-            setForm((prev) => {
-              const permissions = { ...prev.permissions };
-              if (!next) delete permissions[key];
-              else permissions[key] = next;
-              return { ...prev, permissions };
-            });
           }}
         />
       </div>
@@ -221,7 +197,7 @@ function GroupDetail() {
           catalog={actionCatalog}
           values={form.permissions}
           assignmentKey="allowGroup"
-          disabled={!isAdmin && !can('users.change_group_permissions')}
+          disabled={!isAdmin && !can('groups.assign_permissions')}
           onChange={(key, next) => {
             setForm((prev) => {
               const permissions = { ...prev.permissions };

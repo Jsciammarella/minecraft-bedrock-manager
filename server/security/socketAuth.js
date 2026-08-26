@@ -50,7 +50,7 @@ function authorizeJoin(principal, rawId, overrides) {
   if (id == null) return fail(JOIN_ERROR, GENERIC_JOIN);
   const server = getServer(id);
   if (!canView(authorize, principal, server)) return fail(JOIN_ERROR, GENERIC_JOIN);
-  if (!authorize(principal, 'servers.console', server)) {
+  if (!authorize(principal, 'servers.console.view', server)) {
     return fail(JOIN_ERROR, CONSOLE_DENIED, { serverId: id });
   }
   return { ok: true, room: `server-${id}`, serverId: id, server };
@@ -62,7 +62,7 @@ function authorizeCommand(principal, rawId, overrides) {
   if (id == null) return fail(COMMAND_ERROR, GENERIC_COMMAND);
   const server = getServer(id);
   if (!canView(authorize, principal, server)) return fail(COMMAND_ERROR, GENERIC_COMMAND);
-  if (!authorize(principal, 'servers.console', server)) {
+  if (!authorize(principal, 'servers.console.send_commands', server)) {
     return fail(COMMAND_ERROR, COMMAND_DENIED, { serverId: id });
   }
   return { ok: true, serverId: id, server };

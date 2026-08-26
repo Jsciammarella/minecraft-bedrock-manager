@@ -101,9 +101,9 @@ function compareServers(a, b, sortBy) {
 
 function Dashboard() {
   const navigate = useNavigate();
-  const { servers, gateways, javaHostingAvailable, loading, refresh } = useApi();
+  const { servers, gateways, javaHostingAvailable, editions, loading, refresh } = useApi();
   const { connected } = useSocket();
-  const { can } = useAuth();
+  const { can, canCreateAnyServer } = useAuth();
   const [actions, setActions] = useState({});
   const [bcPreview, setBcPreview] = useState(null);
   const [bcBusy, setBcBusy] = useState(false);
@@ -126,6 +126,10 @@ function Dashboard() {
       const res = await serverApi.previewBedrockConnect();
       setBcPreview(res.data);
     } catch (err) {
+      if (err.response?.status === 409 || err.response?.status === 403) {
+        setBcPreview(null);
+        return;
+      }
       console.error('Failed to load Bedrock Connect preview:', err);
     }
   };
@@ -365,6 +369,10 @@ function Dashboard() {
       : `UDP ${gateway.port}`,
     stats: {},
   }));
+  const dashboardCreates = (editions || []).filter((item) => (
+    item?.available && item.createSurface === 'dashboard' && can(item.createPermission || 'bedrock_connect.create')
+  ));
+  const bcCreate = dashboardCreates.find((item) => item.id === 'bedrock-connect' || item.kind === 'bedrock_connect');
   const bcExists = Boolean(bcPreview?.exists || servers.some(isBedrockConnect));
   const bcPending = Boolean(bcPreview?.pending);
   const bcDisabled = bcExists || bcPending || bcBusy;
@@ -407,7 +415,7 @@ function Dashboard() {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
-          {can('servers.create_bedrock_connect') && (
+          {bcCreate && (
           <button
             onClick={beginBedrockConnect}
             disabled={bcDisabled}
@@ -415,10 +423,10 @@ function Dashboard() {
             title={bcExists ? 'Bedrock Connect already exists' : bcPending ? 'Bedrock Connect will be created after the warned restart' : 'Create Bedrock Connect on UDP 19132'}
           >
             <Plus className="w-4 h-4" />
-            {bcBusy ? 'Creating...' : 'Bedrock Connect'}
+            {bcBusy ? 'Creating...' : (bcCreate.label || 'BedrockConnect')}
           </button>
           )}
-          {(can('servers.create') || can('servers.create_remote')) && (
+          {canCreateAnyServer && (
           <button
             onClick={() => navigate('/servers/new')}
             className="btn btn-primary"
@@ -539,17 +547,17 @@ function Dashboard() {
           <h3 className="text-lg font-semibold text-white mb-2">No servers yet</h3>
           <p className="text-mc-textMuted mb-6">Create your first Minecraft Bedrock server to get started</p>
           <div className="flex items-center justify-center gap-3 max-md:flex-col">
-            {can('servers.create_bedrock_connect') && (
+            {bcCreate && (
             <button
               onClick={beginBedrockConnect}
               disabled={bcDisabled}
               className={`btn ${bcDisabled ? 'bg-mc-surfaceLight text-mc-textMuted' : 'bg-green-500 hover:bg-green-600 text-white'}`}
             >
               <Plus className="w-4 h-4" />
-              Bedrock Connect
+              {bcCreate.label || 'BedrockConnect'}
             </button>
             )}
-            {(can('servers.create') || can('servers.create_remote')) && (
+            {canCreateAnyServer && (
             <button
               onClick={() => navigate('/servers/new')}
               className="btn btn-primary"
@@ -906,7 +914,7 @@ function Dashboard() {
                   <Terminal className="w-3.5 h-3.5" />
                 </button>
                 )}
-                {(can('servers.change_general_settings') || can('servers.change_game_settings') || can('servers.change_server_options') || can('servers.change_remote_local_ports') || can('servers.change_remote_target') || can('servers.update')) && (
+                {can('servers.view_properties') && (
                 <button
                   onClick={(e) => { e.stopPropagation(); if (!javaControlsLocked) navigate(`/servers/${server.id}/properties`); }}
                   disabled={javaControlsLocked}
@@ -916,7 +924,7 @@ function Dashboard() {
                   <Settings className="w-3.5 h-3.5" />
                 </button>
                 )}
-                {can('servers.set_lan') && (
+                {can('servers.manage_lan_broadcast') && (
                 <button
                   onClick={(e) => { if (javaControlsLocked) { e.stopPropagation(); return; } beginLanToggle(server, e); }}
                   disabled={lanLocked || lanBusy[server.id] || javaControlsLocked}

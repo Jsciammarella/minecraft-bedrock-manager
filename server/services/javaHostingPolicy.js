@@ -31,8 +31,15 @@ function isDisabling() {
 function isAvailable(editionId = JAVA_EDITION) {
   const id = String(editionId || '').trim().toLowerCase();
   if (id === 'bedrock' || id === 'remote') return true;
-  if (id !== JAVA_EDITION) return Boolean(serverEditionRegistry.get(id)) && !disabling;
-  return Boolean(serverEditionRegistry.get(JAVA_EDITION)) && !disabling;
+  if (id === JAVA_EDITION) return Boolean(serverEditionRegistry.get(JAVA_EDITION)) && !disabling;
+  if (id === 'bedrock-connect' || id === 'bedrock_connect') {
+    try {
+      return require('./bedrockConnectPolicy').isBedrockConnectAvailable();
+    } catch {
+      return false;
+    }
+  }
+  return Boolean(serverEditionRegistry.get(id));
 }
 
 function isJavaHostingAvailable() {
@@ -47,6 +54,13 @@ function assertServerEditionAvailable(editionId, action) {
 function isHiddenServer(server) {
   if (!server) return false;
   if (String(server.kind || '') === 'java') return !isJavaHostingAvailable();
+  if (String(server.kind || '') === 'bedrock_connect') {
+    try {
+      return !require('./bedrockConnectPolicy').isBedrockConnectAvailable();
+    } catch {
+      return true;
+    }
+  }
   return false;
 }
 

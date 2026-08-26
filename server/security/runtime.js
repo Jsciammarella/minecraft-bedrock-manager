@@ -81,7 +81,7 @@ function createRuntime(options = {}) {
         throw errors.unauthorized();
       }
       if (!provider.authorize(current, action, resource, context)) {
-        throw errors.forbidden();
+        throw errors.permissionRequired(action);
       }
       return true;
     },

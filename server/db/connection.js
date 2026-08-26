@@ -373,6 +373,15 @@ ensureServerColumn('java_major', 'INTEGER');
 ensureServerColumn('loader_state', 'TEXT');
 ensureServerColumn('loader_metadata', 'TEXT');
 ensureServerColumn('missing_mod_dependencies', 'TEXT');
+ensureServerColumn('provider_id', 'TEXT');
+ensureServerColumn('capability_id', 'TEXT');
+
+db.exec(`
+  UPDATE servers
+  SET provider_id = COALESCE(NULLIF(provider_id, ''), 'server-edition-bedrock-connect'),
+      capability_id = COALESCE(NULLIF(capability_id, ''), 'bedrock-connect')
+  WHERE kind = 'bedrock_connect'
+`);
 
 db.exec(`
   UPDATE servers
@@ -495,6 +504,62 @@ db.exec(`
 
 ensureGatewayColumn('unresolved_target', 'INTEGER NOT NULL DEFAULT 0');
 ensureGatewayColumn('unresolved_reason', 'TEXT');
+
+function tableColumns(table) {
+  return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name));
+}
+
+function ensureColumn(table, name, definition) {
+  const columns = tableColumns(table);
+  if (!columns.has(name)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+  }
+}
+
+ensureColumn('groups', 'is_system', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('groups', 'system_key', 'TEXT');
+ensureColumn('groups', 'defaults_version', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('groups', 'description', 'TEXT');
+ensureColumn('permission_defs', 'display_name', 'TEXT');
+ensureColumn('permission_defs', 'primary_category', 'TEXT');
+ensureColumn('permission_defs', 'subcategory', 'TEXT');
+ensureColumn('permission_defs', 'source', "TEXT NOT NULL DEFAULT 'core'");
+ensureColumn('permission_defs', 'plugin_id', 'TEXT');
+ensureColumn('permission_defs', 'risk_level', "TEXT NOT NULL DEFAULT 'normal'");
+ensureColumn('permission_defs', 'assignable_to_users', 'INTEGER NOT NULL DEFAULT 1');
+ensureColumn('permission_defs', 'assignable_to_groups', 'INTEGER NOT NULL DEFAULT 1');
+ensureColumn('permission_defs', 'active', 'INTEGER NOT NULL DEFAULT 1');
+ensureColumn('permission_defs', 'deprecated', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('permission_defs', 'schema_version', 'INTEGER NOT NULL DEFAULT 1');
+ensureColumn('permission_defs', 'created_at', 'DATETIME');
+ensureColumn('permission_defs', 'updated_at', 'DATETIME');
+ensureColumn('user_permissions', 'assignment_origin', "TEXT NOT NULL DEFAULT 'manual'");
+ensureColumn('user_permissions', 'created_at', 'DATETIME');
+ensureColumn('user_permissions', 'updated_at', 'DATETIME');
+ensureColumn('group_permissions', 'assignment_origin', "TEXT NOT NULL DEFAULT 'manual'");
+ensureColumn('group_permissions', 'created_at', 'DATETIME');
+ensureColumn('group_permissions', 'updated_at', 'DATETIME');
+
+db.exec(`
+  UPDATE permission_defs
+  SET display_name = COALESCE(NULLIF(display_name, ''), name),
+      primary_category = COALESCE(NULLIF(primary_category, ''), category)
+  WHERE display_name IS NULL OR display_name = '' OR primary_category IS NULL OR primary_category = ''
+`);
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_system_key
+  ON groups(system_key)
+  WHERE system_key IS NOT NULL AND system_key != ''
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS schema_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    migration_key TEXT NOT NULL UNIQUE,
+    schema_version TEXT NOT NULL,
+    applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    result TEXT
+  );
+`);
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_gateways_status ON gateways(status)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action)`);

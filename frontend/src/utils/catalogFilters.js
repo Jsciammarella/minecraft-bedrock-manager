@@ -58,7 +58,7 @@ export function libraryFilterOptions(availability = EMPTY_FILTER_AVAILABILITY) {
     { id: 'bedrock', name: 'Bedrock', type: 'edition' },
   ];
   for (const item of availability.editions || []) {
-    if (item.id !== 'bedrock') options.push(item);
+    if (item.id !== 'bedrock' && item.catalogFilter !== false) options.push(item);
   }
   for (const item of availability.loaders || []) options.push(item);
   for (const item of availability.environments || []) options.push(item);

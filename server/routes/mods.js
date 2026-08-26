@@ -52,7 +52,7 @@ const imageUpload = multer({
 });
 
 // Get all mods in library
-router.get('/', async (req, res) => {
+router.get('/', requirePermission('library.view'), async (req, res) => {
   try {
     const mods = await modManager.getAllMods();
     res.json(mods);
@@ -62,7 +62,7 @@ router.get('/', async (req, res) => {
 });
 
 // Get mod by ID
-router.get('/:id', async (req, res) => {
+router.get('/:id', requirePermission('library.view'), async (req, res) => {
   try {
     const mod = await modManager.getModById(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Mod not found' });
@@ -136,7 +136,7 @@ router.post('/import-mcpedl', requirePermission('library.import_mcpedl'), async 
   }
 });
 
-router.put('/:id', requirePermission('library.change_settings'), (req, res) => {
+router.put('/:id', requirePermission('library.edit_metadata'), (req, res) => {
   imageUpload.single('thumbnail')(req, res, async (uploadError) => {
     if (uploadError) {
       const tooLarge = uploadError.code === 'LIMIT_FILE_SIZE';
@@ -159,7 +159,7 @@ router.put('/:id', requirePermission('library.change_settings'), (req, res) => {
   });
 });
 
-router.post('/:id/files', requirePermission('library.change_settings'), (req, res) => {
+router.post('/:id/files', requirePermission('library.add_file'), (req, res) => {
   upload.fields([
     { name: 'files', maxCount: 20 },
     { name: 'file', maxCount: 20 },
@@ -182,7 +182,7 @@ router.post('/:id/files', requirePermission('library.change_settings'), (req, re
   });
 });
 
-router.delete('/:id/files', requirePermission('library.change_settings'), async (req, res) => {
+router.delete('/:id/files', requirePermission('library.remove_file'), async (req, res) => {
   try {
     const uninstallFromServers = req.query.uninstallFromAll === '1' || req.query.uninstallFromAll === 'true'
       || req.body?.uninstallFromServers === true || req.body?.uninstallFromAll === true;
@@ -202,7 +202,7 @@ router.delete('/:id/files', requirePermission('library.change_settings'), async 
   }
 });
 
-router.get('/:id/thumbnail', async (req, res) => {
+router.get('/:id/thumbnail', requirePermission('library.view_files'), async (req, res) => {
   try {
     const filePath = modManager.getThumbnailFilePath(req.params.id);
     if (!filePath) return res.status(404).json({ error: 'Thumbnail not found' });
@@ -215,7 +215,7 @@ router.get('/:id/thumbnail', async (req, res) => {
 });
 
 // Delete a mod from library
-router.delete('/:id', requirePermission('library.delete'), async (req, res) => {
+router.delete('/:id', requirePermission('library.delete_entry'), async (req, res) => {
   try {
     const uninstallFromServers = req.query.uninstallFromAll === '1' || req.query.uninstallFromAll === 'true';
     await modManager.deleteMod(req.params.id, { uninstallFromServers });
@@ -226,7 +226,7 @@ router.delete('/:id', requirePermission('library.delete'), async (req, res) => {
 });
 
 // Get available mods for a server (not yet installed)
-router.get('/available/:serverId', async (req, res) => {
+router.get('/available/:serverId', requirePermission('servers.mods.view'), async (req, res) => {
   try {
     const mods = await modManager.getAvailableMods(req.params.serverId);
     res.json(mods);
@@ -236,7 +236,7 @@ router.get('/available/:serverId', async (req, res) => {
 });
 
 // Get installed mods for a server
-router.get('/installed/:serverId', async (req, res) => {
+router.get('/installed/:serverId', requirePermission('servers.mods.view'), async (req, res) => {
   try {
     const mods = await modManager.getInstalledMods(req.params.serverId);
     res.json(mods);
@@ -246,7 +246,7 @@ router.get('/installed/:serverId', async (req, res) => {
 });
 
 // Install mod to server
-router.post('/:modId/install/:serverId', requirePermission('servers.add_mods'), async (req, res) => {
+router.post('/:modId/install/:serverId', requirePermission('servers.mods.install'), async (req, res) => {
   try {
     await modManager.installModToServer(req.params.serverId, req.params.modId, {
       fileSha256: req.body?.fileSha256,
@@ -259,7 +259,7 @@ router.post('/:modId/install/:serverId', requirePermission('servers.add_mods'), 
 });
 
 // Uninstall mod from server
-router.delete('/:modId/uninstall/:serverId', requirePermission('servers.remove_mods'), async (req, res) => {
+router.delete('/:modId/uninstall/:serverId', requirePermission('servers.mods.remove'), async (req, res) => {
   try {
     await modManager.uninstallModFromServer(req.params.serverId, req.params.modId);
     res.json({ success: true });
@@ -270,7 +270,7 @@ router.delete('/:modId/uninstall/:serverId', requirePermission('servers.remove_m
 
 // ========== MOD CATALOG ==========
 
-router.get('/catalog/settings', async (req, res) => {
+router.get('/catalog/settings', requirePermission('catalog.view'), async (req, res) => {
   try {
     res.json({ multiFileMode: require('../services/settingsStore').getMultiFileMode() });
   } catch (err) {
@@ -278,7 +278,7 @@ router.get('/catalog/settings', async (req, res) => {
   }
 });
 
-router.get('/catalog/multi-file-mode', (req, res) => {
+router.get('/catalog/multi-file-mode', requirePermission('catalog.view'), (req, res) => {
   try {
     res.json({ multiFileMode: require('../services/settingsStore').getMultiFileMode() });
   } catch (err) {
@@ -295,11 +295,11 @@ router.put('/catalog/multi-file-mode', requirePermission('catalog.change_file_ha
   }
 });
 
-router.get('/catalog/git/status', (req, res) => {
+router.get('/catalog/git/status', requirePermission('catalog.view'), (req, res) => {
   res.json(gitCatalog.getSyncStatus());
 });
 
-router.post('/catalog/git/sync', requirePermission('catalog.enable_git'), async (req, res) => {
+router.post('/catalog/git/sync', requirePermission('catalog.git.sync'), async (req, res) => {
   try {
     if (!gitCatalog.canSync()) {
       return res.status(400).json({
@@ -313,7 +313,7 @@ router.post('/catalog/git/sync', requirePermission('catalog.enable_git'), async 
   }
 });
 
-router.get('/catalog/git/thumbnail/:slug', async (req, res) => {
+router.get('/catalog/git/thumbnail/:slug', requirePermission('catalog.view'), async (req, res) => {
   try {
     const filePath = gitCatalog.getThumbnailPath(req.params.slug);
     if (!filePath || !fs.existsSync(filePath)) {
@@ -327,7 +327,7 @@ router.get('/catalog/git/thumbnail/:slug', async (req, res) => {
   }
 });
 
-router.get('/catalog/file/thumbnail/:kind/:slug', async (req, res) => {
+router.get('/catalog/file/thumbnail/:kind/:slug', requirePermission('catalog.view'), async (req, res) => {
   try {
     const filePath = fileCatalog.getThumbnailPath(req.params.kind, req.params.slug);
     if (!filePath || !fs.existsSync(filePath)) {
@@ -341,7 +341,7 @@ router.get('/catalog/file/thumbnail/:kind/:slug', async (req, res) => {
   }
 });
 
-router.get('/catalog/search', async (req, res) => {
+router.get('/catalog/search', requirePermission('catalog.search'), async (req, res) => {
   try {
     const result = await catalog.searchMods(req.query.q || '', {
       category: req.query.category,
@@ -364,7 +364,7 @@ router.get('/catalog/search', async (req, res) => {
   }
 });
 
-router.get('/catalog/filter-availability', (req, res) => {
+router.get('/catalog/filter-availability', requirePermission('catalog.view'), (req, res) => {
   try {
     res.json(catalog.listFilterAvailability());
   } catch (err) {
@@ -372,7 +372,7 @@ router.get('/catalog/filter-availability', (req, res) => {
   }
 });
 
-router.get('/catalog/providers', async (req, res) => {
+router.get('/catalog/providers', requirePermission('catalog.view'), async (req, res) => {
   try {
     res.json(catalog.listProviders());
   } catch (err) {
@@ -380,7 +380,7 @@ router.get('/catalog/providers', async (req, res) => {
   }
 });
 
-router.get('/catalog/categories', async (req, res) => {
+router.get('/catalog/categories', requirePermission('catalog.view'), async (req, res) => {
   try {
     const categories = await catalog.getCategories({
       edition: req.query.edition || 'all',
@@ -393,8 +393,11 @@ router.get('/catalog/categories', async (req, res) => {
   }
 });
 
-router.post('/catalog/download/:slug', requirePermission('catalog.download_mods'), async (req, res) => {
+router.post('/catalog/download/:slug', requirePermission('catalog.download_to_library'), async (req, res) => {
   try {
+    if (req.body?.fileId || req.body?.version || req.body?.fileIds) {
+      assertPermission(req, 'catalog.select_download_version');
+    }
     const result = await catalog.downloadMod(req.params.slug, req.body || {});
     res.json(result);
   } catch (err) {
@@ -402,7 +405,7 @@ router.post('/catalog/download/:slug', requirePermission('catalog.download_mods'
   }
 });
 
-router.get('/catalog/:slug', async (req, res) => {
+router.get('/catalog/:slug', requirePermission('catalog.view_details'), async (req, res) => {
   try {
     const details = await catalog.getDetails(req.params.slug, req.query);
     if (!details) return res.status(404).json({ error: 'Mod not found' });

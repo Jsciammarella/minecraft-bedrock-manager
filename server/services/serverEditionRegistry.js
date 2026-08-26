@@ -28,6 +28,10 @@ function publicMetadata(entry, { available = true } = {}) {
     available: Boolean(available),
     core: false,
     pluginId: entry.pluginId,
+    kind: entry.kind || entry.id,
+    createSurface: entry.createSurface || 'form',
+    createPermission: entry.createPermission || null,
+    catalogFilter: entry.catalogFilter !== false,
   };
 }
 
@@ -57,6 +61,10 @@ function register(plugin, provider) {
     id,
     label: stripLabel(meta.label || meta.name, id),
     pluginId: plugin.id,
+    kind: meta.kind || id,
+    createSurface: meta.createSurface || 'form',
+    createPermission: meta.createPermission || null,
+    catalogFilter: meta.catalogFilter !== false,
     provider: provider || meta,
   });
   pluginAudit.record('provider.register', {

@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const serverManager = require('../services/serverManager');
+const { requirePermission } = require('../middleware/auth');
 
 // Get all ports (used and available)
-router.get('/', async (req, res) => {
+router.get('/', requirePermission('ports.view'), async (req, res) => {
   try {
     const ports = await serverManager.getAllPorts();
     res.json(ports);
@@ -13,7 +14,7 @@ router.get('/', async (req, res) => {
 });
 
 // Search available ports
-router.get('/search', async (req, res) => {
+router.get('/search', requirePermission('ports.view'), async (req, res) => {
   try {
     const { q } = req.query;
     const ports = await serverManager.getAllPorts();
@@ -33,7 +34,7 @@ router.get('/search', async (req, res) => {
 });
 
 // Check if a specific port is available
-router.get('/check/:port', async (req, res) => {
+router.get('/check/:port', requirePermission('ports.refresh'), async (req, res) => {
   try {
     const port = parseInt(req.params.port);
     const ports = await serverManager.getAllPorts();

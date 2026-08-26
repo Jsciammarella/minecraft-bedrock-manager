@@ -222,6 +222,9 @@ server.listen(PORT, '0.0.0.0', () => {
   require('./services/javaHostingPolicy').reconcileOnStartup().catch((err) => {
     logger.warn(`Java hosting reconcile failed: ${err.message}`);
   });
+  require('./services/bedrockConnectPolicy').reconcileOnStartup().catch((err) => {
+    logger.warn(`BedrockConnect plugin reconcile failed: ${err.message}`);
+  });
   require('./services/gatewayManager').restoreRunning().catch((err) => {
     logger.warn(`Gateway restore failed: ${err.message}`);
   });

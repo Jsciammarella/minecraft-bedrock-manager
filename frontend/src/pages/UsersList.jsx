@@ -31,9 +31,9 @@ function UsersList() {
   });
   const [policy, setPolicy] = useState(DEFAULT_PASSWORD_POLICY);
 
-  const canCreate = isAdmin || can('users.change_user_permissions');
-  const canToggle = canCreate;
-  const canDelete = canCreate;
+  const canCreate = isAdmin || can('users.create');
+  const canToggle = isAdmin || can('users.activate') || can('users.deactivate');
+  const canDelete = isAdmin || can('users.delete');
   const activeAdmins = users.filter((user) => user.isAdmin && user.isActive).length;
 
   const load = async () => {

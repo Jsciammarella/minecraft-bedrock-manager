@@ -63,10 +63,32 @@ const CORE_MENU_PATHS = [
   '/mods/catalog',
   '/mods/catalog/settings',
   '/players',
-  '/bedrock-connect',
   '/ports',
   '/plugins',
   '/gateways',
+];
+
+const ALLOWED_NATIVE_CORE_PATHS = new Set([
+  '/bedrock-connect',
+]);
+
+const FIRST_PARTY_PERM_RE = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
+const RISK_LEVELS = new Set(['read', 'normal', 'elevated', 'destructive', 'administrator-only']);
+const CORE_PERM_PREFIXES = [
+  'dashboard.',
+  'servers.',
+  'catalog.',
+  'library.',
+  'players.',
+  'ports.',
+  'plugins.',
+  'users.',
+  'groups.',
+  'permissions.',
+  'security.',
+  'account.',
+  'bedrock_connect.',
+  'menu.',
 ];
 
 const ALLOWED_ICONS = new Set([
@@ -160,6 +182,24 @@ function parsePages(rawPages, pluginId, pluginName, { source = 'user' } = {}) {
       });
       continue;
     }
+    if (renderer === 'native-core') {
+      if (source !== 'bundled') {
+        return { ok: false, error: 'native-core pages are limited to bundled first-party plugins' };
+      }
+      const corePath = String((row && row.path) || '').trim();
+      if (!ALLOWED_NATIVE_CORE_PATHS.has(corePath)) {
+        return { ok: false, error: `native-core path "${corePath}" is not allowed` };
+      }
+      seen.add(id);
+      pages.push({
+        id,
+        title: String((row && row.title) || pluginName).trim() || pluginName,
+        renderer: 'native-core',
+        file: '',
+        path: corePath,
+      });
+      continue;
+    }
     if (renderer && renderer !== 'iframe') {
       return { ok: false, error: `unsupported page renderer "${renderer}"` };
     }
@@ -177,6 +217,7 @@ function parsePages(rawPages, pluginId, pluginName, { source = 'user' } = {}) {
     pages.push({ id: 'home', title: pluginName, renderer: 'iframe', file: 'index.html' });
   }
   pages.forEach((page) => {
+    if (page.path) return;
     page.path = page.renderer === 'native-settings'
       ? `/plugins/${pluginId}/${page.id}`
       : page.id === pages[0].id
@@ -202,6 +243,7 @@ function parseMenus(rawManifest, pluginId, pluginName, pages) {
     const page = pages.find((item) => item.id === pageId) || pages[0];
     const order = Number(row && row.order);
     seen.add(id);
+    const permission = String((row && row.permission) || '').trim().toLowerCase();
     menus.push({
       id,
       label: String((row && row.label) || pluginName).trim() || pluginName,
@@ -210,6 +252,7 @@ function parseMenus(rawManifest, pluginId, pluginName, pages) {
       pageId: page.id,
       path: page.path,
       renderer: page.renderer || 'iframe',
+      permission: permission || '',
     });
   });
   if (!menus.length) {
@@ -221,34 +264,167 @@ function parseMenus(rawManifest, pluginId, pluginName, pages) {
       pageId: pages[0].id,
       path: pages[0].path,
       renderer: pages[0].renderer || 'iframe',
+      permission: '',
     });
   }
   return menus;
 }
 
-function parsePermissions(rawPermissions, pluginId, pluginName) {
+function knownCategoryIds(pluginCategories) {
+  const ids = new Set(['plugin']);
+  try {
+    const catalog = require('./permissionCatalog');
+    for (const item of catalog.CATEGORIES || []) ids.add(item.id);
+  } catch {
+    /* catalog optional during parse */
+  }
+  for (const item of pluginCategories || []) {
+    const id = String(item?.id || item || '').trim();
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+function pluginOwnsDeclaredKey(pluginId, key, pluginSource) {
+  try {
+    const catalog = require('./permissionCatalog');
+    if (typeof catalog.pluginOwnsKey === 'function') return catalog.pluginOwnsKey(pluginId, key);
+    return catalog.permissionByKey(key)?.pluginId === pluginId;
+  } catch {
+    return pluginSource === 'bundled' && String(key).startsWith('bedrock_connect.');
+  }
+}
+
+function isCoreNamespaceKey(key) {
+  return CORE_PERM_PREFIXES.some((prefix) => String(key).startsWith(prefix));
+}
+
+function normalizePluginPermission(row, pluginId, pluginName, pluginSource, categoryIds, seen) {
+  let local = String(row.key || '').trim().toLowerCase();
+  const prefix = `plugin.${pluginId}.`;
+  if (local.startsWith(prefix)) local = local.slice(prefix.length);
+  const ownedFirstParty = pluginSource === 'bundled'
+    && FIRST_PARTY_PERM_RE.test(local)
+    && local.includes('.')
+    && pluginOwnsDeclaredKey(pluginId, local, pluginSource);
+  if (!ownedFirstParty && (local.includes('.') || isCoreNamespaceKey(local) || isCoreNamespaceKey(`${prefix}${local}`))) {
+    if (pluginSource === 'bundled' && isCoreNamespaceKey(local)) {
+      return { ok: false, error: `plugin ${pluginId} cannot impersonate core permission "${local}"` };
+    }
+    logger.warn(`Plugin ${pluginId} skipped permission "${row.key || ''}": plugin permissions cannot override platform permissions`);
+    return { ok: true, permission: null };
+  }
+  const description = String(row.description || '').trim();
+  if (!description) {
+    return { ok: false, error: `permission "${row.key || ''}" is missing a description` };
+  }
+  const riskLevel = String(row.riskLevel || row.risk || 'normal').trim() || 'normal';
+  if (!RISK_LEVELS.has(riskLevel)) {
+    return { ok: false, error: `permission "${row.key || ''}" has an invalid risk level` };
+  }
+  if (riskLevel === 'administrator-only' && pluginSource !== 'bundled') {
+    return { ok: false, error: 'untrusted plugins cannot declare administrator-only permissions' };
+  }
+  const displayName = String(row.displayName || row.name || local).trim() || local;
+  const primaryCategory = String(row.primaryCategory || row.category || 'plugin').trim() || 'plugin';
+  if (!categoryIds.has(primaryCategory)) {
+    return { ok: false, error: `permission "${row.key || ''}" uses unknown category "${primaryCategory}"` };
+  }
+  const subcategory = row.subcategory ? String(row.subcategory).trim() : null;
+  const assignableToUsers = riskLevel === 'administrator-only' ? false : row.assignableToUsers !== false;
+  const assignableToGroups = riskLevel === 'administrator-only' ? false : row.assignableToGroups !== false;
+  if (ownedFirstParty) {
+    if (seen.has(local)) return { ok: false, error: `duplicate permission key "${local}"` };
+    seen.add(local);
+    return {
+      ok: true,
+      permission: {
+        key: local,
+        localKey: local,
+        name: displayName,
+        displayName,
+        description,
+        category: primaryCategory,
+        primaryCategory,
+        subcategory,
+        riskLevel,
+        assignableToUsers,
+        assignableToGroups,
+        pluginId,
+        source: 'first-party-plugin',
+      },
+    };
+  }
+  if (!local || !PERM_LOCAL_RE.test(local)) return { ok: true, permission: null };
+  if (seen.has(local) || seen.has(`${prefix}${local}`)) {
+    return { ok: false, error: `duplicate permission key "${local}"` };
+  }
+  seen.add(local);
+  return {
+    ok: true,
+    permission: {
+      key: `${prefix}${local}`,
+      localKey: local,
+      name: displayName,
+      displayName,
+      description,
+      category: 'plugin',
+      primaryCategory: 'plugin',
+      subcategory,
+      riskLevel,
+      assignableToUsers,
+      assignableToGroups,
+      pluginId,
+      source: pluginSource === 'bundled' ? 'first-party-plugin' : 'third-party-plugin',
+    },
+  };
+}
+
+function parsePermissions(rawPermissions, pluginId, pluginName, { source: pluginSource = 'user', categories = [] } = {}) {
   const source = Array.isArray(rawPermissions) ? rawPermissions : [];
   const permissions = [];
   const seen = new Set();
-  source.forEach((row) => {
-    if (!row || typeof row !== 'object' || Array.isArray(row)) return;
-    let local = String(row.key || '').trim().toLowerCase();
-    const prefix = `plugin.${pluginId}.`;
-    if (local.startsWith(prefix)) local = local.slice(prefix.length);
-    if (!local || local.includes('.')) {
-      logger.warn(`Plugin ${pluginId} skipped permission "${row.key || ''}": plugin permissions cannot override platform permissions`);
-      return;
-    }
-    if (!PERM_LOCAL_RE.test(local) || seen.has(local)) return;
-    seen.add(local);
+  const categoryIds = knownCategoryIds(categories);
+  for (const row of source) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    const parsed = normalizePluginPermission(row, pluginId, pluginName, pluginSource, categoryIds, seen);
+    if (!parsed.ok) return parsed;
+    if (parsed.permission) permissions.push(parsed.permission);
+  }
+  return { ok: true, permissions };
+}
+
+function attachOwnedCatalogPermissions(permissions, pluginId, pluginSource) {
+  if (pluginSource !== 'bundled') return permissions;
+  let owned = [];
+  try {
+    const catalog = require('./permissionCatalog');
+    owned = (catalog.PLUGIN_OWNED_PERMISSIONS || []).filter((item) => (
+      catalog.pluginOwnsKey(pluginId, item.key)
+    ));
+  } catch {
+    return permissions;
+  }
+  const seen = new Set(permissions.map((item) => item.key));
+  for (const item of owned) {
+    if (seen.has(item.key)) continue;
+    seen.add(item.key);
     permissions.push({
-      key: `${prefix}${local}`,
-      localKey: local,
-      name: String(row.name || local).trim() || local,
-      description: String(row.description || `Permission from ${pluginName}`).trim(),
-      category: 'plugin',
+      key: item.key,
+      localKey: item.key,
+      name: item.displayName || item.name,
+      displayName: item.displayName || item.name,
+      description: item.description,
+      category: item.primaryCategory || item.category,
+      primaryCategory: item.primaryCategory || item.category,
+      subcategory: item.subcategory || null,
+      riskLevel: item.riskLevel || 'normal',
+      assignableToUsers: item.assignableToUsers !== false,
+      assignableToGroups: item.assignableToGroups !== false,
+      pluginId,
+      source: 'first-party-plugin',
     });
-  });
+  }
   return permissions;
 }
 
@@ -271,8 +447,20 @@ function parseManifest(raw, folderName, { source = 'user' } = {}) {
   if (!parsedPages.ok) return parsedPages;
   const pages = parsedPages.pages;
   const menus = parseMenus(raw, id, name, pages);
-  const permissions = parsePermissions(raw.permissions, id, name);
+  const parsedPerms = parsePermissions(raw.permissions, id, name, {
+    source,
+    categories: raw.categories || raw.permissionCategories || [],
+  });
+  if (!parsedPerms.ok) return parsedPerms;
+  const permissions = attachOwnedCatalogPermissions(parsedPerms.permissions, id, source);
   for (const menu of menus) {
+    const page = pages.find((item) => item.id === menu.pageId);
+    if (page && page.renderer === 'native-core') {
+      if (!ALLOWED_NATIVE_CORE_PATHS.has(menu.path)) {
+        return { ok: false, error: 'native-core menus must use an allowed core path' };
+      }
+      continue;
+    }
     if (!menu.path.startsWith(`/plugins/${id}`)) {
       return { ok: false, error: 'plugin menu paths must stay under /plugins/<id>' };
     }
@@ -348,6 +536,7 @@ function publicPlugin(plugin) {
     backendDeclared,
     backendEnabled,
     notices: plugin.notices || [],
+    removable: plugin.source !== 'bundled',
     menus: plugin.enabled ? plugin.menus : [],
     pages: plugin.enabled ? plugin.pages.map((page) => ({
       id: page.id,
@@ -551,6 +740,7 @@ function resetForTests() {
   unloadPlugins();
   lastDirs = null;
   try { require('./javaHostingPolicy').resetForTests(); } catch { /* ignore */ }
+  try { require('./bedrockConnectPolicy').resetForTests(); } catch { /* ignore */ }
   try { require('./serverEditionRegistry').clear(); } catch { /* ignore */ }
 }
 
@@ -611,13 +801,24 @@ async function setPluginEnabled(id, enabled, options = {}) {
     throw err;
   }
   const javaHostingPolicy = require('./javaHostingPolicy');
+  const bedrockConnectPolicy = require('./bedrockConnectPolicy');
   const isServerEdition = (plugin.capabilities || []).includes('provider:server-edition');
+  const editionPolicy = plugin.id === 'server-edition-java'
+    ? javaHostingPolicy
+    : plugin.id === 'server-edition-bedrock-connect'
+      ? bedrockConnectPolicy
+      : null;
   if (!enabled && isServerEdition) {
     const confirm = options.confirm === true || options.confirm === 'true' || options.confirm === 1 || options.confirm === '1';
-    if (!confirm) {
-      throw javaHostingPolicy.confirmError(javaHostingPolicy.disableImpact());
+    if (!editionPolicy) {
+      const err = new Error('This server-edition plugin cannot be disabled');
+      err.status = 400;
+      throw err;
     }
-    await javaHostingPolicy.performDisable();
+    if (!confirm) {
+      throw editionPolicy.confirmError(editionPolicy.disableImpact());
+    }
+    await editionPolicy.performDisable();
   }
   if (!enabled && (plugin.capabilities || []).includes('provider:gateway')) {
     const gatewayManager = require('./gatewayManager');
@@ -627,13 +828,32 @@ async function setPluginEnabled(id, enabled, options = {}) {
       try { gatewayManager.stop(row.id); } catch { /* ignore */ }
     }
   }
+  if (!enabled && plugin.backend) {
+    try {
+      const exported = require(path.resolve(plugin.root, plugin.backend));
+      if (typeof exported.onDisable === 'function') await exported.onDisable();
+    } catch {
+      /* optional hook */
+    }
+  }
   const state = readPluginState();
   state.enabled[id] = Boolean(enabled);
   writePluginState(state);
   pluginAudit.record('plugin.enabled', { targetType: 'plugin', targetId: id, detail: { enabled: Boolean(enabled) } });
   try { require('./pluginEvents').emit(enabled ? 'plugin.enabled' : 'plugin.disabled', { pluginId: id }); } catch { /* ignore */ }
   reloadPlugins();
-  if (!enabled && isServerEdition) javaHostingPolicy.completeDisable();
+  if (!enabled && editionPolicy) editionPolicy.completeDisable();
+  if (enabled && plugin.backend) {
+    try {
+      const enabledPlugin = getPlugin(id);
+      if (enabledPlugin?.backend) {
+        const exported = require(path.resolve(enabledPlugin.root, enabledPlugin.backend));
+        if (typeof exported.onEnable === 'function') await exported.onEnable();
+      }
+    } catch {
+      /* optional hook */
+    }
+  }
   return publicPlugin(getPlugin(id));
 }
 
@@ -812,6 +1032,7 @@ function getMenuItems() {
     .flatMap((plugin) => plugin.menus.map((menu) => ({
       pluginId: plugin.id,
       ...menu,
+      permissionKey: menu.permission || `menu.view.plugin.${plugin.id}.${menu.id}`,
     })))
     .sort((a, b) => {
       if (a.order !== b.order) return a.order - b.order;
@@ -820,22 +1041,47 @@ function getMenuItems() {
 }
 
 function getDynamicPermissions() {
+  const catalog = require('./permissionCatalog');
   const permissions = [];
+  const seen = new Set();
   for (const plugin of loaded) {
     for (const perm of plugin.permissions || []) {
+      if (!perm?.key || seen.has(perm.key) || catalog.permissionByKey(perm.key)) continue;
+      seen.add(perm.key);
       permissions.push({
         key: perm.key,
-        name: perm.name,
+        name: perm.displayName || perm.name,
+        displayName: perm.displayName || perm.name,
         description: perm.description,
-        category: 'plugin',
+        category: perm.primaryCategory || perm.category || 'plugin',
+        primaryCategory: perm.primaryCategory || perm.category || 'plugin',
+        subcategory: perm.subcategory || null,
+        riskLevel: perm.riskLevel || 'normal',
+        assignableToUsers: perm.assignableToUsers !== false,
+        assignableToGroups: perm.assignableToGroups !== false,
+        pluginId: perm.pluginId || plugin.id,
+        source: perm.source || (plugin.source === 'bundled' ? 'first-party-plugin' : 'third-party-plugin'),
+        active: plugin.enabled !== false,
       });
     }
     for (const menu of plugin.menus || []) {
+      if (menu.permission) continue;
+      const key = `menu.view.plugin.${plugin.id}.${menu.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       permissions.push({
-        key: `menu.view.plugin.${plugin.id}.${menu.id}`,
+        key,
         name: `View ${menu.label}`,
+        displayName: `View ${menu.label}`,
         description: `Show "${menu.label}" in the left-hand menu`,
-        category: 'menu',
+        category: 'plugin',
+        primaryCategory: 'plugin',
+        riskLevel: 'read',
+        assignableToUsers: true,
+        assignableToGroups: true,
+        pluginId: plugin.id,
+        source: plugin.source === 'bundled' ? 'first-party-plugin' : 'third-party-plugin',
+        active: plugin.enabled !== false,
       });
     }
   }
@@ -994,6 +1240,7 @@ module.exports = {
   ALLOWED_ICONS,
   BUNDLED_PLUGINS_DIR,
   CORE_MENU_PATHS,
+  ALLOWED_NATIVE_CORE_PATHS,
   EXAMPLE_PLUGINS_DIR,
   INVALID_ARCHIVE_MESSAGE,
   PLUGIN_DATA_DIR,

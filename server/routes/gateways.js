@@ -11,7 +11,7 @@ router.get('/', requirePermission('servers.view_details'), (req, res) => {
   res.json({ gateways: gatewayManager.list() });
 });
 
-router.post('/', requirePermission('servers.create'), async (req, res) => {
+router.post('/', requirePermission('servers.create_java'), async (req, res) => {
   try {
     const gateway = await gatewayManager.create(req.body || {});
     res.status(201).json(gateway);
@@ -28,7 +28,7 @@ router.get('/:id', requirePermission('servers.view_details'), (req, res) => {
   }
 });
 
-router.patch('/:id', requirePermission('servers.change_server_options'), async (req, res) => {
+router.patch('/:id', requirePermission('plugins.configure'), async (req, res) => {
   try {
     res.json(await gatewayManager.patch(req.params.id, req.body || {}));
   } catch (err) {
@@ -36,7 +36,7 @@ router.patch('/:id', requirePermission('servers.change_server_options'), async (
   }
 });
 
-router.post('/:id/apply-settings', requirePermission('servers.change_server_options'), async (req, res) => {
+router.post('/:id/apply-settings', requirePermission('plugins.configure'), async (req, res) => {
   try {
     res.json(await gatewayManager.applySettings(req.params.id, req.body || {}));
   } catch (err) {
@@ -52,7 +52,7 @@ router.delete('/:id', requirePermission('servers.delete'), (req, res) => {
   }
 });
 
-router.post('/:id/start', requirePermission('servers.start'), async (req, res) => {
+router.post('/:id/start', requirePermission('servers.start_java'), async (req, res) => {
   try {
     res.json(await gatewayManager.start(req.params.id));
   } catch (err) {
@@ -60,7 +60,7 @@ router.post('/:id/start', requirePermission('servers.start'), async (req, res) =
   }
 });
 
-router.post('/:id/stop', requirePermission('servers.stop'), (req, res) => {
+router.post('/:id/stop', requirePermission('servers.stop_java'), (req, res) => {
   try {
     res.json(gatewayManager.stop(req.params.id));
   } catch (err) {
@@ -68,7 +68,7 @@ router.post('/:id/stop', requirePermission('servers.stop'), (req, res) => {
   }
 });
 
-router.post('/:id/restart', requirePermission('servers.start'), requirePermission('servers.stop'), async (req, res) => {
+router.post('/:id/restart', requirePermission('servers.restart'), async (req, res) => {
   try {
     res.json(await gatewayManager.restart(req.params.id));
   } catch (err) {
@@ -84,7 +84,7 @@ router.get('/:id/status', requirePermission('servers.view_details'), (req, res) 
   }
 });
 
-router.get('/:id/logs', requirePermission('servers.console'), (req, res) => {
+router.get('/:id/logs', requirePermission('servers.console.view'), (req, res) => {
   try {
     res.json(gatewayManager.logs(req.params.id));
   } catch (err) {

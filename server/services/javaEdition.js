@@ -125,36 +125,7 @@ const PROPERTY_MAP = {
 
 const SETTING_KEYS = Object.keys(DEFAULTS);
 
-const PERMISSIONS = [
-  {
-    key: 'servers.create_java',
-    category: 'servers',
-    edition: 'java',
-    name: 'Create a Java server',
-    description: 'Allow the user to create a Minecraft Java Edition server',
-  },
-  {
-    key: 'servers.start_java',
-    category: 'servers',
-    edition: 'java',
-    name: 'Start a Java server',
-    description: 'Allow the user to start a Minecraft Java Edition server',
-  },
-  {
-    key: 'servers.stop_java',
-    category: 'servers',
-    edition: 'java',
-    name: 'Stop a Java server',
-    description: 'Allow the user to stop a Minecraft Java Edition server',
-  },
-  {
-    key: 'servers.change_java_settings',
-    category: 'servers',
-    edition: 'java',
-    name: 'Change Java-only settings',
-    description: 'Allow the user to change Java Edition-only server properties (PvP, simulation distance, RCON, ops, and related options)',
-  },
-];
+const PERMISSIONS = require('./permissionDefinitions').JAVA_PERMISSIONS;
 
 function isJava(server) {
   return Boolean(server && server.kind === KIND);

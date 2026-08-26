@@ -15,8 +15,25 @@
     "label": "Git Catalog",
     "icon": "cloud",
     "order": 41,
-    "page": "settings"
+    "page": "settings",
+    "permission": "catalog.git.configure"
   },
+  "permissions": [
+    {
+      "key": "catalog.git.configure",
+      "displayName": "Configure Git catalog",
+      "description": "Enable and configure the Git catalog repository.",
+      "primaryCategory": "catalog",
+      "riskLevel": "elevated"
+    },
+    {
+      "key": "catalog.git.sync",
+      "displayName": "Sync Git catalog",
+      "description": "Run a Git catalog sync now.",
+      "primaryCategory": "catalog",
+      "riskLevel": "normal"
+    }
+  ],
   "backend": "backend.js",
   "capabilities": [
     "provider:catalog-source",

@@ -33,6 +33,8 @@ const { runCatalogProviderTests } = require('./catalog-provider-test');
 const { runPluginSettingsTests } = require('./plugin-settings-test');
 const { runModrinthProviderTests } = require('./modrinth-provider-test');
 const { runBedrockConnectLifecycleTests } = require('./bedrock-connect-lifecycle-test');
+const { runBedrockConnectPluginTests } = require('./bedrock-connect-plugin-test');
+const { runPermissionCatalogTests } = require('./permission-catalog-test');
 
 function zipStore(files) {
   const locals = [];
@@ -90,12 +92,14 @@ function testUserManagement() {
   );
 
   const groups = auth.listGroups();
-  const adminGroup = groups.find((group) => group.name === 'Administrators');
-  const standardGroup = groups.find((group) => group.name === 'Standard');
-  const readOnly = groups.find((group) => group.name === 'Read-only');
+  const adminGroup = groups.find((group) => group.systemKey === 'administrators' || group.slug === 'administrators');
+  const standardGroup = groups.find((group) => group.systemKey === 'standard-users' || group.slug === 'standard');
+  const readOnly = groups.find((group) => group.systemKey === 'read-only' || group.slug === 'read-only');
+  const powerUsers = groups.find((group) => group.systemKey === 'power-users' || group.slug === 'power-users');
   assert(adminGroup, 'Administrators group should exist');
-  assert(standardGroup, 'Standard group should exist');
+  assert(standardGroup, 'Standard Users group should exist');
   assert(readOnly, 'Read-only group should exist');
+  assert(powerUsers, 'Power Users group should exist');
 
   const reader = auth.createUser({
     username: 'reader',
@@ -104,8 +108,8 @@ function testUserManagement() {
     groupIds: [readOnly.id],
   }, login.user);
   assert.equal(reader.isAdmin, false);
-  assert.equal(reader.permissions.includes('servers.create'), false);
-  assert.equal(reader.permissions.includes('servers.view_details'), false);
+  assert.equal(reader.permissions.includes('servers.create_bedrock'), false);
+  assert.equal(reader.permissions.includes('servers.view_details'), true);
 
   const operator = auth.createUser({
     username: 'operator',
@@ -113,18 +117,18 @@ function testUserManagement() {
     password: 'standard8',
     groupIds: [standardGroup.id],
   }, login.user);
-  assert.equal(operator.permissions.includes('servers.create'), true);
-  assert.equal(operator.permissions.includes('catalog.download_mods'), true);
-  assert.equal(operator.permissions.includes('plugins.upload'), true);
-  assert.equal(operator.permissions.includes('menu.view.dashboard'), true);
-  assert.equal(operator.permissions.includes('users.change_password'), false);
-  assert.equal(reader.permissions.includes('menu.view.library'), true);
-  assert.equal(reader.permissions.includes('menu.view.catalog'), false);
-  assert.equal(reader.permissions.includes('menu.view.users'), false);
-  assert.equal(reader.permissions.includes('plugins.upload'), false);
-  assert.equal(operator.permissions.includes('library.delete'), true);
-  assert.equal(reader.permissions.includes('library.delete'), false);
-  assert.equal(reader.permissions.includes('catalog.enable_file'), false);
+  assert.equal(operator.permissions.includes('servers.create_bedrock'), false);
+  assert.equal(operator.permissions.includes('catalog.view'), true);
+  assert.equal(operator.permissions.includes('plugins.install'), false);
+  assert.equal(operator.permissions.includes('dashboard.view'), true);
+  assert.equal(operator.permissions.includes('users.view'), false);
+  assert.equal(reader.permissions.includes('library.view'), false);
+  assert.equal(reader.permissions.includes('catalog.view'), false);
+  assert.equal(reader.permissions.includes('users.view'), false);
+  assert.equal(reader.permissions.includes('plugins.install'), false);
+  assert.equal(operator.permissions.includes('library.delete_entry'), false);
+  assert.equal(reader.permissions.includes('library.delete_entry'), false);
+  assert.equal(reader.permissions.includes('catalog.file.configure'), false);
   const javaUpdatePermissions = new Set(catalog.requiredServerUpdatePermissions(
     { kind: 'java' },
     {
@@ -133,12 +137,18 @@ function testUserManagement() {
       op_permission_level: 4,
       network_compression_threshold: 256,
     },
+    {
+      simulation_distance: 8,
+      pvp: false,
+      op_permission_level: 2,
+      network_compression_threshold: 128,
+    },
   ));
   assert.deepEqual(javaUpdatePermissions, new Set([
-    'servers.change_game_settings',
-    'servers.change_server_options',
-    'servers.change_player_permissions',
-    'servers.change_java_settings',
+    'servers.java.simulation_distance',
+    'servers.java.pvp',
+    'servers.java.op_permission_level',
+    'servers.java.network_compression_threshold',
   ]));
 
   const renamed = auth.updateUser(operator.id, { username: 'hacked-name' }, login.user);
@@ -181,32 +191,32 @@ function testUserManagement() {
   });
 
   const withUserDeny = auth.updateUser(operator.id, {
-    userPermissions: { 'servers.create': 'deny' },
+    userPermissions: { 'servers.create_bedrock': 'deny' },
   }, login.user);
-  assert.equal(withUserDeny.permissions.includes('servers.create'), false);
+  assert.equal(withUserDeny.permissions.includes('servers.create_bedrock'), false);
 
   const withUserAllow = auth.updateUser(operator.id, {
     userPermissions: { 'bedrock_connect.enable_dns_proxy': 'allow' },
   }, login.user);
-  assert.equal(withUserAllow.permissions.includes('bedrock_connect.enable_dns_proxy'), true);
+  assert.equal(withUserAllow.permissions.includes('bedrock_connect.dns.enable_proxy'), true);
 
   const denyGroup = auth.createGroup({ name: 'Deny Create' });
   auth.updateGroup(denyGroup.id, {
     userIds: [operator.id],
-    permissions: { 'servers.create': 'deny' },
+    permissions: { 'servers.create_bedrock': 'deny' },
   });
   const afterGroupDeny = auth.getUser(operator.id, { includePermissions: true });
-  assert.equal(afterGroupDeny.permissions.includes('servers.create'), false);
+  assert.equal(afterGroupDeny.permissions.includes('servers.create_bedrock'), false);
 
   auth.updateUser(operator.id, {
-    userPermissions: { 'servers.create': 'allow' },
+    userPermissions: { 'servers.create_bedrock': 'allow' },
   }, login.user);
   const groupDenyWins = auth.getUser(operator.id, { includePermissions: true });
-  assert.equal(groupDenyWins.permissions.includes('servers.create'), false);
+  assert.equal(groupDenyWins.permissions.includes('servers.create_bedrock'), false);
 
   auth.updateGroup(denyGroup.id, { isActive: false });
   const afterDeactivate = auth.getUser(operator.id, { includePermissions: true });
-  assert.equal(afterDeactivate.permissions.includes('servers.create'), true);
+  assert.equal(afterDeactivate.permissions.includes('servers.create_bedrock'), true);
 
   try {
     auth.updateUser(login.user.id, { isActive: false }, login.user);
@@ -244,8 +254,8 @@ async function testPluginHost() {
     id: 'hello-world',
     name: 'Hello',
     permissions: [
-      { key: 'greet', name: 'Send greeting' },
-      { key: 'servers.create', name: 'Should be ignored' },
+      { key: 'greet', name: 'Send greeting', description: 'Allow the user to call this plugin greeting action' },
+      { key: 'servers.create', name: 'Should be ignored', description: 'Ignored core impersonation' },
     ],
   }, 'hello-world');
   assert.equal(withPerms.ok, true);
@@ -304,6 +314,14 @@ async function testPluginHost() {
   }
 
   const pluginApp = require('express')();
+  pluginApp.use((req, _res, next) => {
+    const none = req.headers['x-test-user'] === 'none';
+    req.user = none
+      ? { isAdmin: false, isActive: true, permissions: [] }
+      : { isAdmin: true, isActive: true, permissions: [] };
+    req.principal = req.user;
+    next();
+  });
   pluginApp.use('/api/servers', (req, res) => res.json({ core: true }));
   pluginApp.use('/api/plugins', pluginRoutes);
   const pluginServer = pluginApp.listen(0);
@@ -329,7 +347,9 @@ async function testPluginHost() {
     assert.equal(missingFileRes.status, 404);
     const theftRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/ui/../backend.js`);
     assert.equal(theftRes.status, 404, 'plugin UI must not serve files outside ui/');
-    const backendRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/hello`);
+    const backendRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/hello`, {
+      headers: { 'x-test-user': 'none' },
+    });
     assert.equal(backendRes.status, 403, 'plugin permission should be required when no user is attached');
   } finally {
     await new Promise((resolve) => pluginServer.close(resolve));
@@ -400,6 +420,7 @@ async function run() {
   assert(accessTable, 'server_player_access migration was not created');
   await testPluginHost();
   testUserManagement();
+  runPermissionCatalogTests({ auth: require('../server/services/authService'), catalog: require('../server/services/permissionCatalog'), db, pluginHost });
   await runJavaProviderTests({ pluginHost, testRoot });
   await runCatalogProviderTests({ pluginHost, testRoot });
   await runPluginSettingsTests({ pluginHost, testRoot });
@@ -1702,6 +1723,7 @@ async function run() {
   );
 
   await runBedrockConnectLifecycleTests({ testRoot, db, serverManager });
+  await runBedrockConnectPluginTests({ pluginHost, testRoot, db, serverManager });
 
   const { runAllSecurityTests } = require('./security-provider-test');
   await runAllSecurityTests();
@@ -1716,6 +1738,7 @@ async function run() {
     dnsProxy: 'ok',
     bedrockConnectList: 'ok',
     bedrockConnectLifecycle: 'ok',
+    bedrockConnectPlugin: 'ok',
     curseforgeUrlImport: 'ok',
     remoteGateway: 'ok',
     mcpedlUrlImport: 'ok',

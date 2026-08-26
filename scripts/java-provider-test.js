@@ -960,6 +960,10 @@ versionRange="[13.0.8,)"
   assert.ok(syncs >= 1);
 
   const dashApp = require('express')();
+  dashApp.use((req, _res, next) => {
+    req.user = req.principal = { id: 1, username: 'test-admin', isAdmin: true, isActive: true };
+    next();
+  });
   dashApp.use('/api/dashboard', require('../server/routes/dashboard'));
   dashApp.use('/api/servers', require('../server/routes/servers'));
   const dashServer = dashApp.listen(0);

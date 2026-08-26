@@ -26,6 +26,8 @@ class DnsProxy {
 
   canRun() {
     try {
+      const policy = require('./bedrockConnectPolicy');
+      if (!policy.isBedrockConnectAvailable() || policy.isDisabling()) return false;
       const serverManager = require('./serverManager');
       return Boolean(serverManager.getBedrockConnectServer());
     } catch {
@@ -33,17 +35,23 @@ class DnsProxy {
     }
   }
 
-  async sync() {
-    this.syncing = this.syncing.then(() => this.apply()).catch((err) => {
+  async sync(options = {}) {
+    this.syncing = this.syncing.then(() => this.apply(options)).catch((err) => {
       logger.warn(`DNS proxy sync failed: ${err.message}`);
     });
     return this.syncing;
   }
 
-  async apply() {
+  async apply({ force = false } = {}) {
     const config = dnsSettings.getConfig();
     const shouldRun = Boolean(config.enabled && this.canRun());
-    if (!shouldRun) {
+    let suppress = false;
+    try {
+      suppress = !force && require('./bedrockConnectPolicy').isAutostartSuppressed();
+    } catch {
+      suppress = false;
+    }
+    if (!shouldRun || suppress) {
       await this.stop();
       if (config.enabled && !this.canRun()) {
         this.status.error = 'Create a Bedrock Connect server before enabling DNS';

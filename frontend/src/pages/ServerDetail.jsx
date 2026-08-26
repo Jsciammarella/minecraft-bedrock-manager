@@ -81,7 +81,7 @@ function ManagedServerDetail() {
   const location = useLocation();
   const { refresh, servers } = useApi();
   const { connected, joinServer, serverOutputs, addServerOutput } = useSocket();
-  const { can } = useAuth();
+  const { can, canAny } = useAuth();
   
   const [server, setServer] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -650,16 +650,22 @@ function ManagedServerDetail() {
   const gameplayLocked = isBC || isRemote;
   const canStart = can(startPermissionForKind(server.kind));
   const canStop = can(stopPermissionForKind(server.kind));
-  const canUpdate = can('servers.update');
-  const canLan = can('servers.set_lan');
-  const canConsole = can('servers.console');
-  const canAddAllow = can('servers.add_allowed_players');
-  const canRemoveAllow = can('servers.remove_allowed_players');
-  const canAddBan = can('servers.add_banned_players');
-  const canRemoveBan = can('servers.remove_banned_players');
-  const canPlayerPerms = can('servers.change_player_permissions');
-  const canAddMods = can('servers.add_mods');
-  const canRemoveMods = can('servers.remove_mods');
+  const canUpdate = can('servers.update_software');
+  const canLan = can('servers.manage_lan_broadcast');
+  const canConsoleView = can('servers.console.view');
+  const canConsole = can('servers.console.send_commands');
+  const canAddAllow = can('servers.allowlist.add');
+  const canRemoveAllow = can('servers.allowlist.remove');
+  const canAddBan = can('servers.banlist.add');
+  const canRemoveBan = can('servers.banlist.remove');
+  const canPlayerPerms = canAny(
+    'servers.player_permissions.set_visitor',
+    'servers.player_permissions.set_member',
+    'servers.player_permissions.set_operator',
+    'servers.player_permissions.reset',
+  );
+  const canAddMods = can('servers.mods.install');
+  const canRemoveMods = can('servers.mods.remove');
 
   const modsLocked = gameplayLocked;
 
@@ -876,7 +882,7 @@ function ManagedServerDetail() {
               Users
             </button>
           )}
-          {(can('servers.change_general_settings') || can('servers.change_game_settings') || can('servers.change_server_options') || can('servers.change_remote_local_ports') || can('servers.change_remote_target') || canUpdate) && (
+          {can('servers.view_properties') && (
           <button
             onClick={() => navigate(`/servers/${id}/properties`)}
             className="btn btn-secondary text-sm"
@@ -1095,6 +1101,7 @@ function ManagedServerDetail() {
             </div>
           ) : (
           <>
+          {canConsoleView && (
           <div className="card">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-semibold text-white flex items-center gap-2">
@@ -1154,6 +1161,7 @@ function ManagedServerDetail() {
               </div>
             )}
           </div>
+          )}
 
           {isJava && missingDepItems.length > 0 && (
             <div id="dependencies" ref={depsRef} className="card">

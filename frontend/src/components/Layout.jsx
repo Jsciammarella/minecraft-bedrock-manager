@@ -1,6 +1,6 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { 
-  Server, Plus, Package, Users, Network, Globe,
+import {
+  Server, Plus, Package, Users, Network,
   ChevronLeft, ChevronRight, Home, Download, Menu, X, UserCog, LogOut
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
@@ -21,7 +21,7 @@ function Layout() {
   const [pluginMenus, setPluginMenus] = useState([]);
   const { servers, loading } = useApi();
   const { connected } = useSocket();
-  const { user, logout, can, refresh, features, authenticationRequired, networkWarning } = useAuth();
+  const { user, logout, can, canAccessUserManagement, canCreateAnyServer, refresh, features, authenticationRequired, networkWarning } = useAuth();
 
   useEffect(() => {
     publicApi.health()
@@ -69,10 +69,10 @@ function Layout() {
     const key = requiredMenuKey(location.pathname, pluginMenus);
     if (!key || can(key)) return;
     const fallback = [
-      { path: '/', key: 'menu.view.dashboard' },
-      { path: '/players', key: 'menu.view.players' },
-      { path: '/mods', key: 'menu.view.library' },
-      { path: '/servers', key: 'menu.view.servers' },
+      { path: '/', key: 'dashboard.view' },
+      { path: '/players', key: 'players.view' },
+      { path: '/mods', key: 'library.view' },
+      { path: '/servers', key: 'servers.view' },
       { path: '/users/settings', key: null },
     ].find((item) => !item.key || can(item.key));
     if (fallback?.path && fallback.path !== location.pathname) {
@@ -80,24 +80,36 @@ function Layout() {
     }
   }, [location.pathname, user, pluginMenus, can, navigate]);
 
-  const navItems = [
-    { icon: Home, label: 'Dashboard', path: '/', exact: true, menuKey: 'menu.view.dashboard' },
-    { icon: Server, label: 'Servers', path: '/servers', menuKey: 'menu.view.servers' },
-    ...(can('servers.create') || can('servers.create_remote')
-      ? [{ icon: Plus, label: 'New Server', path: '/servers/new', menuKey: 'menu.view.servers_new' }]
+  const coreNavItems = [
+    { order: 10, icon: Home, label: 'Dashboard', path: '/', exact: true, menuKey: 'dashboard.view' },
+    { order: 20, icon: Server, label: 'Servers', path: '/servers', menuKey: 'servers.view' },
+    ...(canCreateAnyServer
+      ? [{ order: 30, icon: Plus, label: 'New Server', path: '/servers/new', menuKey: null }]
       : []),
-    { icon: Package, label: 'Mod Library', path: '/mods', menuKey: 'menu.view.library' },
-    { icon: Download, label: 'Mod Catalog', path: '/mods/catalog', menuKey: 'menu.view.catalog' },
-    { icon: Users, label: 'Players', path: '/players', menuKey: 'menu.view.players' },
-    { icon: Globe, label: 'BedrockConnect', path: '/bedrock-connect', menuKey: 'menu.view.bedrock_connect' },
-    { icon: Network, label: 'Ports', path: '/ports', menuKey: 'menu.view.ports' },
-    ...(features.userManagement
-      ? [{ icon: UserCog, label: 'Users', path: '/users', menuKey: 'menu.view.users' }]
+    { order: 40, icon: Package, label: 'Mod Library', path: '/mods', menuKey: 'library.view' },
+    { order: 50, icon: Download, label: 'Mod Catalog', path: '/mods/catalog', menuKey: 'catalog.view' },
+    { order: 60, icon: Users, label: 'Players', path: '/players', menuKey: 'players.view' },
+    { order: 80, icon: Network, label: 'Ports', path: '/ports', menuKey: 'ports.view' },
+    ...(features.userManagement && canAccessUserManagement
+      ? [{ order: 90, icon: UserCog, label: 'User Management', path: '/users', menuKey: null }]
       : []),
-  ].filter((item) => !item.menuKey || can(item.menuKey));
+  ];
 
-  const visiblePluginMenus = pluginMenus.filter((item) => can(pluginMenuKey(item.pluginId, item.id)));
-  const canViewPlugins = can('menu.view.plugins');
+  const visiblePluginMenus = pluginMenus.filter((item) => can(item.permissionKey || pluginMenuKey(item.pluginId, item.id)));
+  const contributedNav = visiblePluginMenus
+    .filter((item) => item.renderer === 'native-core')
+    .map((item) => ({
+      order: Number.isFinite(Number(item.order)) ? Number(item.order) : 65,
+      icon: pluginIcon(item.icon),
+      label: item.label,
+      path: item.path,
+      menuKey: item.permissionKey || pluginMenuKey(item.pluginId, item.id),
+    }));
+  const extraPluginMenus = visiblePluginMenus.filter((item) => item.renderer !== 'native-core');
+  const navItems = [...coreNavItems, ...contributedNav]
+    .filter((item) => !item.menuKey || can(item.menuKey))
+    .sort((a, b) => a.order - b.order);
+  const canViewPlugins = can('plugins.view');
 
   const activeServers = servers.filter(s => s.status === 'running').length;
   const isCoreNavActive = (item) => (
@@ -114,7 +126,7 @@ function Layout() {
   const pageTitle = currentPlugin?.label
     || currentPage?.label
     || (location.pathname === '/plugins' ? 'Plugins' : null)
-    || (location.pathname.startsWith('/users') ? 'Users' : null)
+    || (location.pathname.startsWith('/users') ? 'User Management' : null)
     || (location.pathname.startsWith('/servers/') ? 'Server' : 'MC Manager');
   const isPluginPage = location.pathname.startsWith('/plugins/') && location.pathname !== '/plugins';
 
@@ -148,12 +160,12 @@ function Layout() {
           </button>
         );
       })}
-      {visiblePluginMenus.length > 0 && (
+      {extraPluginMenus.length > 0 && (
         <div className="pt-2 mt-2 border-t border-mc-surfaceLight space-y-1">
           {showLabels && (
             <p className="px-3 pb-1 text-[10px] uppercase tracking-wide text-mc-textMuted">Plugins</p>
           )}
-          {visiblePluginMenus.map((item) => {
+          {extraPluginMenus.map((item) => {
             const Icon = pluginIcon(item.icon);
             const isActive = location.pathname === item.path
               || location.pathname.startsWith(`${item.path}/`);

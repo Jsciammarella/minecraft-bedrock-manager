@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const pluginDashboard = require('../services/pluginDashboard');
+const { requirePermission } = require('../middleware/auth');
 
-router.get('/', (req, res) => {
+router.get('/', requirePermission('dashboard.view'), (req, res) => {
   try {
     const javaHostingPolicy = require('../services/javaHostingPolicy');
     const gateways = pluginDashboard.list();
@@ -17,7 +18,7 @@ router.get('/', (req, res) => {
   }
 });
 
-router.get('/gateways', (req, res) => {
+router.get('/gateways', requirePermission('dashboard.view'), (req, res) => {
   try {
     res.json({ gateways: pluginDashboard.list() });
   } catch (err) {
@@ -25,7 +26,7 @@ router.get('/gateways', (req, res) => {
   }
 });
 
-router.get('/gateways/:id', (req, res) => {
+router.get('/gateways/:id', requirePermission('dashboard.view'), (req, res) => {
   try {
     const entity = pluginDashboard.get(req.params.id);
     if (!entity) return res.status(404).json({ error: 'Geyser server not found' });

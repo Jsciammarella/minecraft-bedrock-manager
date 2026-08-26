@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { authApi } from '../services/api';
+import { CREATE_SERVER_PERMISSIONS } from '../utils/menuVisibility';
 
 const AuthContext = createContext(null);
 
@@ -7,6 +8,75 @@ const DEFAULT_FEATURES = {
   userManagement: false,
   roleManagement: false,
   passwordManagement: false,
+};
+
+const PERMISSION_ALIASES = {
+  'dashboard.view': ['menu.view.dashboard'],
+  'servers.view': ['menu.view.servers'],
+  'library.view': ['menu.view.library'],
+  'catalog.view': ['menu.view.catalog'],
+  'players.view': ['menu.view.players'],
+  'ports.view': ['menu.view.ports'],
+  'plugins.view': ['menu.view.plugins'],
+  'users.view': ['menu.view.users'],
+  'bedrock_connect.view': ['menu.view.bedrock_connect'],
+  'servers.create_bedrock': ['servers.create'],
+  'servers.create': ['servers.create_bedrock'],
+  'bedrock_connect.create': ['servers.create_bedrock_connect'],
+  'bedrock_connect.start': ['servers.start_bedrock_connect'],
+  'bedrock_connect.stop': ['servers.stop_bedrock_connect'],
+  'bedrock_connect.dns.enable_proxy': ['bedrock_connect.enable_dns_proxy'],
+  'bedrock_connect.dns.set_upstream': ['bedrock_connect.set_upstream_dns'],
+  'bedrock_connect.dns.add_override': ['bedrock_connect.set_dns_overrides'],
+  'bedrock_connect.dns.edit_override': ['bedrock_connect.set_dns_overrides'],
+  'bedrock_connect.dns.remove_override': ['bedrock_connect.set_dns_overrides'],
+  'servers.remote.start_proxy': ['servers.start_remote'],
+  'servers.remote.stop_proxy': ['servers.stop_remote'],
+  'servers.manage_lan_broadcast': ['servers.set_lan'],
+  'servers.console.view': ['servers.console'],
+  'servers.console.send_commands': ['servers.console'],
+  'servers.allowlist.add': ['servers.add_allowed_players'],
+  'servers.allowlist.remove': ['servers.remove_allowed_players'],
+  'servers.banlist.add': ['servers.add_banned_players'],
+  'servers.banlist.remove': ['servers.remove_banned_players'],
+  'servers.update_software': ['servers.update'],
+  'servers.configure_auto_update': ['servers.update'],
+  'servers.player_permissions.set_visitor': ['servers.change_player_permissions'],
+  'servers.player_permissions.set_member': ['servers.change_player_permissions'],
+  'servers.player_permissions.set_operator': ['servers.change_player_permissions'],
+  'servers.player_permissions.reset': ['servers.change_player_permissions'],
+  'servers.mods.install': ['servers.add_mods'],
+  'servers.mods.remove': ['servers.remove_mods'],
+  'servers.remote.change_local_port': ['servers.change_remote_local_ports'],
+  'servers.remote.change_target_host': ['servers.change_remote_target'],
+  'servers.remote.change_target_port': ['servers.change_remote_target'],
+  'catalog.download_to_library': ['catalog.download_mods'],
+  'catalog.download_mods': ['catalog.download_to_library'],
+  'catalog.curseforge.configure': ['catalog.set_curseforge_key'],
+  'catalog.git.configure': ['catalog.enable_git'],
+  'catalog.git.sync': ['catalog.enable_git'],
+  'catalog.file.configure': ['catalog.enable_file'],
+  'library.delete_entry': ['library.delete'],
+  'library.delete': ['library.delete_entry'],
+  'library.edit_metadata': ['library.change_settings'],
+  'library.add_file': ['library.change_settings'],
+  'library.remove_file': ['library.change_settings'],
+  'players.remove_allowlist_all': ['players.remove_whitelisted'],
+  'players.remove_whitelisted': ['players.remove_allowlist_all'],
+  'players.unban_all': ['players.ban_all'],
+  'plugins.install': ['plugins.upload'],
+  'plugins.upload': ['plugins.install'],
+  'users.edit_name': ['users.change_name'],
+  'users.reset_password': ['users.change_password'],
+  'account.change_own_name': ['users.change_name'],
+  'account.change_own_password': ['users.change_password'],
+  'users.assign_permissions': ['users.change_user_permissions'],
+  'users.assign_groups': ['users.change_group_membership'],
+  'groups.assign_permissions': ['users.change_group_permissions'],
+  'groups.add_members': ['users.change_group_membership'],
+  'groups.remove_members': ['users.change_group_membership'],
+  'groups.create': ['users.add_groups'],
+  'groups.delete': ['users.delete_groups'],
 };
 
 export function AuthProvider({ children }) {
@@ -117,8 +187,10 @@ export function AuthProvider({ children }) {
   const can = useCallback((key) => {
     if (!user) return false;
     if (user.isAdmin) return true;
-    if (Array.isArray(user.permissions) && user.permissions.includes(key)) return true;
-    return permissionList.includes(key);
+    const perms = Array.isArray(user.permissions) ? user.permissions : [];
+    const aliases = PERMISSION_ALIASES[key] || [];
+    const keys = [key, ...aliases];
+    return keys.some((item) => perms.includes(item) || permissionList.includes(item));
   }, [user, permissionList]);
 
   const canAny = useCallback((...keys) => keys.some((key) => can(key)), [can]);
@@ -126,21 +198,11 @@ export function AuthProvider({ children }) {
   const value = useMemo(() => {
     const isAdmin = Boolean(user?.isAdmin);
     const userManagementEnabled = Boolean(features.userManagement);
-    const canViewUsers = userManagementEnabled && (isAdmin || canAny(
-      'users.change_password',
-      'users.change_name',
-      'users.change_user_permissions',
-      'users.change_group_membership',
-    ));
-    const canViewGroups = userManagementEnabled && (isAdmin || canAny(
-      'users.add_groups',
-      'users.delete_groups',
-      'users.change_group_membership',
-      'users.change_group_permissions',
-    ));
+    const canViewUsers = userManagementEnabled && (isAdmin || can('users.view'));
+    const canViewGroups = userManagementEnabled && (isAdmin || can('groups.view'));
     const canViewPermissions = userManagementEnabled && (isAdmin || canAny(
-      'users.change_user_permissions',
-      'users.change_group_permissions',
+      'permissions.view_catalog',
+      'permissions.view_assignments',
     ));
     return {
       user,
@@ -165,14 +227,11 @@ export function AuthProvider({ children }) {
       canViewPermissions,
       canViewSettings: Boolean(user) && (userManagementEnabled || features.passwordManagement || authenticationRequired),
       canAccessUserManagement: userManagementEnabled && (isAdmin || canAny(
-        'users.change_password',
-        'users.change_name',
-        'users.change_user_permissions',
-        'users.change_group_permissions',
-        'users.change_group_membership',
-        'users.add_groups',
-        'users.delete_groups',
+        'users.view',
+        'groups.view',
+        'permissions.view_catalog',
       )),
+      canCreateAnyServer: canAny(...CREATE_SERVER_PERMISSIONS),
     };
   }, [
     user, loading, error, securityError, securityProfile, authenticationRequired,
@@ -193,15 +252,15 @@ export function useAuth() {
 }
 
 export function startPermissionForKind(kind) {
-  if (kind === 'bedrock_connect') return 'servers.start_bedrock_connect';
-  if (kind === 'remote') return 'servers.start_remote';
+  if (kind === 'bedrock_connect') return 'bedrock_connect.start';
+  if (kind === 'remote') return 'servers.remote.start_proxy';
   if (kind === 'java') return 'servers.start_java';
   return 'servers.start';
 }
 
 export function stopPermissionForKind(kind) {
-  if (kind === 'bedrock_connect') return 'servers.stop_bedrock_connect';
-  if (kind === 'remote') return 'servers.stop_remote';
+  if (kind === 'bedrock_connect') return 'bedrock_connect.stop';
+  if (kind === 'remote') return 'servers.remote.stop_proxy';
   if (kind === 'java') return 'servers.stop_java';
   return 'servers.stop';
 }

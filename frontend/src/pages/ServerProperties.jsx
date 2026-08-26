@@ -4,6 +4,7 @@ import { serverApi, portApi } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { ArrowLeft, Save, Loader2, Check, AlertCircle, RefreshCw } from 'lucide-react';
 import { isFieldDisabled, isJavaServer } from '../utils/editionSettings';
+import { fieldPermission, permissionLockTitle } from '../utils/fieldPermissions';
 
 function ServerProperties() {
   const { id } = useParams();
@@ -288,15 +289,15 @@ function ServerProperties() {
   const isRemote = server?.kind === 'remote';
   const isJava = isJavaServer(server);
   const settingsLocked = isBC || isRemote;
-  const lockPorts = isBC || (isRemote ? !can('servers.change_remote_local_ports') : !can('servers.change_general_settings'));
-  const lockGeneral = settingsLocked || !can('servers.change_general_settings');
-  const lockGame = settingsLocked || !can('servers.change_game_settings');
-  const lockOptions = settingsLocked || !can('servers.change_server_options');
-  const lockPlayer = settingsLocked || !can('servers.change_player_permissions');
-  const lockRemoteTarget = !can('servers.change_remote_target');
-  const lockUpdate = !can('servers.update');
+  const lockUpdate = !can('servers.configure_auto_update');
+  const fieldPerm = (name) => fieldPermission(name, server?.kind);
+  const fieldLocked = (name) => {
+    const permission = fieldPerm(name);
+    return Boolean(permission) && !can(permission);
+  };
+  const fieldTitle = (name) => permissionLockTitle(fieldPerm(name), can);
 
-  const fieldOff = (name, permissionLocked = false) => settingsLocked || permissionLocked || isFieldDisabled(name, server);
+  const fieldOff = (name, permissionLocked = false) => settingsLocked || permissionLocked || fieldLocked(name) || isFieldDisabled(name, server);
   const showPerm = (edition) => permissionFilter === 'all' || permissionFilter === edition;
 
   const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
@@ -386,7 +387,7 @@ function ServerProperties() {
                 value={formData.port}
                 onChange={handleChange}
                 className="input"
-                disabled={lockPorts}
+                disabled={fieldOff('port')}
                 required
               >
                 {ipv4Select.map((port) => (
@@ -413,7 +414,7 @@ function ServerProperties() {
                 value={formData.ipv6_port}
                 onChange={handleChange}
                 className={`input ${isJava ? 'opacity-50' : ''}`}
-                disabled={lockPorts || isJava}
+                disabled={fieldOff('ipv6_port') || isJava}
                 required={!isBC && !isJava}
 
               >
@@ -439,10 +440,10 @@ function ServerProperties() {
             </div>
             {!isRemote && (
               <>
-                <FormField label="Server Description" name="server_description" value={formData.server_description} onChange={handleChange} type="text" disabled={lockGeneral} />
-                <FormField label="Server MOTD" name="server_motd" value={formData.server_motd} onChange={handleChange} type="text" disabled={lockGeneral} />
-                <FormField label="Max Players" name="max_players" value={formData.max_players} onChange={handleChange} type="number" min="1" max="1000" disabled={lockGeneral} />
-                <FormField label="Level Seed" name="level_seed" value={formData.level_seed} onChange={handleChange} type="text" placeholder="Leave empty for random" disabled={lockGeneral} />
+                <FormField label="Server Description" name="server_description" value={formData.server_description} onChange={handleChange} type="text" disabled={fieldOff('server_description')} title={fieldTitle('server_description')} />
+                <FormField label="Server MOTD" name="server_motd" value={formData.server_motd} onChange={handleChange} type="text" disabled={fieldOff('server_motd')} title={fieldTitle('server_motd')} />
+                <FormField label="Max Players" name="max_players" value={formData.max_players} onChange={handleChange} type="number" min="1" max="1000" disabled={fieldOff('max_players')} title={fieldTitle('max_players')} />
+                <FormField label="Level Seed" name="level_seed" value={formData.level_seed} onChange={handleChange} type="text" placeholder="Leave empty for random" disabled={fieldOff('level_seed')} title={fieldTitle('level_seed')} />
               </>
             )}
           </div>
@@ -451,9 +452,9 @@ function ServerProperties() {
         {isRemote && (
           <Section title="Remote Target">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <FormField label="Remote IP or Hostname" name="remote_host" value={formData.remote_host} onChange={handleChange} type="text" required disabled={lockRemoteTarget} />
-              <FormField label="Remote IPv4 Port" name="remote_ipv4_port" value={formData.remote_ipv4_port} onChange={handleChange} type="number" min="1" max="65535" required disabled={lockRemoteTarget} />
-              <FormField label="Remote IPv6 Port" name="remote_ipv6_port" value={formData.remote_ipv6_port} onChange={handleChange} type="number" min="1" max="65535" required disabled={lockRemoteTarget} />
+              <FormField label="Remote IP or Hostname" name="remote_host" value={formData.remote_host} onChange={handleChange} type="text" required disabled={fieldOff('remote_host')} title={fieldTitle('remote_host')} />
+              <FormField label="Remote IPv4 Port" name="remote_ipv4_port" value={formData.remote_ipv4_port} onChange={handleChange} type="number" min="1" max="65535" required disabled={fieldOff('remote_ipv4_port')} title={fieldTitle('remote_ipv4_port')} />
+              <FormField label="Remote IPv6 Port" name="remote_ipv6_port" value={formData.remote_ipv6_port} onChange={handleChange} type="number" min="1" max="65535" required disabled={fieldOff('remote_ipv6_port')} title={fieldTitle('remote_ipv6_port')} />
             </div>
             <p className="mt-3 text-xs text-mc-textMuted">
               This manager must be able to ping the host. Changing the target while the gateway is running restarts forwarding.
@@ -466,24 +467,24 @@ function ServerProperties() {
         {/* Game Settings */}
         <Section title="Game Settings">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <SelectField label="Game Mode" name="gamemode" value={formData.gamemode} onChange={handleChange} disabled={lockGame} options={[
+            <SelectField label="Game Mode" name="gamemode" value={formData.gamemode} onChange={handleChange} disabled={fieldOff('gamemode')} title={fieldTitle('gamemode')} options={[
               { value: 'survival', label: 'Survival' },
               { value: 'creative', label: 'Creative' },
               { value: 'adventure', label: 'Adventure' },
               { value: 'default', label: 'Default' },
             ]} />
-            <SelectField label="Difficulty" name="difficulty" value={formData.difficulty} onChange={handleChange} disabled={lockGame} options={[
+            <SelectField label="Difficulty" name="difficulty" value={formData.difficulty} onChange={handleChange} disabled={fieldOff('difficulty')} title={fieldTitle('difficulty')} options={[
               { value: 'peaceful', label: 'Peaceful' },
               { value: 'easy', label: 'Easy' },
               { value: 'normal', label: 'Normal' },
               { value: 'hard', label: 'Hard' },
             ]} />
-            <FormField label="View Distance" name="view_distance" value={formData.view_distance} onChange={handleChange} type="number" min="2" max="32" disabled={fieldOff('view_distance', lockGame)} />
-            <FormField label="Tick Distance" name="tick_distance" value={formData.tick_distance} onChange={handleChange} type="number" min="1" max="10" disabled={fieldOff('tick_distance', lockGame)} />
-            <FormField label="Player Idle Timeout (min)" name="player_idle_timeout" value={formData.player_idle_timeout} onChange={handleChange} type="number" min="0" max="1440" disabled={fieldOff('player_idle_timeout', lockGame)} />
-            <FormField label="TX Rate (FPS)" name="tx_rate" value={formData.tx_rate} onChange={handleChange} type="number" min="1" max="60" disabled={fieldOff('tx_rate', lockGame)} />
-            <FormField label="Simulation Distance" name="simulation_distance" value={formData.simulation_distance} onChange={handleChange} type="number" min="3" max="32" disabled={fieldOff('simulation_distance', lockGame)} />
-            <FormField label="Spawn Protection" name="spawn_protection" value={formData.spawn_protection} onChange={handleChange} type="number" min="0" max="1024" disabled={fieldOff('spawn_protection', lockGame)} />
+            <FormField label="View Distance" name="view_distance" value={formData.view_distance} onChange={handleChange} type="number" min="2" max="32" disabled={fieldOff('view_distance')} />
+            <FormField label="Tick Distance" name="tick_distance" value={formData.tick_distance} onChange={handleChange} type="number" min="1" max="10" disabled={fieldOff('tick_distance')} />
+            <FormField label="Player Idle Timeout (min)" name="player_idle_timeout" value={formData.player_idle_timeout} onChange={handleChange} type="number" min="0" max="1440" disabled={fieldOff('player_idle_timeout')} />
+            <FormField label="TX Rate (FPS)" name="tx_rate" value={formData.tx_rate} onChange={handleChange} type="number" min="1" max="60" disabled={fieldOff('tx_rate')} />
+            <FormField label="Simulation Distance" name="simulation_distance" value={formData.simulation_distance} onChange={handleChange} type="number" min="3" max="32" disabled={fieldOff('simulation_distance')} />
+            <FormField label="Spawn Protection" name="spawn_protection" value={formData.spawn_protection} onChange={handleChange} type="number" min="0" max="1024" disabled={fieldOff('spawn_protection')} />
 
           </div>
         </Section>
@@ -491,39 +492,39 @@ function ServerProperties() {
         {/* Toggles */}
         <Section title="Server Options">
           <div className="space-y-4">
-            <ToggleRow label="Enable Cheats" name="enable_cheats" value={formData.enable_cheats} onToggle={handleToggle} description="Allow cheats and commands" disabled={fieldOff('enable_cheats', lockOptions)} />
-            <ToggleRow label="Server Authoritative" name="server_authoritative" value={formData.server_authoritative} onToggle={handleToggle} description="Server controls game logic" disabled={fieldOff('server_authoritative', lockOptions)} />
-            <ToggleRow label="Whitelist Mode" name="whitelist_mode" value={formData.whitelist_mode} onToggle={handleToggle} description="Only whitelisted players can join" disabled={fieldOff('whitelist_mode', lockOptions)} />
-            <ToggleRow label="Texture Pack Required" name="texture_pack_required" value={formData.texture_pack_required} onToggle={handleToggle} description="Players must accept texture packs" disabled={fieldOff('texture_pack_required', lockOptions)} />
-            <ToggleRow label="Auto Ice" name="auto_ice" value={formData.auto_ice} onToggle={handleToggle} description="Water freezes into ice" disabled={fieldOff('auto_ice', lockOptions)} />
-            <ToggleRow label="Natural Regeneration" name="natural_regeneration" value={formData.natural_regeneration} onToggle={handleToggle} description="Health regenerates over time" disabled={fieldOff('natural_regeneration', lockOptions)} />
-            <ToggleRow label="Online Mode" name="online_mode" value={formData.online_mode} onToggle={handleToggle} description={isJava ? 'Require a paid Minecraft Java account' : 'Require Xbox Live authentication'} disabled={fieldOff('online_mode', lockOptions)} />
-            <ToggleRow label="Remote Discovery" name="remote_discovery" value={formData.remote_discovery} onToggle={handleToggle} description="Show server in external listings" disabled={fieldOff('remote_discovery', lockOptions)} />
-            <ToggleRow label="Allow Third-Party Requests" name="allow_third_party_requests" value={formData.allow_third_party_requests} onToggle={handleToggle} description="Allow realms invites" disabled={fieldOff('allow_third_party_requests', lockOptions)} />
-            <ToggleRow label="Allow Third-Party Pictures" name="allow_third_party_pictures" value={formData.allow_third_party_pictures} onToggle={handleToggle} description="Allow skin data from third parties" disabled={fieldOff('allow_third_party_pictures', lockOptions)} />
-            <ToggleRow label="Require Secure Chat" name="require_secure_chat" value={formData.require_secure_chat} onToggle={handleToggle} description="Enforce chat signing" disabled={fieldOff('require_secure_chat', lockOptions)} />
-            <ToggleRow label="Server Authoritative Inventory" name="server_authoritative_inventory" value={formData.server_authoritative_inventory} onToggle={handleToggle} description="Server manages inventory" disabled={fieldOff('server_authoritative_inventory', lockOptions)} />
-            <ToggleRow label="Enable Player Data Init" name="enable_player_data_initialization" value={formData.enable_player_data_initialization} onToggle={handleToggle} description="Create player data on first join" disabled={fieldOff('enable_player_data_initialization', lockOptions)} />
-            <ToggleRow label="PvP" name="pvp" value={formData.pvp} onToggle={handleToggle} description="Players can damage each other" disabled={fieldOff('pvp', lockOptions)} />
-            <ToggleRow label="Allow Nether" name="allow_nether" value={formData.allow_nether} onToggle={handleToggle} description="Enable nether portals" disabled={fieldOff('allow_nether', lockOptions)} />
-            <ToggleRow label="Allow Flight" name="allow_flight" value={formData.allow_flight} onToggle={handleToggle} description="Allow survival flight without kicking" disabled={fieldOff('allow_flight', lockOptions)} />
-            <ToggleRow label="Enable Command Blocks" name="enable_command_block" value={formData.enable_command_block} onToggle={handleToggle} description="Command blocks can run" disabled={fieldOff('enable_command_block', lockOptions)} />
-            <ToggleRow label="Hardcore" name="hardcore" value={formData.hardcore} onToggle={handleToggle} description="Ban players on death" disabled={fieldOff('hardcore', lockOptions)} />
-            <ToggleRow label="Force Gamemode" name="force_gamemode" value={formData.force_gamemode} onToggle={handleToggle} description="Reset joining players to the server gamemode" disabled={fieldOff('force_gamemode', lockOptions)} />
-            <ToggleRow label="Spawn Animals" name="spawn_animals" value={formData.spawn_animals} onToggle={handleToggle} description="Animals spawn naturally" disabled={fieldOff('spawn_animals', lockOptions)} />
-            <ToggleRow label="Spawn Villagers" name="spawn_npcs" value={formData.spawn_npcs} onToggle={handleToggle} description="Villagers spawn" disabled={fieldOff('spawn_npcs', lockOptions)} />
-            <ToggleRow label="Spawn Monsters" name="spawn_monsters" value={formData.spawn_monsters} onToggle={handleToggle} description="Hostile mobs spawn" disabled={fieldOff('spawn_monsters', lockOptions)} />
-            <ToggleRow label="Generate Structures" name="generate_structures" value={formData.generate_structures} onToggle={handleToggle} description="Villages, strongholds, and other structures" disabled={fieldOff('generate_structures', lockOptions)} />
-            <ToggleRow label="Hide Online Players" name="hide_online_players" value={formData.hide_online_players} onToggle={handleToggle} description="Do not show player names in server list ping" disabled={fieldOff('hide_online_players', lockOptions)} />
-            <ToggleRow label="Enforce Whitelist" name="enforce_whitelist" value={formData.enforce_whitelist} onToggle={handleToggle} description="Kick players who are removed from the whitelist" disabled={fieldOff('enforce_whitelist', lockOptions)} />
-            <ToggleRow label="Require Resource Pack" name="require_resource_pack" value={formData.require_resource_pack} onToggle={handleToggle} description="Players must accept the server resource pack" disabled={fieldOff('require_resource_pack', lockOptions)} />
-            <ToggleRow label="Broadcast Console to Ops" name="broadcast_console_to_ops" value={formData.broadcast_console_to_ops} onToggle={handleToggle} description="Ops see console output in-game" disabled={fieldOff('broadcast_console_to_ops', lockOptions)} />
-            <ToggleRow label="Enable Status" name="enable_status" value={formData.enable_status} onToggle={handleToggle} description="Reply to Minecraft server list pings" disabled={fieldOff('enable_status', lockOptions)} />
-            <ToggleRow label="Enable Query" name="enable_query" value={formData.enable_query} onToggle={handleToggle} description="Enable GameSpy query protocol" disabled={fieldOff('enable_query', lockOptions)} />
-            <ToggleRow label="Enable RCON" name="enable_rcon" value={formData.enable_rcon} onToggle={handleToggle} description="Remote console protocol" disabled={fieldOff('enable_rcon', lockOptions)} />
-            <ToggleRow label="Sync Chunk Writes" name="sync_chunk_writes" value={formData.sync_chunk_writes} onToggle={handleToggle} description="Flush chunks synchronously" disabled={fieldOff('sync_chunk_writes', lockOptions)} />
-            <ToggleRow label="Prevent Proxy Connections" name="prevent_proxy_connections" value={formData.prevent_proxy_connections} onToggle={handleToggle} description="Reject connections through proxies" disabled={fieldOff('prevent_proxy_connections', lockOptions)} />
-            <ToggleRow label="Enforce Secure Profile" name="enforce_secure_profile" value={formData.enforce_secure_profile} onToggle={handleToggle} description="Require a Mojang signed player profile" disabled={fieldOff('enforce_secure_profile', lockOptions)} />
+            <ToggleRow label="Enable Cheats" name="enable_cheats" value={formData.enable_cheats} onToggle={handleToggle} description="Allow cheats and commands" disabled={fieldOff('enable_cheats')} />
+            <ToggleRow label="Server Authoritative" name="server_authoritative" value={formData.server_authoritative} onToggle={handleToggle} description="Server controls game logic" disabled={fieldOff('server_authoritative')} />
+            <ToggleRow label="Whitelist Mode" name="whitelist_mode" value={formData.whitelist_mode} onToggle={handleToggle} description="Only whitelisted players can join" disabled={fieldOff('whitelist_mode')} />
+            <ToggleRow label="Texture Pack Required" name="texture_pack_required" value={formData.texture_pack_required} onToggle={handleToggle} description="Players must accept texture packs" disabled={fieldOff('texture_pack_required')} />
+            <ToggleRow label="Auto Ice" name="auto_ice" value={formData.auto_ice} onToggle={handleToggle} description="Water freezes into ice" disabled={fieldOff('auto_ice')} />
+            <ToggleRow label="Natural Regeneration" name="natural_regeneration" value={formData.natural_regeneration} onToggle={handleToggle} description="Health regenerates over time" disabled={fieldOff('natural_regeneration')} />
+            <ToggleRow label="Online Mode" name="online_mode" value={formData.online_mode} onToggle={handleToggle} description={isJava ? 'Require a paid Minecraft Java account' : 'Require Xbox Live authentication'} disabled={fieldOff('online_mode')} />
+            <ToggleRow label="Remote Discovery" name="remote_discovery" value={formData.remote_discovery} onToggle={handleToggle} description="Show server in external listings" disabled={fieldOff('remote_discovery')} />
+            <ToggleRow label="Allow Third-Party Requests" name="allow_third_party_requests" value={formData.allow_third_party_requests} onToggle={handleToggle} description="Allow realms invites" disabled={fieldOff('allow_third_party_requests')} />
+            <ToggleRow label="Allow Third-Party Pictures" name="allow_third_party_pictures" value={formData.allow_third_party_pictures} onToggle={handleToggle} description="Allow skin data from third parties" disabled={fieldOff('allow_third_party_pictures')} />
+            <ToggleRow label="Require Secure Chat" name="require_secure_chat" value={formData.require_secure_chat} onToggle={handleToggle} description="Enforce chat signing" disabled={fieldOff('require_secure_chat')} />
+            <ToggleRow label="Server Authoritative Inventory" name="server_authoritative_inventory" value={formData.server_authoritative_inventory} onToggle={handleToggle} description="Server manages inventory" disabled={fieldOff('server_authoritative_inventory')} />
+            <ToggleRow label="Enable Player Data Init" name="enable_player_data_initialization" value={formData.enable_player_data_initialization} onToggle={handleToggle} description="Create player data on first join" disabled={fieldOff('enable_player_data_initialization')} />
+            <ToggleRow label="PvP" name="pvp" value={formData.pvp} onToggle={handleToggle} description="Players can damage each other" disabled={fieldOff('pvp')} />
+            <ToggleRow label="Allow Nether" name="allow_nether" value={formData.allow_nether} onToggle={handleToggle} description="Enable nether portals" disabled={fieldOff('allow_nether')} />
+            <ToggleRow label="Allow Flight" name="allow_flight" value={formData.allow_flight} onToggle={handleToggle} description="Allow survival flight without kicking" disabled={fieldOff('allow_flight')} />
+            <ToggleRow label="Enable Command Blocks" name="enable_command_block" value={formData.enable_command_block} onToggle={handleToggle} description="Command blocks can run" disabled={fieldOff('enable_command_block')} />
+            <ToggleRow label="Hardcore" name="hardcore" value={formData.hardcore} onToggle={handleToggle} description="Ban players on death" disabled={fieldOff('hardcore')} />
+            <ToggleRow label="Force Gamemode" name="force_gamemode" value={formData.force_gamemode} onToggle={handleToggle} description="Reset joining players to the server gamemode" disabled={fieldOff('force_gamemode')} />
+            <ToggleRow label="Spawn Animals" name="spawn_animals" value={formData.spawn_animals} onToggle={handleToggle} description="Animals spawn naturally" disabled={fieldOff('spawn_animals')} />
+            <ToggleRow label="Spawn Villagers" name="spawn_npcs" value={formData.spawn_npcs} onToggle={handleToggle} description="Villagers spawn" disabled={fieldOff('spawn_npcs')} />
+            <ToggleRow label="Spawn Monsters" name="spawn_monsters" value={formData.spawn_monsters} onToggle={handleToggle} description="Hostile mobs spawn" disabled={fieldOff('spawn_monsters')} />
+            <ToggleRow label="Generate Structures" name="generate_structures" value={formData.generate_structures} onToggle={handleToggle} description="Villages, strongholds, and other structures" disabled={fieldOff('generate_structures')} />
+            <ToggleRow label="Hide Online Players" name="hide_online_players" value={formData.hide_online_players} onToggle={handleToggle} description="Do not show player names in server list ping" disabled={fieldOff('hide_online_players')} />
+            <ToggleRow label="Enforce Whitelist" name="enforce_whitelist" value={formData.enforce_whitelist} onToggle={handleToggle} description="Kick players who are removed from the whitelist" disabled={fieldOff('enforce_whitelist')} />
+            <ToggleRow label="Require Resource Pack" name="require_resource_pack" value={formData.require_resource_pack} onToggle={handleToggle} description="Players must accept the server resource pack" disabled={fieldOff('require_resource_pack')} />
+            <ToggleRow label="Broadcast Console to Ops" name="broadcast_console_to_ops" value={formData.broadcast_console_to_ops} onToggle={handleToggle} description="Ops see console output in-game" disabled={fieldOff('broadcast_console_to_ops')} />
+            <ToggleRow label="Enable Status" name="enable_status" value={formData.enable_status} onToggle={handleToggle} description="Reply to Minecraft server list pings" disabled={fieldOff('enable_status')} />
+            <ToggleRow label="Enable Query" name="enable_query" value={formData.enable_query} onToggle={handleToggle} description="Enable GameSpy query protocol" disabled={fieldOff('enable_query')} />
+            <ToggleRow label="Enable RCON" name="enable_rcon" value={formData.enable_rcon} onToggle={handleToggle} description="Remote console protocol" disabled={fieldOff('enable_rcon')} />
+            <ToggleRow label="Sync Chunk Writes" name="sync_chunk_writes" value={formData.sync_chunk_writes} onToggle={handleToggle} description="Flush chunks synchronously" disabled={fieldOff('sync_chunk_writes')} />
+            <ToggleRow label="Prevent Proxy Connections" name="prevent_proxy_connections" value={formData.prevent_proxy_connections} onToggle={handleToggle} description="Reject connections through proxies" disabled={fieldOff('prevent_proxy_connections')} />
+            <ToggleRow label="Enforce Secure Profile" name="enforce_secure_profile" value={formData.enforce_secure_profile} onToggle={handleToggle} description="Require a Mojang signed player profile" disabled={fieldOff('enforce_secure_profile')} />
 
           </div>
         </Section>
@@ -548,12 +549,12 @@ function ServerProperties() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {showPerm('bedrock') && (
               <>
-                <SelectField label="Default Player Permission" name="default_player_permission" value={formData.default_player_permission} onChange={handleChange} disabled={fieldOff('default_player_permission', lockPlayer)} options={[
+                <SelectField label="Default Player Permission" name="default_player_permission" value={formData.default_player_permission} onChange={handleChange} disabled={fieldOff('default_player_permission')} options={[
                   { value: 'visitor', label: 'Visitor' },
                   { value: 'member', label: 'Member' },
                   { value: 'operator', label: 'Operator' },
                 ]} />
-                <SelectField label="Default 1st Person" name="default_1st_person" value={String(formData.default_1st_person)} onChange={handleChange} disabled={fieldOff('default_1st_person', lockPlayer)} options={[
+                <SelectField label="Default 1st Person" name="default_1st_person" value={String(formData.default_1st_person)} onChange={handleChange} disabled={fieldOff('default_1st_person')} options={[
                   { value: '0', label: 'Off' },
                   { value: '1', label: 'On' },
                 ]} />
@@ -561,13 +562,13 @@ function ServerProperties() {
             )}
             {showPerm('java') && (
               <>
-                <SelectField label="Op Permission Level" name="op_permission_level" value={formData.op_permission_level} onChange={handleChange} disabled={fieldOff('op_permission_level', lockPlayer)} options={[
+                <SelectField label="Op Permission Level" name="op_permission_level" value={formData.op_permission_level} onChange={handleChange} disabled={fieldOff('op_permission_level')} options={[
                   { value: '1', label: '1 — Bypass spawn protection' },
                   { value: '2', label: '2 — Use command blocks / clear' },
                   { value: '3', label: '3 — Ban, op, and kick' },
                   { value: '4', label: '4 — All commands' },
                 ]} />
-                <SelectField label="Function Permission Level" name="function_permission_level" value={formData.function_permission_level} onChange={handleChange} disabled={fieldOff('function_permission_level', lockPlayer)} options={[
+                <SelectField label="Function Permission Level" name="function_permission_level" value={formData.function_permission_level} onChange={handleChange} disabled={fieldOff('function_permission_level')} options={[
                   { value: '1', label: '1' },
                   { value: '2', label: '2' },
                   { value: '3', label: '3' },
@@ -580,21 +581,21 @@ function ServerProperties() {
 
         <Section title="Java Network">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormField label="Network Compression Threshold" name="network_compression_threshold" value={formData.network_compression_threshold} onChange={handleChange} type="number" disabled={fieldOff('network_compression_threshold', lockOptions)} />
-            <FormField label="Entity Broadcast Range %" name="entity_broadcast_range_percentage" value={formData.entity_broadcast_range_percentage} onChange={handleChange} type="number" min="10" max="1000" disabled={fieldOff('entity_broadcast_range_percentage', lockOptions)} />
-            <FormField label="Query Port" name="query_port" value={formData.query_port} onChange={handleChange} type="number" min="1" max="65535" disabled={fieldOff('query_port', lockOptions)} />
-            <FormField label="RCON Port" name="rcon_port" value={formData.rcon_port} onChange={handleChange} type="number" min="1" max="65535" disabled={fieldOff('rcon_port', lockOptions)} />
-            <FormField label="RCON Password" name="rcon_password" value={formData.rcon_password} onChange={handleChange} type="text" disabled={fieldOff('rcon_password', lockOptions)} />
-            <FormField label="Resource Pack URL" name="resource_pack" value={formData.resource_pack} onChange={handleChange} type="text" disabled={fieldOff('resource_pack', lockOptions)} />
-            <FormField label="Resource Pack SHA-1" name="resource_pack_sha1" value={formData.resource_pack_sha1} onChange={handleChange} type="text" disabled={fieldOff('resource_pack_sha1', lockOptions)} />
-            <SelectField label="Level Type" name="level_type" value={formData.level_type} onChange={handleChange} disabled={fieldOff('level_type', lockOptions)} options={[
+            <FormField label="Network Compression Threshold" name="network_compression_threshold" value={formData.network_compression_threshold} onChange={handleChange} type="number" disabled={fieldOff('network_compression_threshold')} />
+            <FormField label="Entity Broadcast Range %" name="entity_broadcast_range_percentage" value={formData.entity_broadcast_range_percentage} onChange={handleChange} type="number" min="10" max="1000" disabled={fieldOff('entity_broadcast_range_percentage')} />
+            <FormField label="Query Port" name="query_port" value={formData.query_port} onChange={handleChange} type="number" min="1" max="65535" disabled={fieldOff('query_port')} />
+            <FormField label="RCON Port" name="rcon_port" value={formData.rcon_port} onChange={handleChange} type="number" min="1" max="65535" disabled={fieldOff('rcon_port')} />
+            <FormField label="RCON Password" name="rcon_password" value={formData.rcon_password} onChange={handleChange} type="text" disabled={fieldOff('rcon_password')} />
+            <FormField label="Resource Pack URL" name="resource_pack" value={formData.resource_pack} onChange={handleChange} type="text" disabled={fieldOff('resource_pack')} />
+            <FormField label="Resource Pack SHA-1" name="resource_pack_sha1" value={formData.resource_pack_sha1} onChange={handleChange} type="text" disabled={fieldOff('resource_pack_sha1')} />
+            <SelectField label="Level Type" name="level_type" value={formData.level_type} onChange={handleChange} disabled={fieldOff('level_type')} options={[
               { value: 'minecraft:normal', label: 'Normal' },
               { value: 'minecraft:flat', label: 'Superflat' },
               { value: 'minecraft:large_biomes', label: 'Large Biomes' },
               { value: 'minecraft:amplified', label: 'Amplified' },
 
             ]} />
-            <FormField label="Max World Size" name="max_world_size" value={formData.max_world_size} onChange={handleChange} type="number" min="1" disabled={fieldOff('max_world_size', lockOptions)} />
+            <FormField label="Max World Size" name="max_world_size" value={formData.max_world_size} onChange={handleChange} type="number" min="1" disabled={fieldOff('max_world_size')} />
           </div>
         </Section>
 
@@ -684,20 +685,20 @@ function Section({ title, children }) {
   );
 }
 
-function FormField({ label, name, value, onChange, type = 'text', disabled = false, ...props }) {
+function FormField({ label, name, value, onChange, type = 'text', disabled = false, title = '', ...props }) {
   return (
-    <div className={disabled ? 'opacity-50' : ''}>
+    <div className={disabled ? 'opacity-50' : ''} title={title}>
       <label className="block text-sm font-medium text-mc-text mb-2">{label}</label>
-      <input type={type} name={name} value={value} onChange={onChange} className="input" disabled={disabled} {...props} />
+      <input type={type} name={name} value={value} onChange={onChange} className="input" disabled={disabled} title={title} {...props} />
     </div>
   );
 }
 
-function SelectField({ label, name, value, onChange, options, disabled = false }) {
+function SelectField({ label, name, value, onChange, options, disabled = false, title = '' }) {
   return (
-    <div className={disabled ? 'opacity-50' : ''}>
+    <div className={disabled ? 'opacity-50' : ''} title={title}>
       <label className="block text-sm font-medium text-mc-text mb-2">{label}</label>
-      <select name={name} value={value} onChange={onChange} className="input" disabled={disabled}>
+      <select name={name} value={value} onChange={onChange} className="input" disabled={disabled} title={title}>
         {options.map(opt => (
           <option key={opt.value} value={opt.value}>{opt.label}</option>
         ))}
@@ -706,9 +707,9 @@ function SelectField({ label, name, value, onChange, options, disabled = false }
   );
 }
 
-function ToggleRow({ label, name, value, onToggle, description, disabled = false }) {
+function ToggleRow({ label, name, value, onToggle, description, disabled = false, title = '' }) {
   return (
-    <div className={`flex items-center justify-between p-3 bg-mc-darker rounded-lg ${disabled ? 'opacity-50' : ''}`}>
+    <div className={`flex items-center justify-between p-3 bg-mc-darker rounded-lg ${disabled ? 'opacity-50' : ''}`} title={title}>
       <div>
         <p className="text-sm font-medium text-white">{label}</p>
         <p className="text-xs text-mc-textMuted">{description}</p>
@@ -717,6 +718,7 @@ function ToggleRow({ label, name, value, onToggle, description, disabled = false
         type="button"
         onClick={() => { if (!disabled) onToggle(name); }}
         disabled={disabled}
+        title={title}
         className={`toggle ${value === 1 ? 'toggle-active' : 'toggle-inactive'} ${disabled ? 'cursor-not-allowed' : ''}`}
       >
         <span className={`toggle-thumb ${value === 1 ? 'translate-x-6' : 'translate-x-1'}`} />

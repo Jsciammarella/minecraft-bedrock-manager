@@ -80,7 +80,7 @@ function UserDetail() {
       }));
   }, [groups, form.groupIds]);
 
-  const { actions: actionCatalog, menu: menuCatalog } = useMemo(
+  const { actions: actionCatalog } = useMemo(
     () => splitPermissionCatalog(catalog),
     [catalog],
   );
@@ -96,12 +96,12 @@ function UserDetail() {
         if (passwordError) throw new Error(passwordError);
       }
       const payload = {};
-      if (can('users.change_name') || isAdmin) payload.fullName = form.fullName;
-      if (form.password && (can('users.change_password') || isAdmin)) payload.password = form.password;
-      if (can('users.change_group_membership') || isAdmin) payload.groupIds = form.groupIds;
-      if (can('users.change_user_permissions') || isAdmin) payload.userPermissions = form.userPermissions;
+      if (can('users.edit_name') || isAdmin) payload.fullName = form.fullName;
+      if (form.password && (can('users.reset_password') || isAdmin)) payload.password = form.password;
+      if (can('users.assign_groups') || isAdmin) payload.groupIds = form.groupIds;
+      if (can('users.assign_permissions') || isAdmin) payload.userPermissions = form.userPermissions;
       if (isAdmin) payload.isAdmin = form.isAdmin;
-      if (isAdmin || can('users.change_user_permissions')) {
+      if (isAdmin || can('users.link_player') || can('users.unlink_player')) {
         payload.playerId = form.playerId === '' ? null : Number(form.playerId);
       }
       await userManagementApi.updateUser(id, payload);
@@ -136,7 +136,7 @@ function UserDetail() {
   }
 
   const lastAdmin = Boolean(user.isLastAdmin);
-  const canEditPassword = isAdmin || can('users.change_password');
+  const canEditPassword = isAdmin || can('users.reset_password');
 
   return (
     <form onSubmit={handleSave} className="space-y-6">
@@ -171,7 +171,7 @@ function UserDetail() {
             <input
               className="input"
               value={form.fullName}
-              disabled={!isAdmin && !can('users.change_name')}
+              disabled={!isAdmin && !can('users.edit_name')}
               onChange={(e) => setForm((prev) => ({ ...prev, fullName: e.target.value }))}
             />
           </div>
@@ -205,7 +205,7 @@ function UserDetail() {
             <select
               className="input"
               value={form.playerId}
-              disabled={!isAdmin && !can('users.change_user_permissions')}
+              disabled={!isAdmin && !can('users.link_player') && !can('users.unlink_player')}
               onChange={(e) => setForm((prev) => ({ ...prev, playerId: e.target.value }))}
             >
               <option value="">None</option>
@@ -245,7 +245,7 @@ function UserDetail() {
           selectedIds={form.groupIds}
           searchPlaceholder="Search groups..."
           emptyText="No groups match this search."
-          disabled={!isAdmin && !can('users.change_group_membership')}
+          disabled={!isAdmin && !can('users.assign_groups')}
           onToggle={(groupId, checked) => {
             setForm((prev) => ({
               ...prev,
@@ -258,30 +258,6 @@ function UserDetail() {
       </div>
 
       <div className="card">
-        <h3 className="text-lg font-semibold text-white mb-1">Menu visibility</h3>
-        <p className="text-xs text-mc-textMuted mb-4">
-          Menu items are visible by default. Deny hides an item. Allow keeps it visible unless a group deny wins. Plugin menu items appear here when a plugin is installed.
-        </p>
-        <PermissionEditor
-          catalog={menuCatalog}
-          values={form.userPermissions}
-          assignmentKey="allowUser"
-          hideCategoryFilter
-          searchPlaceholder="Search menu items..."
-          emptyText="No menu items match this search."
-          disabled={user.isAdmin || (!isAdmin && !can('users.change_user_permissions'))}
-          onChange={(key, next) => {
-            setForm((prev) => {
-              const userPermissions = { ...prev.userPermissions };
-              if (!next) delete userPermissions[key];
-              else userPermissions[key] = next;
-              return { ...prev, userPermissions };
-            });
-          }}
-        />
-      </div>
-
-      <div className="card">
         <h3 className="text-lg font-semibold text-white mb-1">User permissions</h3>
         <p className="text-xs text-mc-textMuted mb-4">
           No selection inherits from groups. Allow grants this user the permission. Deny blocks it even if a group allows it. A group deny always wins.
@@ -289,8 +265,10 @@ function UserDetail() {
         <PermissionEditor
           catalog={actionCatalog}
           values={form.userPermissions}
+          inherited={user.inheritedPermissions}
+          effectiveKeys={user.permissions}
           assignmentKey="allowUser"
-          disabled={user.isAdmin || (!isAdmin && !can('users.change_user_permissions'))}
+          disabled={user.isAdmin || (!isAdmin && !can('users.assign_permissions'))}
           onChange={(key, next) => {
             setForm((prev) => {
               const userPermissions = { ...prev.userPermissions };

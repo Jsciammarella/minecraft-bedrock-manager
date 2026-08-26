@@ -653,6 +653,7 @@ class ServerManager {
   }
 
   async createBedrockConnect({ acceptConflict = false, restartMode = 'immediate' } = {}) {
+    require('./bedrockConnectPolicy').assertAvailable('create');
     if (this.getBedrockConnectServer()) {
       throw new Error('A Bedrock Connect server already exists');
     }
@@ -706,6 +707,11 @@ class ServerManager {
   async completePendingBedrockConnectIfNeeded(serverId) {
     const pending = this.getPendingBedrockConnect();
     if (!pending || Number(pending.occupantId) !== Number(serverId)) return null;
+    try {
+      if (!require('./bedrockConnectPolicy').isBedrockConnectAvailable()) return null;
+    } catch {
+      return null;
+    }
     this.setPendingBedrockConnect(null);
     if (this.getBedrockConnectServer()) return null;
     const occupant = this.getServer(serverId);
@@ -728,8 +734,8 @@ class ServerManager {
 
     const insert = db.prepare(`
       INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
-        server_description, server_motd, status, data_path, kind, ipv6_port)
-      VALUES (?, ?, ?, 0, 0, 'peaceful', 'survival', ?, ?, 'stopped', ?, 'bedrock_connect', ?)
+        server_description, server_motd, status, data_path, kind, ipv6_port, provider_id, capability_id)
+      VALUES (?, ?, ?, 0, 0, 'peaceful', 'survival', ?, ?, 'stopped', ?, 'bedrock_connect', ?, ?, ?)
     `);
     const result = insert.run(
       bedrockConnect.DISPLAY_NAME,
@@ -738,7 +744,9 @@ class ServerManager {
       'Console server list for Xbox, PlayStation, and Nintendo Switch',
       'Bedrock Connect',
       serverPath,
-      portRanges.DISCOVERY_IPV6
+      portRanges.DISCOVERY_IPV6,
+      'server-edition-bedrock-connect',
+      'bedrock-connect'
     );
     const serverId = result.lastInsertRowid;
     this.registerPort(serverId, BEDROCK_CONNECT_PORT, 'udp', 'ipv4');
@@ -1552,7 +1560,16 @@ done
   }
 
   async startBedrockConnect(server) {
-    return require('./bedrockConnectLifecycle').start(server);
+    require('./bedrockConnectPolicy').assertAvailable('start');
+    const result = await require('./bedrockConnectLifecycle').start(server);
+    try {
+      require('./pluginAudit').record('bedrock-connect.start', {
+        targetType: 'server',
+        targetId: String(server.id),
+        detail: { result: 'ok' },
+      });
+    } catch { /* ignore */ }
+    return result;
   }
 
   async startJavaServer(server) {
@@ -1770,7 +1787,15 @@ done
       throw new Error('Server is still being built');
     }
     if (this.isBedrockConnect(server)) {
-      return require('./bedrockConnectLifecycle').stop(server);
+      const result = await require('./bedrockConnectLifecycle').stop(server);
+      try {
+        require('./pluginAudit').record('bedrock-connect.stop', {
+          targetType: 'server',
+          targetId: String(server.id),
+          detail: { result: 'ok' },
+        });
+      } catch { /* ignore */ }
+      return result;
     }
     if (server.status === 'stopped') throw new Error('Server already stopped');
 
@@ -1811,7 +1836,16 @@ done
       require('./javaHostingPolicy').assertServerEditionAvailable('java', 'restart');
     }
     if (server && this.isBedrockConnect(server)) {
-      return require('./bedrockConnectLifecycle').restart(server);
+      require('./bedrockConnectPolicy').assertAvailable('restart');
+      const result = await require('./bedrockConnectLifecycle').restart(server);
+      try {
+        require('./pluginAudit').record('bedrock-connect.restart', {
+          targetType: 'server',
+          targetId: String(server.id),
+          detail: { result: 'ok' },
+        });
+      } catch { /* ignore */ }
+      return result;
     }
     await this.stopServer(serverId);
     await this.startServer(serverId);
@@ -1948,6 +1982,13 @@ done
     logger.info(`Deleted server: ${server.name}`);
     require('./bedrockConnectList').scheduleSync();
     if (wasBedrockConnect) {
+      try {
+        require('./pluginAudit').record('bedrock-connect.delete', {
+          targetType: 'server',
+          targetId: String(serverId),
+          detail: { name: server.name, result: 'ok' },
+        });
+      } catch { /* ignore */ }
       await this.restoreLanBroadcasts();
       await require('./dnsProxy').sync();
     }

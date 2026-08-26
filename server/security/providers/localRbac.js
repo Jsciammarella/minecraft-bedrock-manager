@@ -58,8 +58,8 @@ LocalRbacProvider.prototype.authorize = function authorize(principal, action, _r
   if (key === 'admin') return Boolean(principal.isAdmin);
 
   if (key === 'gateway:lifecycle') {
-    return auth().hasPermission(principal, 'servers.start')
-      && auth().hasPermission(principal, 'servers.stop');
+    return auth().hasPermission(principal, 'servers.start_java')
+      && auth().hasPermission(principal, 'servers.stop_java');
   }
 
   if (!auth().hasPermission(principal, key)) return false;

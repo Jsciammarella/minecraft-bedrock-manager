@@ -16,8 +16,8 @@ function GroupsList() {
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState(null);
 
-  const canCreate = isAdmin || can('users.add_groups');
-  const canToggle = isAdmin || can('users.change_group_permissions') || can('users.add_groups');
+  const canCreate = isAdmin || can('groups.create');
+  const canToggle = isAdmin || can('groups.activate') || can('groups.deactivate');
 
   const load = async () => {
     try {

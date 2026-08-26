@@ -334,7 +334,7 @@ function PlayerManagement() {
 
                 {/* Actions */}
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  {can('players.remove_whitelisted') && whitelistCount(player) > 0 ? (
+                  {can('players.remove_allowlist_all') && whitelistCount(player) > 0 ? (
                     <button
                       onClick={() => handleUnwhitelistAll(player)}
                       disabled={busyPlayerId === player.id}
@@ -355,7 +355,7 @@ function PlayerManagement() {
                       <Shield className="w-4 h-4" />
                     </span>
                   )}
-                  {can('players.ban_all') && (
+                  {(player.is_banned ? can('players.unban_all') : can('players.ban_all')) && (
                   <button
                     onClick={() => handleToggleBan(player)}
                     disabled={busyPlayerId === player.id}

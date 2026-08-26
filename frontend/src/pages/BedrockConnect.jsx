@@ -176,6 +176,7 @@ function BedrockConnectPage() {
   const [overrides, setOverrides] = useState([]);
   const [newHost, setNewHost] = useState('');
   const [newIpv4, setNewIpv4] = useState('');
+  const [unavailable, setUnavailable] = useState(null);
 
   const applyPayload = (data) => {
     setInstalled(Boolean(data.installed));
@@ -192,8 +193,13 @@ function BedrockConnectPage() {
   const load = async () => {
     try {
       const res = await bedrockConnectApi.get();
+      setUnavailable(null);
       applyPayload(res.data);
     } catch (err) {
+      if (err.response?.status === 409 || err.response?.data?.code === 'PLUGIN_CAPABILITY_DISABLED') {
+        setUnavailable(err.response?.data?.error || 'BedrockConnect is not enabled.');
+        return;
+      }
       setError(err.response?.data?.error || 'Failed to load Bedrock Connect settings');
     } finally {
       setLoading(false);
@@ -252,6 +258,31 @@ function BedrockConnectPage() {
         <div className="flex flex-col items-center gap-3">
           <Loader2 className="w-8 h-8 text-mc-accent animate-spin" />
           <p className="text-sm text-mc-textMuted">Loading Bedrock Connect...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (unavailable) {
+    return (
+      <div className="p-4 md:p-6 max-w-3xl mx-auto">
+        <div className="flex items-center gap-4 mb-8">
+          <div className="w-12 h-12 rounded-xl bg-mc-accent/10 flex items-center justify-center">
+            <Globe className="w-6 h-6 text-mc-accent" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-white">BedrockConnect</h1>
+            <p className="text-mc-textMuted mt-1">This feature is not available</p>
+          </div>
+        </div>
+        <div className="card text-center py-12">
+          <p className="text-lg text-white mb-2">BedrockConnect is unavailable</p>
+          <p className="text-sm text-mc-textMuted mb-6">
+            {unavailable} Configuration is preserved and will return if the plugin is enabled again.
+          </p>
+          <button type="button" onClick={() => navigate('/')} className="btn btn-primary">
+            Go to Dashboard
+          </button>
         </div>
       </div>
     );
@@ -344,8 +375,8 @@ function BedrockConnectPage() {
             <button
               type="button"
               onClick={() => setEnabled(value => !value)}
-              disabled={!can('bedrock_connect.enable_dns_proxy')}
-              className={`toggle ${enabled ? 'toggle-active' : 'toggle-inactive'} ${!can('bedrock_connect.enable_dns_proxy') ? 'opacity-50 cursor-not-allowed' : ''}`}
+              disabled={!can('bedrock_connect.dns.enable_proxy')}
+              className={`toggle ${enabled ? 'toggle-active' : 'toggle-inactive'} ${!can('bedrock_connect.dns.enable_proxy') ? 'opacity-50 cursor-not-allowed' : ''}`}
               aria-pressed={enabled}
             >
               <span className={`toggle-thumb ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
@@ -393,6 +424,7 @@ function BedrockConnectPage() {
                     next[index] = e.target.value;
                     setUpstreams(next);
                   }}
+                  disabled={!can('bedrock_connect.dns.set_upstream')}
                   className="input"
                   placeholder={index === 0 ? 'Host default' : 'Optional'}
                 />
@@ -431,6 +463,7 @@ function BedrockConnectPage() {
                         type="button"
                         className="btn btn-secondary text-xs"
                         onClick={() => addOverride(server.hostname, dns?.listenIp)}
+                        disabled={!can('bedrock_connect.dns.add_override')}
                       >
                         Override to this host
                       </button>
@@ -488,6 +521,7 @@ function BedrockConnectPage() {
                   type="button"
                   className="btn btn-secondary"
                   onClick={() => setOverrides(overrides.filter((_, i) => i !== index))}
+                  disabled={!can('bedrock_connect.dns.remove_override')}
                   title="Remove override"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -516,7 +550,7 @@ function BedrockConnectPage() {
               type="button"
               className="btn btn-secondary"
               onClick={() => addOverride(newHost, newIpv4)}
-              disabled={overrides.length >= maxOverrides}
+              disabled={overrides.length >= maxOverrides || !can('bedrock_connect.dns.add_override')}
             >
               <Plus className="w-4 h-4" />
               Add

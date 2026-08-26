@@ -1015,6 +1015,10 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   assert.equal(catalogFilterAvailability.listFilterAvailability().loaders.some((item) => item.id === 'broken'), false);
 
   const modsApp = require('express')();
+  modsApp.use((req, _res, next) => {
+    req.user = req.principal = { id: 1, username: 'test-admin', isAdmin: true, isActive: true };
+    next();
+  });
   modsApp.use('/api/mods', require('../server/routes/mods'));
   const modsServer = modsApp.listen(0);
   try {

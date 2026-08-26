@@ -60,7 +60,7 @@ function PlayerCombobox({ value, onChange, options, disabled, placeholder, onEnt
 function ServerUsers() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { can } = useAuth();
+  const { can, canAny } = useAuth();
   const [server, setServer] = useState(null);
   const [players, setPlayers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -74,7 +74,12 @@ function ServerUsers() {
   const isBC = server?.kind === 'bedrock_connect';
   const isRemote = server?.kind === 'remote';
   const isJava = server?.kind === 'java';
-  const accessLocked = isBC || isRemote || !can('servers.change_player_permissions');
+  const accessLocked = isBC || isRemote || !canAny(
+    'servers.player_permissions.set_visitor',
+    'servers.player_permissions.set_member',
+    'servers.player_permissions.set_operator',
+    'servers.player_permissions.reset',
+  );
   const customPlayers = players.filter((player) => Number(player.has_custom_permission) === 1);
   const showBedrockPerms = permissionFilter !== 'java';
   const showJavaPerms = permissionFilter !== 'bedrock';

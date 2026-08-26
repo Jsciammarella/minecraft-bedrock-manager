@@ -15,8 +15,18 @@
     "label": "File Catalog",
     "icon": "folder",
     "order": 42,
-    "page": "settings"
+    "page": "settings",
+    "permission": "catalog.file.configure"
   },
+  "permissions": [
+    {
+      "key": "catalog.file.configure",
+      "displayName": "Configure File catalog",
+      "description": "Enable and configure the file catalog location.",
+      "primaryCategory": "catalog",
+      "riskLevel": "elevated"
+    }
+  ],
   "backend": "backend.js",
   "capabilities": [
     "provider:catalog-source",

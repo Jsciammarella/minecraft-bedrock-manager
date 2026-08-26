@@ -6,12 +6,18 @@ function security() {
   return require('./runtime').getRuntime();
 }
 
-function deny(res, status, message) {
-  return res.status(status).json({ error: message });
+function deny(res, status, message, extra = {}) {
+  const body = { error: message };
+  if (extra.code) body.code = extra.code;
+  if (extra.permission) body.permission = extra.permission;
+  return res.status(status).json(body);
 }
 
 function fail(res, err) {
-  return deny(res, err.status || 403, err.message);
+  return deny(res, err.status || 403, err.message, {
+    code: err.code,
+    permission: err.permission,
+  });
 }
 
 function attachPrincipal(req, res, next) {
@@ -62,7 +68,10 @@ function requireAnyPermission(...keys) {
     const current = req.principal || req.user;
     if (!current) return deny(res, 401, 'Authentication required');
     if (keys.some((key) => security().authorize(current, key))) return next();
-    return deny(res, 403, 'You do not have permission to do that');
+    return deny(res, 403, 'You do not have permission to do that', {
+      code: 'PERMISSION_REQUIRED',
+      permission: keys[0],
+    });
   };
 }
 
@@ -103,11 +112,21 @@ function requireServerStart(req, res, next) {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return deny(res, 404, 'Server not found');
+    const javaHostingPolicy = require('../services/javaHostingPolicy');
+    const bedrockConnectPolicy = require('../services/bedrockConnectPolicy');
+    if (server.kind === 'bedrock_connect') {
+      bedrockConnectPolicy.assertAvailable('start');
+    } else {
+      javaHostingPolicy.assertServerVisible(server);
+    }
     assertPermission(req, catalog.startPermissionForKind(server.kind), server);
     req.server = server;
     next();
   } catch (err) {
-    return deny(res, err.status || 400, err.message);
+    if (err.code) {
+      return res.status(err.status || 409).json({ error: err.message, code: err.code, plugin: err.plugin });
+    }
+    return fail(res, err);
   }
 }
 
@@ -115,11 +134,21 @@ function requireServerStop(req, res, next) {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return deny(res, 404, 'Server not found');
+    const javaHostingPolicy = require('../services/javaHostingPolicy');
+    const bedrockConnectPolicy = require('../services/bedrockConnectPolicy');
+    if (server.kind === 'bedrock_connect') {
+      bedrockConnectPolicy.assertAvailable('stop');
+    } else {
+      javaHostingPolicy.assertServerVisible(server);
+    }
     assertPermission(req, catalog.stopPermissionForKind(server.kind), server);
     req.server = server;
     next();
   } catch (err) {
-    return deny(res, err.status || 400, err.message);
+    if (err.code) {
+      return res.status(err.status || 409).json({ error: err.message, code: err.code, plugin: err.plugin });
+    }
+    return fail(res, err);
   }
 }
 
@@ -127,12 +156,63 @@ function requireServerRestart(req, res, next) {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return deny(res, 404, 'Server not found');
-    assertPermission(req, catalog.startPermissionForKind(server.kind), server);
-    assertPermission(req, catalog.stopPermissionForKind(server.kind), server);
+    const javaHostingPolicy = require('../services/javaHostingPolicy');
+    const bedrockConnectPolicy = require('../services/bedrockConnectPolicy');
+    if (server.kind === 'bedrock_connect') {
+      bedrockConnectPolicy.assertAvailable('restart');
+      const restartKey = catalog.restartPermissionForKind(server.kind);
+      if (restartKey) assertPermission(req, restartKey, server);
+    } else {
+      javaHostingPolicy.assertServerVisible(server);
+      const restartKey = catalog.restartPermissionForKind(server.kind);
+      if (restartKey) assertPermission(req, restartKey, server);
+    }
     req.server = server;
     next();
   } catch (err) {
-    return deny(res, err.status || 400, err.message);
+    if (err.code) {
+      return res.status(err.status || 409).json({ error: err.message, code: err.code, plugin: err.plugin });
+    }
+    return fail(res, err);
+  }
+}
+
+function requireServerRestartWithWarning(req, res, next) {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return deny(res, 404, 'Server not found');
+    const javaHostingPolicy = require('../services/javaHostingPolicy');
+    const bedrockConnectPolicy = require('../services/bedrockConnectPolicy');
+    if (server.kind === 'bedrock_connect') {
+      bedrockConnectPolicy.assertAvailable('restart');
+    } else {
+      javaHostingPolicy.assertServerVisible(server);
+    }
+    assertPermission(req, 'servers.restart_with_warning', server);
+    req.server = server;
+    next();
+  } catch (err) {
+    if (err.code && err.code !== 'PERMISSION_REQUIRED') {
+      return res.status(err.status || 409).json({ error: err.message, code: err.code, plugin: err.plugin });
+    }
+    return fail(res, err);
+  }
+}
+
+function requireServerCancelRestart(req, res, next) {
+  try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return deny(res, 404, 'Server not found');
+    const javaHostingPolicy = require('../services/javaHostingPolicy');
+    if (server.kind !== 'bedrock_connect') javaHostingPolicy.assertServerVisible(server);
+    assertPermission(req, 'servers.cancel_scheduled_restart', server);
+    req.server = server;
+    next();
+  } catch (err) {
+    if (err.code && err.code !== 'PERMISSION_REQUIRED') {
+      return res.status(err.status || 409).json({ error: err.message, code: err.code, plugin: err.plugin });
+    }
+    return fail(res, err);
   }
 }
 
@@ -140,12 +220,31 @@ function requireServerUpdate(req, res, next) {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return deny(res, 404, 'Server not found');
-    const needed = catalog.requiredServerUpdatePermissions(server, req.body || {});
+    const javaHostingPolicy = require('../services/javaHostingPolicy');
+    const bedrockConnectPolicy = require('../services/bedrockConnectPolicy');
+    if (server.kind === 'bedrock_connect') {
+      bedrockConnectPolicy.assertAvailable('update');
+    } else {
+      javaHostingPolicy.assertServerVisible(server);
+    }
+    const needed = catalog.requiredServerUpdatePermissions(
+      server,
+      req.body || {},
+      catalog.currentSettingsSnapshot(server),
+    );
     for (const key of needed) assertPermission(req, key, server);
+    if (needed.length) {
+      require('../services/logger').info(
+        `Server ${server.id} settings changed by ${req.user?.username || 'unknown'}: ${needed.join(', ')}`,
+      );
+    }
     req.server = server;
     next();
   } catch (err) {
-    return deny(res, err.status || 400, err.message);
+    if (err.code) {
+      return res.status(err.status || 409).json({ error: err.message, code: err.code, plugin: err.plugin });
+    }
+    return fail(res, err);
   }
 }
 
@@ -173,6 +272,8 @@ module.exports = {
   requireServerStart,
   requireServerStop,
   requireServerRestart,
+  requireServerRestartWithWarning,
+  requireServerCancelRestart,
   requireServerUpdate,
   assertPermission,
   isPublicApiPath,

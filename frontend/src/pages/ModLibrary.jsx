@@ -25,13 +25,13 @@ const MCPEDL_WWW_PREFIX = 'https://www.mcpedl.com';
 function ModLibrary() {
   const navigate = useNavigate();
   const { servers, refresh } = useApi();
-  const { can } = useAuth();
+  const { can, canAny } = useAuth();
   const canUpload = can('library.upload');
-  const canDelete = can('library.delete');
-  const canChangeSettings = can('library.change_settings');
+  const canDelete = can('library.delete_entry');
+  const canChangeSettings = canAny('library.edit_metadata', 'library.add_file', 'library.remove_file');
   const canImportCurseforge = can('library.import_curseforge');
   const canImportMcpedl = can('library.import_mcpedl');
-  const canInstall = can('servers.add_mods');
+  const canInstall = can('servers.mods.install');
   const fileInputRef = useRef(null);
   const settingsImageRef = useRef(null);
 

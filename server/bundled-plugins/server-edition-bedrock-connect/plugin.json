@@ -1,0 +1,55 @@
+{
+  "id": "server-edition-bedrock-connect",
+  "name": "BedrockConnect",
+  "version": "1.0.0",
+  "author": "Minecraft Bedrock Manager",
+  "description": "First-party plugin that exposes BedrockConnect in the manager. Disabling stops BedrockConnect and DNS without deleting configuration.",
+  "pages": [
+    {
+      "id": "main",
+      "title": "BedrockConnect",
+      "renderer": "native-core",
+      "path": "/bedrock-connect"
+    }
+  ],
+  "menus": [
+    {
+      "id": "main",
+      "label": "BedrockConnect",
+      "icon": "globe",
+      "order": 65,
+      "page": "main",
+      "permission": "bedrock_connect.view"
+    }
+  ],
+  "permissions": [
+    { "key": "bedrock_connect.view", "displayName": "View BedrockConnect", "description": "View the BedrockConnect menu and main page", "primaryCategory": "bedrock-connect", "riskLevel": "read" },
+    { "key": "bedrock_connect.view_status", "displayName": "View BedrockConnect status", "description": "View runtime and health status", "primaryCategory": "bedrock-connect", "riskLevel": "read" },
+    { "key": "bedrock_connect.create", "displayName": "Create BedrockConnect", "description": "Create a BedrockConnect entry", "primaryCategory": "bedrock-connect", "riskLevel": "elevated" },
+    { "key": "bedrock_connect.start", "displayName": "Start BedrockConnect", "description": "Start BedrockConnect", "primaryCategory": "bedrock-connect", "riskLevel": "normal" },
+    { "key": "bedrock_connect.stop", "displayName": "Stop BedrockConnect", "description": "Stop BedrockConnect", "primaryCategory": "bedrock-connect", "riskLevel": "normal" },
+    { "key": "bedrock_connect.restart", "displayName": "Restart BedrockConnect", "description": "Restart BedrockConnect", "primaryCategory": "bedrock-connect", "riskLevel": "normal" },
+    { "key": "bedrock_connect.delete", "displayName": "Delete BedrockConnect", "description": "Explicitly delete a BedrockConnect configuration and its manager-owned data", "primaryCategory": "bedrock-connect", "riskLevel": "destructive" },
+    { "key": "bedrock_connect.change_ports", "displayName": "Change BedrockConnect ports", "description": "Change BedrockConnect listening and advertisement ports", "primaryCategory": "bedrock-connect", "riskLevel": "elevated" },
+    { "key": "bedrock_connect.change_settings", "displayName": "Change BedrockConnect settings", "description": "Change general BedrockConnect settings", "primaryCategory": "bedrock-connect", "riskLevel": "elevated" },
+    { "key": "bedrock_connect.dns.view", "displayName": "View DNS", "description": "View DNS status and configuration", "primaryCategory": "bedrock-connect", "subcategory": "dns", "riskLevel": "read" },
+    { "key": "bedrock_connect.dns.enable_proxy", "displayName": "Enable DNS proxy", "description": "Enable or disable DNS proxy functionality", "primaryCategory": "bedrock-connect", "subcategory": "dns", "riskLevel": "elevated" },
+    { "key": "bedrock_connect.dns.set_upstream", "displayName": "Set upstream DNS", "description": "Change upstream DNS resolvers", "primaryCategory": "bedrock-connect", "subcategory": "dns", "riskLevel": "elevated" },
+    { "key": "bedrock_connect.dns.add_override", "displayName": "Add DNS override", "description": "Add a DNS override", "primaryCategory": "bedrock-connect", "subcategory": "dns", "riskLevel": "elevated" },
+    { "key": "bedrock_connect.dns.edit_override", "displayName": "Edit DNS override", "description": "Edit a DNS override", "primaryCategory": "bedrock-connect", "subcategory": "dns", "riskLevel": "elevated" },
+    { "key": "bedrock_connect.dns.remove_override", "displayName": "Remove DNS override", "description": "Remove a DNS override", "primaryCategory": "bedrock-connect", "subcategory": "dns", "riskLevel": "elevated" }
+  ],
+  "backend": "backend.js",
+  "capabilities": [
+    "provider:server-edition"
+  ],
+  "providers": [
+    {
+      "type": "server-edition",
+      "id": "bedrock-connect",
+      "name": "BedrockConnect",
+      "edition": "bedrock-connect",
+      "kind": "bedrock_connect"
+    }
+  ]
+}

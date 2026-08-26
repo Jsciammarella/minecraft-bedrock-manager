@@ -151,92 +151,128 @@ function knownPermission(key) {
 
 function upsertPermissionDefs(perms) {
   const upsert = db.prepare(`
-    INSERT INTO permission_defs (key, name, description, category, allow_user, allow_group)
-    VALUES (@key, @name, @description, @category, 1, 1)
+    INSERT INTO permission_defs (
+      key, name, description, category, allow_user, allow_group,
+      display_name, primary_category, subcategory, source, plugin_id, risk_level,
+      assignable_to_users, assignable_to_groups, active, deprecated, schema_version,
+      created_at, updated_at
+    ) VALUES (
+      @key, @name, @description, @category, @allowUser, @allowGroup,
+      @displayName, @primaryCategory, @subcategory, @source, @pluginId, @riskLevel,
+      @assignableToUsers, @assignableToGroups, @active, @deprecated, @schemaVersion,
+      @createdAt, @updatedAt
+    )
     ON CONFLICT(key) DO UPDATE SET
       name = excluded.name,
       description = excluded.description,
-      category = excluded.category
+      category = excluded.category,
+      display_name = excluded.display_name,
+      primary_category = excluded.primary_category,
+      subcategory = excluded.subcategory,
+      source = excluded.source,
+      plugin_id = excluded.plugin_id,
+      risk_level = excluded.risk_level,
+      assignable_to_users = excluded.assignable_to_users,
+      assignable_to_groups = excluded.assignable_to_groups,
+      allow_user = CASE WHEN excluded.assignable_to_users = 0 THEN 0 ELSE permission_defs.allow_user END,
+      allow_group = CASE WHEN excluded.assignable_to_groups = 0 THEN 0 ELSE permission_defs.allow_group END,
+      active = excluded.active,
+      deprecated = excluded.deprecated,
+      schema_version = excluded.schema_version,
+      updated_at = excluded.updated_at
   `);
   const tx = db.transaction(() => {
-    for (const perm of perms) upsert.run(perm);
+    const stamp = nowIso();
+    for (const perm of perms) {
+      const deprecated = Boolean(perm.deprecated);
+      const assignableUsers = deprecated ? 0 : (perm.assignableToUsers === false ? 0 : 1);
+      const assignableGroups = deprecated ? 0 : (perm.assignableToGroups === false ? 0 : 1);
+      const displayName = perm.displayName || perm.name || perm.key;
+      upsert.run({
+        key: perm.key,
+        name: displayName,
+        description: perm.description || '',
+        category: perm.primaryCategory || perm.category || 'plugin',
+        allowUser: assignableUsers,
+        allowGroup: assignableGroups,
+        displayName,
+        primaryCategory: perm.primaryCategory || perm.category || 'plugin',
+        subcategory: perm.subcategory || null,
+        source: perm.source || 'core',
+        pluginId: perm.pluginId || null,
+        riskLevel: perm.riskLevel || 'normal',
+        assignableToUsers: assignableUsers,
+        assignableToGroups: assignableGroups,
+        active: deprecated ? 0 : (perm.active === false ? 0 : 1),
+        deprecated: deprecated ? 1 : 0,
+        schemaVersion: perm.schemaVersion || catalog.CATALOG_SCHEMA_VERSION || 2,
+        createdAt: stamp,
+        updatedAt: stamp,
+      });
+    }
   });
   tx();
 }
 
 function ensurePermissionRows() {
-  upsertPermissionDefs(catalog.PERMISSIONS);
+  upsertPermissionDefs([
+    ...catalog.CORE_PERMISSIONS,
+    ...catalog.PLUGIN_OWNED_PERMISSIONS,
+    ...catalog.DEPRECATED_PERMISSIONS,
+  ]);
 }
 
 function seedUnusedDefaultGroupPerms() {
   const insertAllow = db.prepare(`
-    INSERT OR IGNORE INTO group_permissions (group_id, permission_key, value)
-    VALUES (?, ?, 'allow')
+    INSERT OR IGNORE INTO group_permissions (group_id, permission_key, value, assignment_origin, created_at, updated_at)
+    VALUES (?, ?, 'allow', 'system_default', ?, ?)
   `);
-  const insertDeny = db.prepare(`
-    INSERT OR IGNORE INTO group_permissions (group_id, permission_key, value)
-    VALUES (?, ?, 'deny')
-  `);
-  const find = db.prepare('SELECT id FROM groups WHERE slug = ? OR name = ?');
   const countPerms = db.prepare('SELECT COUNT(*) AS n FROM group_permissions WHERE group_id = ?');
-  const assigned = new Set([
-    ...db.prepare('SELECT DISTINCT permission_key AS k FROM group_permissions').all().map((row) => row.k),
-    ...db.prepare('SELECT DISTINCT permission_key AS k FROM user_permissions').all().map((row) => row.k),
-  ]);
-  const keys = listedPermissionKeys();
-  const unusedKeys = keys.filter((key) => !assigned.has(key));
-  const allowSet = new Set(catalog.READ_ONLY_MENU_ALLOW);
-
-  for (const def of catalog.DEFAULT_GROUPS) {
-    const row = find.get(def.slug, def.name);
+  const stamp = nowIso();
+  for (const def of catalog.SYSTEM_GROUPS) {
+    const row = db.prepare(`
+      SELECT id FROM groups WHERE system_key = ? OR slug = ?
+    `).get(def.systemKey, def.slug);
     if (!row) continue;
     const empty = countPerms.get(row.id).n === 0;
+    const keys = catalog.bundleKeysFor(def.systemKey);
     if (empty) {
-      for (const key of def.keys) insertAllow.run(row.id, key);
-      if (def.slug === 'read-only') {
-        for (const key of keys) {
-          if (catalog.isMenuPermission(key) && !allowSet.has(key)) insertDeny.run(row.id, key);
-        }
-      }
+      for (const key of keys) insertAllow.run(row.id, key, stamp, stamp);
+      db.prepare('UPDATE groups SET defaults_version = ? WHERE id = ?').run(catalog.DEFAULTS_VERSION, row.id);
       continue;
     }
-    for (const key of unusedKeys) {
-      if (def.slug === 'administrators') {
-        insertAllow.run(row.id, key);
-        continue;
-      }
-      if (def.slug === 'standard') {
-        if (
-          def.keys.includes(key)
-          || catalog.isMenuPermission(key)
-          || catalog.isPluginPermission(key)
-          || key === 'plugins.upload'
-        ) {
-          insertAllow.run(row.id, key);
-        }
-        continue;
-      }
-      if (def.slug === 'read-only' && catalog.isMenuPermission(key) && !allowSet.has(key)) {
-        insertDeny.run(row.id, key);
-      }
+    if (def.systemKey !== 'administrators') continue;
+    const assigned = new Set(
+      db.prepare('SELECT permission_key AS k FROM group_permissions WHERE group_id = ?')
+        .all(row.id)
+        .map((item) => item.k),
+    );
+    for (const key of keys) {
+      if (assigned.has(key) || catalog.isDeprecatedPermission(key)) continue;
+      insertAllow.run(row.id, key, stamp, stamp);
     }
   }
 }
 
 function ensureDefaultGroups() {
   const insertGroup = db.prepare(`
-    INSERT INTO groups (name, slug, is_active)
-    VALUES (?, ?, 1)
+    INSERT INTO groups (name, slug, is_active, is_system, system_key, defaults_version, created_at, updated_at)
+    VALUES (?, ?, 1, 1, ?, ?, ?, ?)
   `);
-  const find = db.prepare('SELECT id FROM groups WHERE slug = ? OR name = ?');
-
-  for (const def of catalog.DEFAULT_GROUPS) {
-    let row = find.get(def.slug, def.name);
+  const stamp = nowIso();
+  for (const def of catalog.SYSTEM_GROUPS) {
+    const row = db.prepare(`
+      SELECT id FROM groups WHERE system_key = ? OR slug = ? OR name = ? COLLATE NOCASE
+    `).get(def.systemKey, def.slug, def.name);
     if (!row) {
-      insertGroup.run(def.name, def.slug);
+      insertGroup.run(def.name, def.slug, def.systemKey, catalog.DEFAULTS_VERSION, stamp, stamp);
+    } else {
+      db.prepare(`
+        UPDATE groups SET is_system = 1, system_key = COALESCE(NULLIF(system_key, ''), ?)
+        WHERE id = ?
+      `).run(def.systemKey, row.id);
     }
   }
-  seedUnusedDefaultGroupPerms();
 }
 
 function syncDynamicPermissions() {
@@ -250,6 +286,28 @@ function syncDynamicPermissions() {
     ? pluginHost.getDynamicPermissions()
     : [];
   if (dynamic.length) upsertPermissionDefs(dynamic);
+  try {
+    const plugins = pluginHost.getPlugins() || [];
+    if (plugins.length) {
+      const stamp = nowIso();
+      db.prepare(`
+        UPDATE permission_defs
+        SET active = 0, updated_at = ?
+        WHERE IFNULL(plugin_id, '') != '' AND deprecated = 0
+      `).run(stamp);
+      const setActive = db.prepare(`
+        UPDATE permission_defs
+        SET active = 1, updated_at = ?
+        WHERE plugin_id = ? AND deprecated = 0
+      `);
+      for (const plugin of plugins) {
+        if (!plugin?.id || plugin.enabled === false) continue;
+        setActive.run(stamp, plugin.id);
+      }
+    }
+  } catch {
+    /* plugin list optional during startup */
+  }
   const keep = new Set([
     ...catalog.ALL_KEYS,
     ...dynamic.map((item) => item.key),
@@ -271,6 +329,19 @@ function syncDynamicPermissions() {
 function ensureSeed() {
   ensurePermissionRows();
   ensureDefaultGroups();
+  try {
+    require('./permissionCatalogMigration').migrate();
+  } catch (err) {
+    const logger = require('./logger');
+    logger.warn(`Permission catalog migration failed: ${err.message}`);
+  }
+  try {
+    require('./bedrockConnectPermissionMigration').migrate();
+  } catch (err) {
+    const logger = require('./logger');
+    logger.warn(`BedrockConnect permission migration failed: ${err.message}`);
+  }
+  seedUnusedDefaultGroupPerms();
 }
 
 function needsAdministratorBootstrap() {
@@ -317,12 +388,14 @@ function countAdmins({ excludeUserId, onlyActive = false } = {}) {
 }
 
 function permissionFlags() {
-  const rows = db.prepare('SELECT key, allow_user, allow_group FROM permission_defs').all();
+  const rows = db.prepare('SELECT key, allow_user, allow_group, active, deprecated FROM permission_defs').all();
   const map = {};
   for (const row of rows) {
     map[row.key] = {
       allowUser: row.allow_user === 1,
       allowGroup: row.allow_group === 1,
+      active: row.active !== 0,
+      deprecated: row.deprecated === 1,
     };
   }
   return map;
@@ -339,7 +412,7 @@ function groupPermissionMap(groupIds, flags) {
   `).all(...groupIds);
   for (const row of rows) {
     const flag = flags[row.permission_key];
-    if (flag && flag.allowGroup === false) continue;
+    if (flag && flag.allowGroup === false && !flag.deprecated) continue;
     if (row.value === 'deny') result[row.permission_key] = 'deny';
     else if (row.value === 'allow' && result[row.permission_key] !== 'deny') {
       result[row.permission_key] = 'allow';
@@ -355,10 +428,19 @@ function userPermissionMap(userId, flags) {
   const result = {};
   for (const row of rows) {
     const flag = flags[row.permission_key];
-    if (flag && flag.allowUser === false) continue;
+    if (flag && flag.allowUser === false && !flag.deprecated) continue;
     result[row.permission_key] = row.value;
   }
   return result;
+}
+
+function assignmentValue(key, map) {
+  if (map[key] === 'deny') return 'deny';
+  const aliases = typeof catalog.legacyKeysFor === 'function' ? catalog.legacyKeysFor(key) : [];
+  if (aliases.some((alias) => map[alias] === 'deny')) return 'deny';
+  if (map[key] === 'allow') return 'allow';
+  if (aliases.some((alias) => map[alias] === 'allow')) return 'allow';
+  return undefined;
 }
 
 function evaluatePermissions(userRow, groups) {
@@ -373,8 +455,8 @@ function evaluatePermissions(userRow, groups) {
   const groupMap = groupPermissionMap(activeGroupIds, flags);
   const userMap = userPermissionMap(userRow.id, flags);
   for (const key of keys) {
-    const groupVal = groupMap[key];
-    const userVal = userMap[key];
+    const groupVal = assignmentValue(key, groupMap);
+    const userVal = assignmentValue(key, userMap);
     if (groupVal === 'deny') {
       granted[key] = false;
       continue;
@@ -383,9 +465,17 @@ function evaluatePermissions(userRow, groups) {
       granted[key] = false;
       continue;
     }
-    granted[key] = groupVal === 'allow'
-      || userVal === 'allow'
-      || catalog.isMenuPermission(key);
+    const def = catalog.permissionByKey(key);
+    if (def && def.active === false && !def.deprecated) {
+      granted[key] = false;
+      continue;
+    }
+    const flagsForKey = flags[key];
+    if (flagsForKey && flagsForKey.active === false) {
+      granted[key] = false;
+      continue;
+    }
+    granted[key] = groupVal === 'allow' || userVal === 'allow';
   }
   return granted;
 }
@@ -426,12 +516,48 @@ function publicUser(row, { includePermissions = false, includeSensitive = false 
   };
   if (includePermissions) {
     const granted = evaluatePermissions(row, groups);
-    payload.permissions = listedPermissionKeys().filter((key) => granted[key]);
+    const effective = new Set();
+    for (const key of listedPermissionKeys()) {
+      const meta = catalog.permissionByKey(key) || {};
+      if (meta.deprecated) {
+        if (granted[key]) {
+          for (const next of catalog.replacementKeysFor(key)) {
+            if (granted[next] !== false) effective.add(next);
+          }
+        }
+        continue;
+      }
+      if (granted[key]) effective.add(key);
+    }
+    payload.permissions = [...effective];
   }
   if (includeSensitive) {
     payload.userPermissions = {};
     const rows = db.prepare('SELECT permission_key, value FROM user_permissions WHERE user_id = ?').all(row.id);
     for (const item of rows) payload.userPermissions[item.permission_key] = item.value;
+    const inherited = {};
+    const flags = permissionFlags();
+    const groupMap = groupPermissionMap(groups.filter((g) => g.is_active === 1).map((g) => g.id), flags);
+    const groupRows = groups.length
+      ? db.prepare(`
+          SELECT g.name, gp.permission_key, gp.value
+          FROM group_permissions gp
+          JOIN groups g ON g.id = gp.group_id
+          WHERE gp.group_id IN (${groups.map(() => '?').join(',')})
+        `).all(...groups.map((g) => g.id))
+      : [];
+    const sources = {};
+    for (const item of groupRows) {
+      if (!sources[item.permission_key]) sources[item.permission_key] = [];
+      sources[item.permission_key].push({ group: item.name, effect: item.value });
+    }
+    for (const [key, value] of Object.entries(groupMap)) {
+      inherited[key] = {
+        effect: value,
+        sources: sources[key] || [],
+      };
+    }
+    payload.inheritedPermissions = inherited;
   }
   return payload;
 }
@@ -448,13 +574,18 @@ function hasPermission(user, key) {
   if (!user || user.isActive === false) return false;
   if (user.isAdmin) return true;
   const perms = user.permissions || [];
-  return perms.includes(key);
+  const aliases = typeof catalog.permissionAliases === 'function'
+    ? catalog.permissionAliases(key)
+    : [key];
+  return aliases.some((item) => perms.includes(item));
 }
 
 function canAccessUserManagement(user) {
   if (!user) return false;
   if (user.isAdmin) return true;
-  return catalog.USER_MANAGEMENT_KEYS.some((key) => hasPermission(user, key));
+  return catalog.USER_MANAGEMENT_KEYS
+    .filter((key) => !String(key).startsWith('account.'))
+    .some((key) => hasPermission(user, key));
 }
 
 function listUsers() {
@@ -603,19 +734,32 @@ function createUser(data, actor) {
   return publicUser(createUserRecord(data), { includePermissions: true, includeSensitive: true });
 }
 
+function expandAssignmentKeys(key) {
+  if (catalog.isDeprecatedPermission(key)) {
+    const next = catalog.replacementKeysFor(key).filter((item) => item && knownPermission(item));
+    return next.length ? next : [];
+  }
+  return knownPermission(key) ? [key] : [];
+}
+
 function replaceUserPermissions(userId, permissions) {
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM user_permissions WHERE user_id = ?').run(userId);
     const insert = db.prepare(`
-      INSERT INTO user_permissions (user_id, permission_key, value)
-      VALUES (?, ?, ?)
+      INSERT INTO user_permissions (user_id, permission_key, value, assignment_origin, created_at, updated_at)
+      VALUES (?, ?, ?, 'manual', ?, ?)
     `);
     const flags = permissionFlags();
+    const stamp = nowIso();
+    const seen = new Set();
     for (const [key, value] of Object.entries(permissions || {})) {
-      if (!knownPermission(key)) continue;
       if (value !== 'allow' && value !== 'deny') continue;
-      if (flags[key] && flags[key].allowUser === false) continue;
-      insert.run(userId, key, value);
+      for (const target of expandAssignmentKeys(key)) {
+        if (seen.has(target)) continue;
+        if (flags[target] && flags[target].allowUser === false) continue;
+        seen.add(target);
+        insert.run(userId, target, value, stamp, stamp);
+      }
     }
   });
   tx();
@@ -746,7 +890,11 @@ function publicGroup(row, { includePermissions = false, includeUsers = false } =
     id: row.id,
     name: row.name,
     slug: row.slug,
+    description: row.description || '',
     isActive: row.is_active === 1,
+    isSystem: row.is_system === 1,
+    systemKey: row.system_key || null,
+    defaultsVersion: row.defaults_version || 0,
     userCount: row.user_count != null
       ? row.user_count
       : db.prepare('SELECT COUNT(*) AS n FROM user_groups WHERE group_id = ?').get(row.id).n,
@@ -813,14 +961,19 @@ function replaceGroupPermissions(groupId, permissions) {
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM group_permissions WHERE group_id = ?').run(groupId);
     const insert = db.prepare(`
-      INSERT INTO group_permissions (group_id, permission_key, value)
-      VALUES (?, ?, ?)
+      INSERT INTO group_permissions (group_id, permission_key, value, assignment_origin, created_at, updated_at)
+      VALUES (?, ?, ?, 'manual', ?, ?)
     `);
+    const stamp = nowIso();
+    const seen = new Set();
     for (const [key, value] of Object.entries(permissions || {})) {
-      if (!knownPermission(key)) continue;
       if (value !== 'allow' && value !== 'deny') continue;
-      if (flags[key] && flags[key].allowGroup === false) continue;
-      insert.run(groupId, key, value);
+      for (const target of expandAssignmentKeys(key)) {
+        if (seen.has(`${target}:${value}`)) continue;
+        if (flags[target] && flags[target].allowGroup === false) continue;
+        seen.add(`${target}:${value}`);
+        insert.run(groupId, target, value, stamp, stamp);
+      }
     }
   });
   tx();
@@ -858,23 +1011,45 @@ function updateGroup(id, data) {
 function deleteGroup(id) {
   const row = db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
   if (!row) throw Object.assign(new Error('Group not found'), { status: 404 });
+  if (row.is_system === 1) {
+    throw Object.assign(new Error('Built-in groups cannot be deleted'), { status: 400 });
+  }
   db.prepare('DELETE FROM groups WHERE id = ?').run(id);
   return { success: true };
 }
 
-function listPermissionDefs() {
+function listPermissionDefs({ includeDeprecated = false } = {}) {
   return db.prepare(`
-    SELECT key, name, description, category, allow_user, allow_group
+    SELECT key, name, description, category, allow_user, allow_group,
+      display_name, primary_category, subcategory, source, plugin_id, risk_level,
+      assignable_to_users, assignable_to_groups, active, deprecated, schema_version
     FROM permission_defs
-    ORDER BY category, name
-  `).all().map((row) => ({
-    key: row.key,
-    name: row.name,
-    description: row.description,
-    category: row.category,
-    allowUser: row.allow_user === 1,
-    allowGroup: row.allow_group === 1,
-  }));
+    ORDER BY COALESCE(primary_category, category), COALESCE(display_name, name)
+  `).all().flatMap((row) => {
+    const meta = catalog.permissionByKey(row.key) || {};
+    if (row.deprecated === 1 && !includeDeprecated && !meta.deprecated) return [];
+    if ((meta.deprecated || row.deprecated === 1) && !includeDeprecated) return [];
+    return [{
+      key: row.key,
+      name: row.display_name || row.name,
+      displayName: row.display_name || row.name,
+      description: row.description,
+      category: row.primary_category || row.category,
+      primaryCategory: row.primary_category || row.category,
+      subcategory: row.subcategory || meta.subcategory || null,
+      allowUser: row.allow_user === 1,
+      allowGroup: row.allow_group === 1,
+      assignableToUsers: row.assignable_to_users === 1,
+      assignableToGroups: row.assignable_to_groups === 1,
+      pluginId: row.plugin_id || meta.pluginId || null,
+      source: row.source || meta.source || 'core',
+      sourceLabel: meta.sourceLabel || (row.source === 'first-party-plugin' ? 'First-party plugin' : row.source === 'third-party-plugin' ? 'Third-party plugin' : 'Core'),
+      riskLevel: row.risk_level || meta.riskLevel || 'normal',
+      active: row.active !== 0,
+      deprecated: row.deprecated === 1 || Boolean(meta.deprecated),
+      schemaVersion: row.schema_version || meta.schemaVersion || catalog.CATALOG_SCHEMA_VERSION,
+    }];
+  });
 }
 
 function updatePermissionDef(key, { allowUser, allowGroup }) {
@@ -1027,4 +1202,5 @@ module.exports = {
   syncDynamicPermissions,
   needsAdministratorBootstrap,
   bootstrapAdministrator,
+  resetSystemGroupDefaults: (...args) => require('./permissionCatalogMigration').resetSystemGroupDefaults(...args),
 };

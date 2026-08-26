@@ -84,6 +84,13 @@ router.put('/password', attachPrincipal, (req, res) => {
   if (!security.supports('passwordManagement')) {
     return res.status(404).json({ error: 'Password management is not available' });
   }
+  if (!req.user?.isAdmin && !security.hasPermission(req.user, 'account.change_own_password')) {
+    return res.status(403).json({
+      error: 'You do not have permission to do that',
+      code: 'PERMISSION_REQUIRED',
+      permission: 'account.change_own_password',
+    });
+  }
   try {
     const { currentPassword, newPassword } = req.body || {};
     const row = security.provider.getUserRow(req.user.id);

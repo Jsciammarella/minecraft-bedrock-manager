@@ -12,8 +12,9 @@ function CreateServer() {
   const navigate = useNavigate();
   const { refresh, servers } = useApi();
   const { can } = useAuth();
-  const canCreateLocal = can('servers.create');
+  const canCreateLocal = can('servers.create_bedrock');
   const canCreateRemote = can('servers.create_remote');
+  const canCreateJava = can('servers.create_java');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -48,9 +49,9 @@ function CreateServer() {
   const [ports, setPorts] = useState({ used: [], available: [] });
 
   useEffect(() => {
-    if (!canCreateLocal && canCreateRemote) setServerKind('remote');
-    if (canCreateLocal && !canCreateRemote && serverKind === 'remote') setServerKind('bedrock');
-  }, [canCreateLocal, canCreateRemote, serverKind]);
+    if (!canCreateLocal && !canCreateJava && canCreateRemote) setServerKind('remote');
+    if ((canCreateLocal || canCreateJava) && !canCreateRemote && serverKind === 'remote') setServerKind('bedrock');
+  }, [canCreateLocal, canCreateJava, canCreateRemote, serverKind]);
 
   useEffect(() => {
     loadPorts();
@@ -337,17 +338,25 @@ function CreateServer() {
             {[
               { id: 'remote', label: 'Remote', disabled: remoteCount >= MAX_REMOTE_SERVERS && !remote },
               ...editions.filter((edition) => edition.id === 'java').map((edition) => ({ id: edition.id, label: edition.label })),
-              ...editions.filter((edition) => edition.id !== 'java').map((edition) => ({ id: edition.id, label: edition.label })),
+              ...editions.filter((edition) => edition.id !== 'java' && edition.createSurface !== 'dashboard').map((edition) => ({ id: edition.id, label: edition.label })),
             ].map((option) => (
               <button
                 key={option.id}
                 type="button"
                 role="radio"
                 aria-checked={serverKind === option.id}
-                disabled={Boolean(option.disabled) || (option.id === 'remote' ? !canCreateRemote : !canCreateLocal)}
+                disabled={Boolean(option.disabled) || (
+                  option.id === 'remote' ? !canCreateRemote
+                    : option.id === 'java' ? !canCreateJava
+                      : !canCreateLocal
+                )}
                 onClick={() => selectServerKind(option.id)}
                 className={`btn ${serverKind === option.id ? 'btn-primary' : 'btn-secondary'} ${
-                  (option.disabled || (option.id === 'remote' ? !canCreateRemote : !canCreateLocal)) ? 'opacity-50 cursor-not-allowed' : ''
+                  (option.disabled || (
+                    option.id === 'remote' ? !canCreateRemote
+                      : option.id === 'java' ? !canCreateJava
+                        : !canCreateLocal
+                  )) ? 'opacity-50 cursor-not-allowed' : ''
                 }`}
 
               >

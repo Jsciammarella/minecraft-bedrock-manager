@@ -368,8 +368,11 @@ function runSecurityProviderTests() {
     const javaPerms = catalog.requiredServerUpdatePermissions(
       { kind: 'java' },
       { pvp: true, simulation_distance: 8 },
+      { pvp: false, simulation_distance: 10 },
     );
-    assert.ok(javaPerms.includes('servers.change_java_settings'));
+    assert.ok(javaPerms.includes('servers.java.pvp'));
+    assert.ok(javaPerms.includes('servers.java.simulation_distance'));
+    assert.ok(!javaPerms.includes('servers.change_java_settings'));
 
     runNoAuthIndependenceTests();
     runMissingRbacFailsClosed();
@@ -386,27 +389,27 @@ async function runCatalogSettingsPermissionTests() {
   try {
     assert.equal(
       catalogSettingsPermissions.permissionFor('catalog-curseforge', 'save'),
-      'catalog.set_curseforge_key',
+      'catalog.curseforge.configure',
     );
     assert.equal(
       catalogSettingsPermissions.permissionFor('catalog-curseforge', 'test-connection'),
-      'catalog.set_curseforge_key',
+      'catalog.curseforge.configure',
     );
     assert.equal(
       catalogSettingsPermissions.permissionFor('catalog-git', 'sync-now'),
-      'catalog.enable_git',
+      'catalog.git.sync',
     );
     assert.equal(
       catalogSettingsPermissions.permissionFor('catalog-git', 'download-template'),
-      'catalog.download_mods',
+      'catalog.download_to_library',
     );
     assert.equal(
       catalogSettingsPermissions.permissionFor('catalog-file', 'test-smb-path'),
-      'catalog.enable_file',
+      'catalog.file.configure',
     );
     assert.equal(
       catalogSettingsPermissions.permissionFor('catalog-file', 'download-template'),
-      'catalog.download_mods',
+      'catalog.download_to_library',
     );
     assert.equal(catalogSettingsPermissions.permissionFor('catalog-git', 'not-a-real-action'), null);
     assert.equal(catalogSettingsPermissions.permissionFor('unknown-plugin', 'save'), null);
@@ -591,7 +594,7 @@ function runSocketAuthorizationTests() {
   const server = { id: 7, kind: 'bedrock', name: 'alpha' };
   const getServer = (id) => (Number(id) === 7 ? server : null);
   const allow = (keys) => (principal, action) => Boolean(principal) && keys.includes(action);
-  const adminKeys = ['servers.view_details', 'servers.console', 'servers.start', 'servers.stop'];
+  const adminKeys = ['servers.view_details', 'servers.console.view', 'servers.console.send_commands', 'servers.start', 'servers.stop'];
   const viewOnly = ['servers.view_details'];
   const none = [];
 

@@ -15,8 +15,25 @@
     "label": "CurseForge Catalog",
     "icon": "package",
     "order": 40,
-    "page": "settings"
+    "page": "settings",
+    "permission": "catalog.curseforge.configure"
   },
+  "permissions": [
+    {
+      "key": "catalog.curseforge.configure",
+      "displayName": "Configure CurseForge catalog",
+      "description": "Add or change the CurseForge API key and connection settings.",
+      "primaryCategory": "catalog",
+      "riskLevel": "elevated"
+    },
+    {
+      "key": "library.import_curseforge",
+      "displayName": "Import from CurseForge",
+      "description": "Import mods into the library from a CurseForge URL.",
+      "primaryCategory": "library",
+      "riskLevel": "normal"
+    }
+  ],
   "backend": "backend.js",
   "capabilities": [
     "provider:catalog-source",

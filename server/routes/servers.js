@@ -6,15 +6,19 @@ const autoUpdateScheduler = require('../services/autoUpdateScheduler');
 const connectHost = require('../services/connectHost');
 const {
   requirePermission,
+  requireAnyPermission,
   requireServerStart,
   requireServerStop,
   requireServerRestart,
+  requireServerRestartWithWarning,
+  requireServerCancelRestart,
   requireServerUpdate,
   assertPermission,
 } = require('../middleware/auth');
 const pluginContributions = require('../services/pluginContributions');
 const catalog = require('../services/permissionCatalog');
 const javaHostingPolicy = require('../services/javaHostingPolicy');
+const bedrockConnectPolicy = require('../services/bedrockConnectPolicy');
 
 function sendServiceError(res, err) {
   const status = Number(err.status) || 400;
@@ -22,6 +26,7 @@ function sendServiceError(res, err) {
     error: err.message,
     message: err.message,
     code: err.code,
+    plugin: err.plugin,
   });
 }
 
@@ -36,7 +41,7 @@ router.param('id', (req, res, next, id) => {
 // ========== SERVER CRUD ==========
 
 // Get all servers with stats
-router.get('/', async (req, res) => {
+router.get('/', requirePermission('servers.view'), async (req, res) => {
   try {
     const servers = javaHostingPolicy.filterVisibleServers(serverManager.getAllServers());
     await serverManager.refreshRunningOnlinePlayers();
@@ -60,7 +65,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.get('/check-updates', async (req, res) => {
+router.get('/check-updates', requirePermission('servers.view'), async (req, res) => {
   try {
     const result = await serverManager.checkForUpdates();
     res.json(result);
@@ -69,7 +74,7 @@ router.get('/check-updates', async (req, res) => {
   }
 });
 
-router.get('/auto-update/all', async (req, res) => {
+router.get('/auto-update/all', requirePermission('servers.view'), async (req, res) => {
   try {
     const configs = autoUpdateScheduler.getAllAutoUpdateConfigs();
     res.json(configs);
@@ -78,33 +83,33 @@ router.get('/auto-update/all', async (req, res) => {
   }
 });
 
-router.get('/bedrock-connect/preview', async (req, res) => {
+router.get('/bedrock-connect/preview', bedrockConnectPolicy.requirePluginCapability(), requirePermission('bedrock_connect.create'), async (req, res) => {
   try {
     const preview = await serverManager.previewBedrockConnect();
     res.json(preview);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendServiceError(res, err.status ? err : Object.assign(err, { status: 400 }));
   }
 });
 
-router.get('/bedrock-connect/versions', async (req, res) => {
+router.get('/bedrock-connect/versions', bedrockConnectPolicy.requirePluginCapability(), requirePermission('bedrock_connect.view'), async (req, res) => {
   try {
     res.json(serverManager.listBedrockConnectVersions());
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServiceError(res, err.status ? err : Object.assign(err, { status: 500 }));
   }
 });
 
-router.post('/bedrock-connect/check-updates', async (req, res) => {
+router.post('/bedrock-connect/check-updates', bedrockConnectPolicy.requirePluginCapability(), requirePermission('bedrock_connect.change_settings'), async (req, res) => {
   try {
     const result = await serverManager.checkBedrockConnectUpdates();
     res.json(result);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendServiceError(res, err.status ? err : Object.assign(err, { status: 400 }));
   }
 });
 
-router.post('/bedrock-connect', requirePermission('servers.create_bedrock_connect'), async (req, res) => {
+router.post('/bedrock-connect', bedrockConnectPolicy.requirePluginCapability(), requirePermission('bedrock_connect.create'), async (req, res) => {
   try {
     const { acceptConflict, restartMode } = req.body || {};
     const result = await serverManager.createBedrockConnect({
@@ -120,7 +125,7 @@ router.post('/bedrock-connect', requirePermission('servers.create_bedrock_connec
   }
 });
 
-router.get('/java/versions', async (req, res) => {
+router.get('/java/versions', requireAnyPermission('servers.create_java', 'servers.view_details'), async (req, res) => {
   try {
     const javaEdition = require('../services/javaEdition');
     res.json(await javaEdition.listReleaseVersions());
@@ -163,6 +168,8 @@ router.post('/', async (req, res) => {
           ? 'bedrock_connect'
           : 'bedrock';
     assertPermission(req, catalog.createPermissionForKind(kind));
+    if (kind === 'bedrock_connect') bedrockConnectPolicy.assertAvailable('create');
+    if (kind === 'java') javaHostingPolicy.assertServerEditionAvailable('java', 'create');
     const result = await serverManager.createServer(req.body);
     res.status(201).json(result);
   } catch (err) {
@@ -181,8 +188,17 @@ router.put('/:id', requireServerUpdate, async (req, res) => {
 });
 
 // Delete server
-router.delete('/:id', requirePermission('servers.delete'), async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
+    const server = serverManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found' });
+    if (server.kind === 'bedrock_connect') {
+      bedrockConnectPolicy.assertAvailable('delete');
+      assertPermission(req, catalog.deletePermissionForKind(server.kind), server);
+    } else {
+      javaHostingPolicy.assertServerVisible(server);
+      assertPermission(req, 'servers.delete', server);
+    }
     const truthy = (value) => value === true || value === '1' || value === 'true';
     await serverManager.deleteServer(req.params.id, {
       detachAttachedPlugins: truthy(req.query.detachAttachedPlugins) || truthy(req.body?.detachAttachedPlugins),
@@ -253,7 +269,7 @@ router.post('/:id/restart', requireServerRestart, async (req, res) => {
 });
 
 // Schedule a five-minute restart with player warnings at 5, 2, and 1 minutes.
-router.post('/:id/restart-with-warning', requireServerRestart, async (req, res) => {
+router.post('/:id/restart-with-warning', requireServerRestartWithWarning, async (req, res) => {
   try {
     const result = serverManager.scheduleWarnedRestart(req.params.id);
     res.json(result);
@@ -262,7 +278,7 @@ router.post('/:id/restart-with-warning', requireServerRestart, async (req, res) 
   }
 });
 
-router.delete('/:id/restart-with-warning', requireServerRestart, async (req, res) => {
+router.delete('/:id/restart-with-warning', requireServerCancelRestart, async (req, res) => {
   try {
     const result = serverManager.cancelWarnedRestart(req.params.id, { clearPendingBedrockConnect: true });
     res.json(result);
@@ -272,7 +288,7 @@ router.delete('/:id/restart-with-warning', requireServerRestart, async (req, res
 });
 
 // Send command to server
-router.post('/:id/command', requirePermission('servers.console'), async (req, res) => {
+router.post('/:id/command', requirePermission('servers.console.send_commands'), async (req, res) => {
   try {
     const { command } = req.body;
     if (!command) return res.status(400).json({ error: 'Command required' });
@@ -286,7 +302,7 @@ router.post('/:id/command', requirePermission('servers.console'), async (req, re
 // ========== SERVER UPDATES ==========
 
 // Update server version
-router.post('/:id/update', requirePermission('servers.update'), async (req, res) => {
+router.post('/:id/update', requirePermission('servers.update_software'), async (req, res) => {
   try {
     const { version } = req.body;
     const result = await serverManager.updateServer(req.params.id, version);
@@ -299,7 +315,7 @@ router.post('/:id/update', requirePermission('servers.update'), async (req, res)
 // ========== AUTO-UPDATE MANAGEMENT ==========
 
 // Get auto-update config for a server
-router.get('/:id/auto-update', async (req, res) => {
+router.get('/:id/auto-update', requirePermission('servers.view_details'), async (req, res) => {
   try {
     const config = autoUpdateScheduler.getAutoUpdateConfig(req.params.id);
     res.json(config || { enabled: false, check_interval_hours: 24 });
@@ -309,7 +325,7 @@ router.get('/:id/auto-update', async (req, res) => {
 });
 
 // Enable auto-update for a server
-router.post('/:id/auto-update', requirePermission('servers.update'), async (req, res) => {
+router.post('/:id/auto-update', requirePermission('servers.configure_auto_update'), async (req, res) => {
   try {
     const { intervalHours } = req.body;
     await autoUpdateScheduler.enableAutoUpdate(req.params.id, intervalHours || 24);
@@ -320,7 +336,7 @@ router.post('/:id/auto-update', requirePermission('servers.update'), async (req,
 });
 
 // Disable auto-update for a server
-router.delete('/:id/auto-update', requirePermission('servers.update'), async (req, res) => {
+router.delete('/:id/auto-update', requirePermission('servers.configure_auto_update'), async (req, res) => {
   try {
     await autoUpdateScheduler.disableAutoUpdate(req.params.id);
     res.json({ success: true });
@@ -329,7 +345,7 @@ router.delete('/:id/auto-update', requirePermission('servers.update'), async (re
   }
 });
 
-router.get('/:id/lan-broadcast', async (req, res) => {
+router.get('/:id/lan-broadcast', requirePermission('servers.view_details'), async (req, res) => {
   try {
     const preview = await serverManager.previewLanBroadcast(req.params.id);
     res.json(preview);
@@ -338,7 +354,7 @@ router.get('/:id/lan-broadcast', async (req, res) => {
   }
 });
 
-router.put('/:id/lan-broadcast', requirePermission('servers.set_lan'), async (req, res) => {
+router.put('/:id/lan-broadcast', requirePermission('servers.manage_lan_broadcast'), async (req, res) => {
   try {
     const { enabled, acceptConflict, restartMode } = req.body || {};
     const result = await serverManager.setLanBroadcast(req.params.id, Boolean(enabled), {
@@ -357,7 +373,7 @@ router.put('/:id/lan-broadcast', requirePermission('servers.set_lan'), async (re
   }
 });
 
-router.post('/:id/java/dependencies/resolve', requirePermission('servers.add_mods'), async (req, res) => {
+router.post('/:id/java/dependencies/resolve', requirePermission('servers.mods.install'), requirePermission('servers.mods.resolve_dependencies'), async (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -380,7 +396,7 @@ router.post('/:id/java/dependencies/resolve', requirePermission('servers.add_mod
   }
 });
 
-router.get('/:id/java/mods', requirePermission('servers.view_details'), (req, res) => {
+router.get('/:id/java/mods', requirePermission('servers.mods.view'), (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -392,7 +408,7 @@ router.get('/:id/java/mods', requirePermission('servers.view_details'), (req, re
   }
 });
 
-router.get('/:id/java/mods/pending', requirePermission('servers.view_details'), (req, res) => {
+router.get('/:id/java/mods/pending', requirePermission('servers.mods.view_restart_status'), (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -403,7 +419,7 @@ router.get('/:id/java/mods/pending', requirePermission('servers.view_details'), 
   }
 });
 
-router.post('/:id/java/mods/validate', requirePermission('servers.add_mods'), (req, res) => {
+router.post('/:id/java/mods/validate', requirePermission('servers.mods.install'), (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -416,7 +432,7 @@ router.post('/:id/java/mods/validate', requirePermission('servers.add_mods'), (r
   }
 });
 
-router.post('/:id/java/mods', requirePermission('servers.add_mods'), (req, res) => {
+router.post('/:id/java/mods', requirePermission('servers.mods.install'), (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -434,7 +450,7 @@ router.post('/:id/java/mods', requirePermission('servers.add_mods'), (req, res) 
   }
 });
 
-router.delete('/:id/java/mods/:installationId', requirePermission('servers.remove_mods'), (req, res) => {
+router.delete('/:id/java/mods/:installationId', requirePermission('servers.mods.remove'), (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -449,7 +465,7 @@ router.delete('/:id/java/mods/:installationId', requirePermission('servers.remov
   }
 });
 
-router.post('/:id/java/dependencies/reevaluate', requirePermission('servers.add_mods'), async (req, res) => {
+router.post('/:id/java/dependencies/reevaluate', requirePermission('servers.mods.install'), requirePermission('servers.mods.resolve_dependencies'), async (req, res) => {
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });

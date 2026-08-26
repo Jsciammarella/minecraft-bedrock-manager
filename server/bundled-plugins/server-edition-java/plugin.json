@@ -6,6 +6,32 @@
   "description": "Required first-party plugin for local Java server hosting and for Geyser/ViaProxy gateways that depend on it. Disabling stops running Java and Geyser processes and hides them without deleting data.",
   "pages": [],
   "menus": [],
+  "permissions": [
+    {
+      "key": "servers.create_java",
+      "displayName": "Create a Java server",
+      "description": "Create a Minecraft Java Edition server.",
+      "primaryCategory": "servers",
+      "subcategory": "java",
+      "riskLevel": "elevated"
+    },
+    {
+      "key": "servers.start_java",
+      "displayName": "Start a Java server",
+      "description": "Start a Minecraft Java Edition server.",
+      "primaryCategory": "servers",
+      "subcategory": "java",
+      "riskLevel": "normal"
+    },
+    {
+      "key": "servers.stop_java",
+      "displayName": "Stop a Java server",
+      "description": "Stop a Minecraft Java Edition server.",
+      "primaryCategory": "servers",
+      "subcategory": "java",
+      "riskLevel": "normal"
+    }
+  ],
   "backend": "backend.js",
   "capabilities": [
     "provider:server-edition"

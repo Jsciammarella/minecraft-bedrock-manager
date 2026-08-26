@@ -787,7 +787,7 @@ function ModCatalog() {
                 key={mod.id || `${mod.source}-${mod.slug}-${idx}`}
                 mod={mod}
                 onOpen={() => setExpandedMod(mod)}
-                onDownload={can('catalog.download_mods') ? () => openDownload(mod) : null}
+                onDownload={can('catalog.download_to_library') ? () => openDownload(mod) : null}
 
                 getTypeBadge={getTypeBadge}
                 getSourceBadge={(modSource, fileKind) => getSourceBadge(modSource, fileKind, mod)}
@@ -815,7 +815,7 @@ function ModCatalog() {
             mod={expandedMod}
             expanded
             onClose={() => setExpandedMod(null)}
-            onDownload={can('catalog.download_mods') ? () => openDownload(expandedMod) : null}
+            onDownload={can('catalog.download_to_library') ? () => openDownload(expandedMod) : null}
 
             getTypeBadge={getTypeBadge}
             getSourceBadge={(modSource, fileKind) => getSourceBadge(modSource, fileKind, expandedMod)}

@@ -11,8 +11,10 @@ function notifyPluginMenus() {
 
 function Plugins() {
   const navigate = useNavigate();
-  const { can, isAdmin } = useAuth();
-  const canUpload = can('plugins.upload');
+  const { can } = useAuth();
+  const canEnable = can('plugins.enable');
+  const canDisable = can('plugins.disable');
+  const canToggleBackend = can('plugins.enable_backend');
   const zipInputRef = useRef(null);
   const folderInputRef = useRef(null);
   const uploadMenuRef = useRef(null);
@@ -53,7 +55,8 @@ function Plugins() {
   const isServerEditionPlugin = (plugin) => (plugin.capabilities || []).includes('provider:server-edition');
 
   const togglePlugin = async (plugin) => {
-    if (!isAdmin) return;
+    const allowed = plugin.enabled ? canDisable : canEnable;
+    if (!allowed) return;
     setError('');
     setMessage('');
     if (plugin.enabled && isServerEditionPlugin(plugin) && !disableConfirm) {
@@ -246,7 +249,7 @@ function Plugins() {
                       <input
                         type="checkbox"
                         checked={Boolean(plugin.backendEnabled)}
-                        disabled={busyId === plugin.id}
+                        disabled={busyId === plugin.id || !canToggleBackend}
                         onChange={async () => {
                           setBusyId(plugin.id);
                           try {
@@ -268,10 +271,10 @@ function Plugins() {
                   role="switch"
                   aria-checked={plugin.enabled}
                   aria-label={`${plugin.enabled ? 'Disable' : 'Enable'} ${plugin.name}`}
-                  disabled={!isAdmin || busyId === plugin.id}
+                  disabled={(plugin.enabled ? !canDisable : !canEnable) || busyId === plugin.id}
                   onClick={() => togglePlugin(plugin)}
                   className={`toggle ${plugin.enabled ? 'toggle-active' : 'toggle-inactive'} ${
-                    !isAdmin || busyId === plugin.id ? 'opacity-50 cursor-not-allowed' : ''
+                    (plugin.enabled ? !canDisable : !canEnable) || busyId === plugin.id ? 'opacity-50 cursor-not-allowed' : ''
                   }`}
                 >
                   <span className={`toggle-thumb ${plugin.enabled ? 'translate-x-6' : 'translate-x-1'}`} />

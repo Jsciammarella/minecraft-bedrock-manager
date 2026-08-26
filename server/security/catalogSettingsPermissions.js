@@ -1,23 +1,23 @@
 const PLUGIN_ACTIONS = {
   'catalog-curseforge': {
-    view: 'catalog.set_curseforge_key',
-    save: 'catalog.set_curseforge_key',
-    'test-connection': 'catalog.set_curseforge_key',
+    view: 'catalog.curseforge.configure',
+    save: 'catalog.curseforge.configure',
+    'test-connection': 'catalog.curseforge.configure',
   },
   'catalog-git': {
-    view: 'catalog.enable_git',
-    save: 'catalog.enable_git',
-    'test-connection': 'catalog.enable_git',
-    'sync-now': 'catalog.enable_git',
-    'download-template': 'catalog.download_mods',
+    view: 'catalog.git.configure',
+    save: 'catalog.git.configure',
+    'test-connection': 'catalog.git.configure',
+    'sync-now': 'catalog.git.sync',
+    'download-template': 'catalog.download_to_library',
   },
   'catalog-file': {
-    view: 'catalog.enable_file',
-    save: 'catalog.enable_file',
-    'test-local-path': 'catalog.enable_file',
-    'test-smb-path': 'catalog.enable_file',
-    'test-nfs-path': 'catalog.enable_file',
-    'download-template': 'catalog.download_mods',
+    view: 'catalog.file.configure',
+    save: 'catalog.file.configure',
+    'test-local-path': 'catalog.file.configure',
+    'test-smb-path': 'catalog.file.configure',
+    'test-nfs-path': 'catalog.file.configure',
+    'download-template': 'catalog.download_to_library',
   },
 };
 
