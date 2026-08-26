@@ -21,9 +21,22 @@ function permissionRequired(permission, message = 'You do not have permission to
   return forbidden(message, { code: 'PERMISSION_REQUIRED', permission });
 }
 
+function permissionMigrationFailed(migrationKey, schemaVersion, cause) {
+  const err = new SecurityError(
+    `Permission migration "${migrationKey}" failed`,
+    { status: 500, code: 'PERMISSION_MIGRATION_FAILED' },
+  );
+  err.migrationKey = migrationKey;
+  err.schemaVersion = schemaVersion;
+  err.cause = cause;
+  if (cause?.message) err.originalMessage = cause.message;
+  return err;
+}
+
 module.exports = {
   SecurityError,
   unauthorized,
   forbidden,
   permissionRequired,
+  permissionMigrationFailed,
 };

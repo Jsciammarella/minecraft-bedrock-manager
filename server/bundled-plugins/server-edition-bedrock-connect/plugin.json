@@ -22,6 +22,12 @@
       "permission": "bedrock_connect.view"
     }
   ],
+  "permissionCategories": [
+    { "id": "bedrock-connect", "label": "BedrockConnect" }
+  ],
+  "permissionSubcategories": [
+    { "id": "dns", "category": "bedrock-connect", "label": "DNS" }
+  ],
   "permissions": [
     { "key": "bedrock_connect.view", "displayName": "View BedrockConnect", "description": "View the BedrockConnect menu and main page", "primaryCategory": "bedrock-connect", "riskLevel": "read" },
     { "key": "bedrock_connect.view_status", "displayName": "View BedrockConnect status", "description": "View runtime and health status", "primaryCategory": "bedrock-connect", "riskLevel": "read" },

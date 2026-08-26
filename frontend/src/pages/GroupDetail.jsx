@@ -177,7 +177,13 @@ function GroupDetail() {
           onFilterChange={setMemberFilter}
           filterOptions={filterOptions}
           disabled={!isAdmin && !can('groups.add_members') && !can('groups.remove_members')}
+          canSelect={isAdmin || can('groups.add_members')}
+          canDeselect={isAdmin || can('groups.remove_members')}
           onToggle={(userId, checked) => {
+            const canAdd = isAdmin || can('groups.add_members');
+            const canRemove = isAdmin || can('groups.remove_members');
+            if (checked && !canAdd) return;
+            if (!checked && !canRemove) return;
             setForm((prev) => ({
               ...prev,
               userIds: checked

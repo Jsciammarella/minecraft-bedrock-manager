@@ -394,37 +394,7 @@ function parsePermissions(rawPermissions, pluginId, pluginName, { source: plugin
   return { ok: true, permissions };
 }
 
-function attachOwnedCatalogPermissions(permissions, pluginId, pluginSource) {
-  if (pluginSource !== 'bundled') return permissions;
-  let owned = [];
-  try {
-    const catalog = require('./permissionCatalog');
-    owned = (catalog.PLUGIN_OWNED_PERMISSIONS || []).filter((item) => (
-      catalog.pluginOwnsKey(pluginId, item.key)
-    ));
-  } catch {
-    return permissions;
-  }
-  const seen = new Set(permissions.map((item) => item.key));
-  for (const item of owned) {
-    if (seen.has(item.key)) continue;
-    seen.add(item.key);
-    permissions.push({
-      key: item.key,
-      localKey: item.key,
-      name: item.displayName || item.name,
-      displayName: item.displayName || item.name,
-      description: item.description,
-      category: item.primaryCategory || item.category,
-      primaryCategory: item.primaryCategory || item.category,
-      subcategory: item.subcategory || null,
-      riskLevel: item.riskLevel || 'normal',
-      assignableToUsers: item.assignableToUsers !== false,
-      assignableToGroups: item.assignableToGroups !== false,
-      pluginId,
-      source: 'first-party-plugin',
-    });
-  }
+function attachOwnedCatalogPermissions(permissions) {
   return permissions;
 }
 
@@ -496,7 +466,17 @@ function parseManifest(raw, folderName, { source = 'user' } = {}) {
       capabilities: caps.capabilities,
       rejectedPrivileged: caps.rejectedPrivileged,
       downloadHosts,
-      providers: Array.isArray(raw.providers) ? raw.providers : [],    },
+      providers: Array.isArray(raw.providers) ? raw.providers : [],
+      permissionCategories: Array.isArray(raw.permissionCategories || raw.categories)
+        ? (raw.permissionCategories || raw.categories)
+        : [],
+      permissionSubcategories: Array.isArray(raw.permissionSubcategories || raw.subcategories)
+        ? (raw.permissionSubcategories || raw.subcategories)
+        : [],
+      fieldMappings: raw.fieldMappings && typeof raw.fieldMappings === 'object' && !Array.isArray(raw.fieldMappings)
+        ? raw.fieldMappings
+        : {},
+    },
   };
 }
 
@@ -688,6 +668,12 @@ function loadPlugins(dirs = defaultPluginDirs()) {
         continue;
       }
       seen.add(parsed.manifest.id);
+      const claimed = new Set(next.flatMap((item) => (item.permissions || []).map((perm) => perm.key)));
+      const duplicate = (parsed.manifest.permissions || []).find((perm) => claimed.has(perm.key));
+      if (duplicate) {
+        logger.warn(`Skipping plugin ${parsed.manifest.id}: duplicate permission key "${duplicate.key}"`);
+        continue;
+      }
       const backendEnabled = isBackendEnabled(parsed.manifest.id, source, Boolean(parsed.manifest.backend));
       const trustLevel = pluginCapabilities.trustLevelFor(source, parsed.manifest.capabilities, {
         backendDeclared: Boolean(parsed.manifest.backend),
@@ -1046,7 +1032,10 @@ function getDynamicPermissions() {
   const seen = new Set();
   for (const plugin of loaded) {
     for (const perm of plugin.permissions || []) {
-      if (!perm?.key || seen.has(perm.key) || catalog.permissionByKey(perm.key)) continue;
+      if (!perm?.key || seen.has(perm.key)) continue;
+      const coreHit = [...(catalog.CORE_PERMISSIONS || []), ...(catalog.DEPRECATED_PERMISSIONS || [])]
+        .some((item) => item.key === perm.key);
+      if (coreHit && !catalog.pluginOwnsKey(plugin.id, perm.key)) continue;
       seen.add(perm.key);
       permissions.push({
         key: perm.key,
@@ -1229,6 +1218,58 @@ function isAllowedPluginApiPath(pluginId, requestPath) {
   return CORE_API_ALLOWLIST.some((re) => re.test(pathname));
 }
 
+function getPermissionCategories() {
+  const out = [];
+  const seen = new Set();
+  for (const plugin of loaded) {
+    if (plugin.enabled === false) continue;
+    for (const item of plugin.permissionCategories || []) {
+      const id = String(item?.id || item || '').trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push({
+        id,
+        label: String(item.label || item.name || id),
+        source: plugin.source === 'bundled' ? 'first-party-plugin' : 'third-party-plugin',
+        pluginId: plugin.id,
+      });
+    }
+  }
+  return out;
+}
+
+function getPermissionSubcategories() {
+  const out = [];
+  const seen = new Set();
+  for (const plugin of loaded) {
+    if (plugin.enabled === false) continue;
+    for (const item of plugin.permissionSubcategories || []) {
+      const id = String(item?.id || '').trim();
+      const category = String(item?.category || item?.primaryCategory || '').trim();
+      if (!id || !category) continue;
+      const key = `${category}:${id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        id,
+        category,
+        label: String(item.label || id),
+        pluginId: plugin.id,
+      });
+    }
+  }
+  return out;
+}
+
+function getFieldMappings(pluginId) {
+  const map = {};
+  for (const plugin of loaded) {
+    if (pluginId && plugin.id !== pluginId) continue;
+    Object.assign(map, plugin.fieldMappings || {});
+  }
+  return map;
+}
+
 function isAllowedPluginNavigatePath(pluginId, requestPath) {
   const raw = String(requestPath || '').split('?')[0];
   if (!raw.startsWith(`/plugins/${pluginId}`)) return false;
@@ -1250,6 +1291,9 @@ module.exports = {
   defaultPluginDirs,
   getMenuItems,
   getDynamicPermissions,
+  getPermissionCategories,
+  getPermissionSubcategories,
+  getFieldMappings,
   getPlugin,
   getPlugins,
   injectHtmlSdk,

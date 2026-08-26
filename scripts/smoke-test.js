@@ -420,7 +420,7 @@ async function run() {
   assert(accessTable, 'server_player_access migration was not created');
   await testPluginHost();
   testUserManagement();
-  runPermissionCatalogTests({ auth: require('../server/services/authService'), catalog: require('../server/services/permissionCatalog'), db, pluginHost });
+  await runPermissionCatalogTests({ auth: require('../server/services/authService'), catalog: require('../server/services/permissionCatalog'), db, pluginHost });
   await runJavaProviderTests({ pluginHost, testRoot });
   await runCatalogProviderTests({ pluginHost, testRoot });
   await runPluginSettingsTests({ pluginHost, testRoot });

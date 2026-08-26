@@ -3,7 +3,6 @@ const router = express.Router();
 const serverManager = require('../services/serverManager');
 const modManager = require('../services/modManager');
 const autoUpdateScheduler = require('../services/autoUpdateScheduler');
-const connectHost = require('../services/connectHost');
 const {
   requirePermission,
   requireAnyPermission,
@@ -19,6 +18,7 @@ const pluginContributions = require('../services/pluginContributions');
 const catalog = require('../services/permissionCatalog');
 const javaHostingPolicy = require('../services/javaHostingPolicy');
 const bedrockConnectPolicy = require('../services/bedrockConnectPolicy');
+const serializer = require('../services/serverSerializer');
 
 function sendServiceError(res, err) {
   const status = Number(err.status) || 400;
@@ -45,19 +45,25 @@ router.get('/', requirePermission('servers.view'), async (req, res) => {
   try {
     const servers = javaHostingPolicy.filterVisibleServers(serverManager.getAllServers());
     await serverManager.refreshRunningOnlinePlayers();
-    const installedByServer = modManager.getInstalledModIdsByServer();
+    const canMods = serializer.can(req.principal || req.user, 'servers.mods.view');
+    const installedByServer = canMods ? modManager.getInstalledModIdsByServer() : {};
     const result = await Promise.all(servers.map(async (s) => {
       const stats = await serverManager.getServerStats(s.id);
-      return connectHost.attach({
-        ...pluginContributions.attachToServer({
-          ...s,
-          ...serverManager.publicAttachFields(stats),
-          stats,
-          lan: stats.lan,
-          remoteReachable: stats.remoteReachable,
-          installedModIds: installedByServer[String(s.id)] || [],
-        }),
-      }, req);
+      const attached = pluginContributions.attachToServer({
+        ...s,
+        ...serverManager.publicAttachFields(stats),
+        stats,
+        lan: stats.lan,
+        remoteReachable: stats.remoteReachable,
+        installedModIds: canMods ? (installedByServer[String(s.id)] || []) : undefined,
+      });
+      return serializer.serializeServerForPrincipal(attached, req.principal || req.user, {
+        context: 'list',
+        req,
+        stats,
+        installedModIds: attached.installedModIds,
+        pluginContributions: attached.pluginContributions,
+      });
     }));
     res.json(result);
   } catch (err) {
@@ -137,13 +143,16 @@ router.get('/java/versions', requireAnyPermission('servers.create_java', 'server
 // Get single server
 router.get('/:id', requirePermission('servers.view_details'), async (req, res) => {
   try {
+    const principal = req.principal || req.user;
     const server = javaHostingPolicy.assertServerVisible(serverManager.getServer(req.params.id));
-    
     const stats = await serverManager.getServerStats(req.params.id);
-    const onlinePlayers = await serverManager.getOnlinePlayers(req.params.id);
-    const installedMods = await modManager.getInstalledMods(req.params.id);
-    
-    res.json(connectHost.attach(pluginContributions.attachToServer({
+    const onlinePlayers = serializer.can(principal, 'players.view_server_membership')
+      ? await serverManager.getOnlinePlayers(req.params.id)
+      : undefined;
+    const installedMods = serializer.can(principal, 'servers.mods.view')
+      ? await modManager.getInstalledMods(req.params.id)
+      : undefined;
+    const attached = pluginContributions.attachToServer({
       ...server,
       ...serverManager.publicAttachFields(stats),
       stats,
@@ -151,7 +160,15 @@ router.get('/:id', requirePermission('servers.view_details'), async (req, res) =
       remoteReachable: stats.remoteReachable,
       onlinePlayers,
       installedMods,
-    }), req));
+    });
+    res.json(serializer.serializeServerForPrincipal(attached, principal, {
+      context: 'detail',
+      req,
+      stats,
+      onlinePlayers,
+      installedMods,
+      pluginContributions: attached.pluginContributions,
+    }));
   } catch (err) {
     sendServiceError(res, err.status ? err : Object.assign(err, { status: 500 }));
   }

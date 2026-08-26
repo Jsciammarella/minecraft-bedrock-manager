@@ -1,14 +1,19 @@
 const express = require('express');
 const security = require('../security');
-const { attachPrincipal } = require('../security/middleware');
+const { attachPrincipal, requirePermission } = require('../security/middleware');
 
 const router = express.Router();
 
 function sessionPayload(principal) {
-  return {
+  const payload = {
     user: security.publicPrincipal(principal),
     ...security.getCapabilities(principal),
   };
+  if (!security.hasPermission(principal, 'account.view_own_permissions')) {
+    delete payload.permissions;
+    if (payload.user) delete payload.user.permissions;
+  }
+  return payload;
 }
 
 router.get('/security', (_req, res) => {
@@ -75,7 +80,7 @@ router.post('/logout', (req, res) => {
   res.json({ success: true });
 });
 
-router.get('/me', attachPrincipal, (req, res) => {
+router.get('/me', attachPrincipal, requirePermission('account.view_own_profile'), (req, res) => {
   const current = req.principal || req.user;
   res.json(sessionPayload(current));
 });

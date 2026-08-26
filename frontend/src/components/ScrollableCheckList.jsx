@@ -8,6 +8,8 @@ export default function ScrollableCheckList({
   selectedIds,
   onToggle,
   disabled,
+  canSelect = true,
+  canDeselect = true,
   searchPlaceholder = 'Search...',
   filterValue,
   onFilterChange,
@@ -68,7 +70,7 @@ export default function ScrollableCheckList({
             <input
               type="checkbox"
               checked={selected.has(String(item.id))}
-              disabled={disabled}
+              disabled={disabled || (selected.has(String(item.id)) ? canDeselect === false : canSelect === false)}
               onChange={(e) => onToggle(item.id, e.target.checked)}
             />
           </label>

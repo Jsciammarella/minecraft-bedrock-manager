@@ -1,5 +1,5 @@
-const CATALOG_SCHEMA_VERSION = 2;
-const DEFAULTS_VERSION = 2;
+const CATALOG_SCHEMA_VERSION = 3;
+const DEFAULTS_VERSION = 3;
 const JAVA_PLUGIN_ID = 'server-edition-java';
 const BEDROCK_CONNECT_PLUGIN_ID = 'server-edition-bedrock-connect';
 const CURSEFORGE_PLUGIN_ID = 'catalog-curseforge';
@@ -12,7 +12,6 @@ const CATEGORIES = [
   { id: 'catalog', label: 'Catalog' },
   { id: 'library', label: 'Library' },
   { id: 'players', label: 'Players' },
-  { id: 'bedrock-connect', label: 'BedrockConnect' },
   { id: 'ports', label: 'Ports' },
   { id: 'plugins', label: 'Plugins' },
   { id: 'user-management', label: 'User Management' },
@@ -42,7 +41,6 @@ const SUBCATEGORIES = [
   { id: 'groups', category: 'user-management', label: 'Groups' },
   { id: 'permissions', category: 'user-management', label: 'Permission catalog' },
   { id: 'security', category: 'user-management', label: 'Security settings' },
-  { id: 'dns', category: 'bedrock-connect', label: 'DNS' },
 ];
 
 function sourceLabel(source) {
@@ -79,6 +77,7 @@ function perm(key, displayName, description, extra = {}) {
     administrative: adminOnly || Boolean(extra.administrative),
     destructive: riskLevel === 'destructive' || Boolean(extra.destructive),
     edition: extra.edition || null,
+    informational: Boolean(extra.informational),
   };
 }
 
@@ -155,12 +154,12 @@ const CORE_PERMISSIONS = [
   perm('servers.allowlist.view', 'View allowlist', 'View one server’s allowlist.', { cat: 'servers', sub: 'allowlist', risk: 'read' }),
   perm('servers.allowlist.add', 'Add allowlist players', 'Add players to one server’s allowlist.', { cat: 'servers', sub: 'allowlist' }),
   perm('servers.allowlist.remove', 'Remove allowlist players', 'Remove players from one server’s allowlist.', { cat: 'servers', sub: 'allowlist' }),
-  perm('servers.allowlist.sync', 'Sync allowlist', 'Reconcile manager and server allowlist data.', { cat: 'servers', sub: 'allowlist' }),
+  perm('servers.allowlist.sync', 'Sync allowlist', 'Reconcile manager and server allowlist data.', { cat: 'servers', sub: 'allowlist', informational: true }),
 
   perm('servers.banlist.view', 'View ban list', 'View one server’s ban list.', { cat: 'servers', sub: 'ban-list', risk: 'read' }),
   perm('servers.banlist.add', 'Ban player', 'Ban a player from one server.', { cat: 'servers', sub: 'ban-list' }),
   perm('servers.banlist.remove', 'Unban player', 'Unban a player from one server.', { cat: 'servers', sub: 'ban-list' }),
-  perm('servers.banlist.sync', 'Sync ban list', 'Reconcile manager and server ban-list data.', { cat: 'servers', sub: 'ban-list' }),
+  perm('servers.banlist.sync', 'Sync ban list', 'Reconcile manager and server ban-list data.', { cat: 'servers', sub: 'ban-list', informational: true }),
 
   perm('servers.player_permissions.view', 'View player permissions', 'View per-server visitor, member, and operator assignments.', { cat: 'servers', sub: 'player-permissions', risk: 'read' }),
   perm('servers.player_permissions.set_visitor', 'Set visitor permission', 'Assign visitor permission.', { cat: 'servers', sub: 'player-permissions' }),
@@ -183,7 +182,7 @@ const CORE_PERMISSIONS = [
 
   perm('library.view', 'View library', 'View library entries.', { cat: 'library', risk: 'read' }),
   perm('library.view_files', 'View library files', 'View files attached to library entries.', { cat: 'library', risk: 'read' }),
-  perm('library.download_files', 'Download library files', 'Download a stored file to the user’s device.', { cat: 'library', risk: 'read' }),
+  perm('library.download_files', 'Download library files', 'Download a stored file to the user’s device.', { cat: 'library', risk: 'read', informational: true }),
   perm('library.upload', 'Upload library files', 'Upload mod or add-on files.', { cat: 'library' }),
   perm('library.edit_metadata', 'Edit library metadata', 'Edit name, description, edition, loader, or compatibility metadata.', { cat: 'library' }),
   perm('library.add_file', 'Add library file', 'Add a file or version to an existing entry.', { cat: 'library' }),
@@ -193,6 +192,7 @@ const CORE_PERMISSIONS = [
 
   perm('players.view', 'View players', 'View manager player records.', { cat: 'players', risk: 'read' }),
   perm('players.view_server_membership', 'View player server membership', 'View player allowlist, ban-list, and permission relationships.', { cat: 'players', risk: 'read' }),
+  perm('players.scan', 'Scan Servers for Players', 'Scan a managed server for discovered players and add missing player records to the management console.', { cat: 'players' }),
   perm('players.add', 'Add player', 'Add players to the manager.', { cat: 'players' }),
   perm('players.remove_allowlist_all', 'Remove player from all allowlists', 'Remove a player from all managed allowlists.', { cat: 'players' }),
   perm('players.ban_all', 'Ban player everywhere', 'Ban a player across applicable managed servers.', { cat: 'players', risk: 'elevated' }),
@@ -252,91 +252,56 @@ const CORE_PERMISSIONS = [
   perm('security.configure_password_policy', 'Configure password policy', 'Change password length and complexity requirements.', { cat: 'user-management', sub: 'security', risk: 'administrator-only' }),
 ];
 
-const BEDROCK_CONNECT_PERMISSIONS = [
-  perm('bedrock_connect.view', 'View BedrockConnect', 'View the BedrockConnect menu and main page.', { cat: 'bedrock-connect', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID, risk: 'read' }),
-  perm('bedrock_connect.view_status', 'View BedrockConnect status', 'View runtime and health status.', { cat: 'bedrock-connect', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID, risk: 'read' }),
-  perm('bedrock_connect.create', 'Create BedrockConnect', 'Create a BedrockConnect entry.', { cat: 'bedrock-connect', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID, risk: 'elevated' }),
-  perm('bedrock_connect.start', 'Start BedrockConnect', 'Start BedrockConnect.', { cat: 'bedrock-connect', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID }),
-  perm('bedrock_connect.stop', 'Stop BedrockConnect', 'Stop BedrockConnect.', { cat: 'bedrock-connect', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID }),
-  perm('bedrock_connect.restart', 'Restart BedrockConnect', 'Restart BedrockConnect.', { cat: 'bedrock-connect', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID }),
-  perm('bedrock_connect.delete', 'Delete BedrockConnect', 'Delete a BedrockConnect configuration and its manager-owned data.', { cat: 'bedrock-connect', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID, risk: 'destructive', destructive: true }),
-  perm('bedrock_connect.change_ports', 'Change BedrockConnect ports', 'Change BedrockConnect listening and advertisement ports.', { cat: 'bedrock-connect', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID, risk: 'elevated' }),
-  perm('bedrock_connect.change_settings', 'Change BedrockConnect settings', 'Change general BedrockConnect settings.', { cat: 'bedrock-connect', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID, risk: 'elevated' }),
-  perm('bedrock_connect.dns.view', 'View DNS', 'View DNS status and configuration.', { cat: 'bedrock-connect', sub: 'dns', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID, risk: 'read' }),
-  perm('bedrock_connect.dns.enable_proxy', 'Enable DNS proxy', 'Enable or disable DNS proxy functionality.', { cat: 'bedrock-connect', sub: 'dns', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID, risk: 'elevated' }),
-  perm('bedrock_connect.dns.set_upstream', 'Set upstream DNS', 'Change upstream DNS resolvers.', { cat: 'bedrock-connect', sub: 'dns', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID, risk: 'elevated' }),
-  perm('bedrock_connect.dns.add_override', 'Add DNS override', 'Add a DNS override.', { cat: 'bedrock-connect', sub: 'dns', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID, risk: 'elevated' }),
-  perm('bedrock_connect.dns.edit_override', 'Edit DNS override', 'Edit a DNS override.', { cat: 'bedrock-connect', sub: 'dns', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID, risk: 'elevated' }),
-  perm('bedrock_connect.dns.remove_override', 'Remove DNS override', 'Remove a DNS override.', { cat: 'bedrock-connect', sub: 'dns', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID, risk: 'elevated' }),
+const JAVA_FIELD_NAMES = [
+  'pvp',
+  'allow_nether',
+  'allow_flight',
+  'enable_command_block',
+  'hardcore',
+  'spawn_animals',
+  'spawn_npcs',
+  'spawn_monsters',
+  'generate_structures',
+  'hide_online_players',
+  'enforce_whitelist',
+  'require_resource_pack',
+  'broadcast_console_to_ops',
+  'enable_status',
+  'enable_query',
+  'enable_rcon',
+  'sync_chunk_writes',
+  'prevent_proxy_connections',
+  'enforce_secure_profile',
+  'network_compression_threshold',
+  'entity_broadcast_range_percentage',
+  'query_port',
+  'rcon_port',
+  'rcon_password',
+  'resource_pack',
+  'resource_pack_sha1',
+  'level_type',
+  'max_world_size',
+  'simulation_distance',
+  'spawn_protection',
+  'op_permission_level',
+  'function_permission_level',
 ];
 
-const JAVA_FIELD_PERMISSIONS = [
-  ['pvp', 'Change Java PvP', 'Enable or disable player-versus-player damage.'],
-  ['allow_nether', 'Change Java Nether', 'Enable or disable Nether portals.'],
-  ['allow_flight', 'Change Java flight', 'Allow survival flight without kicking.'],
-  ['enable_command_block', 'Change Java command blocks', 'Enable or disable command blocks.'],
-  ['hardcore', 'Change Java hardcore', 'Enable or disable hardcore mode.'],
-  ['spawn_animals', 'Change Java animal spawning', 'Enable or disable natural animal spawning.'],
-  ['spawn_npcs', 'Change Java villager spawning', 'Enable or disable villager spawning.'],
-  ['spawn_monsters', 'Change Java monster spawning', 'Enable or disable hostile mob spawning.'],
-  ['generate_structures', 'Change Java structures', 'Enable or disable structure generation.'],
-  ['hide_online_players', 'Change Java hide online players', 'Hide player names from server list pings.'],
-  ['enforce_whitelist', 'Change Java enforce whitelist', 'Kick players removed from the whitelist.'],
-  ['require_resource_pack', 'Change Java resource pack requirement', 'Require clients to accept the Java resource pack.'],
-  ['broadcast_console_to_ops', 'Change Java console broadcast', 'Broadcast console output to operators.'],
-  ['enable_status', 'Change Java status replies', 'Reply to Minecraft server list pings.'],
-  ['enable_query', 'Change Java query', 'Enable the GameSpy query protocol.'],
-  ['enable_rcon', 'Change Java RCON', 'Enable the remote console protocol.'],
-  ['sync_chunk_writes', 'Change Java sync chunk writes', 'Flush chunks synchronously.'],
-  ['prevent_proxy_connections', 'Change Java proxy connections', 'Reject connections through proxies.'],
-  ['enforce_secure_profile', 'Change Java secure profile', 'Require a Mojang-signed player profile.'],
-  ['network_compression_threshold', 'Change Java compression threshold', 'Change the network compression threshold.'],
-  ['entity_broadcast_range_percentage', 'Change Java entity broadcast range', 'Change entity broadcast range.'],
-  ['query_port', 'Change Java query port', 'Change the query protocol port.'],
-  ['rcon_port', 'Change Java RCON port', 'Change the RCON port.'],
-  ['rcon_password', 'Change Java RCON password', 'Change the RCON password.'],
-  ['resource_pack', 'Change Java resource pack URL', 'Change the resource pack URL.'],
-  ['resource_pack_sha1', 'Change Java resource pack hash', 'Change the resource pack SHA-1.'],
-  ['level_type', 'Change Java level type', 'Change the world level type.'],
-  ['max_world_size', 'Change Java max world size', 'Change the maximum world size.'],
-  ['simulation_distance', 'Change Java simulation distance', 'Change simulation distance.'],
-  ['spawn_protection', 'Change Java spawn protection', 'Change spawn protection radius.'],
-  ['op_permission_level', 'Change Java op permission level', 'Change the operator permission level.'],
-  ['function_permission_level', 'Change Java function permission level', 'Change the function permission level.'],
-].map(([field, name, description]) => perm(
-  `servers.java.${field}`,
-  name,
-  description,
-  {
-    cat: 'servers',
-    sub: 'java',
-    source: 'first-party-plugin',
-    pluginId: JAVA_PLUGIN_ID,
-    edition: 'java',
-    risk: ['rcon_password', 'enable_rcon', 'online_mode'].includes(field) ? 'elevated' : 'normal',
-  },
-));
-
-const JAVA_PERMISSIONS = [
-  perm('servers.create_java', 'Create a Java server', 'Create a Minecraft Java Edition server.', { cat: 'servers', sub: 'java', source: 'first-party-plugin', pluginId: JAVA_PLUGIN_ID, edition: 'java', risk: 'elevated' }),
-  perm('servers.start_java', 'Start a Java server', 'Start a Minecraft Java Edition server.', { cat: 'servers', sub: 'java', source: 'first-party-plugin', pluginId: JAVA_PLUGIN_ID, edition: 'java' }),
-  perm('servers.stop_java', 'Stop a Java server', 'Stop a Minecraft Java Edition server.', { cat: 'servers', sub: 'java', source: 'first-party-plugin', pluginId: JAVA_PLUGIN_ID, edition: 'java' }),
-  ...JAVA_FIELD_PERMISSIONS,
+const JAVA_PERMISSION_KEYS = [
+  'servers.create_java',
+  'servers.start_java',
+  'servers.stop_java',
+  ...JAVA_FIELD_NAMES.map((field) => `servers.java.${field}`),
 ];
 
-const CATALOG_PLUGIN_PERMISSIONS = [
-  perm('catalog.curseforge.configure', 'Configure CurseForge catalog', 'Add or change the CurseForge API key and connection settings.', { cat: 'catalog', source: 'first-party-plugin', pluginId: CURSEFORGE_PLUGIN_ID, risk: 'elevated' }),
-  perm('library.import_curseforge', 'Import from CurseForge', 'Import mods into the library from a CurseForge URL.', { cat: 'library', source: 'first-party-plugin', pluginId: CURSEFORGE_PLUGIN_ID }),
-  perm('catalog.git.configure', 'Configure Git catalog', 'Enable and configure the Git catalog repository.', { cat: 'catalog', source: 'first-party-plugin', pluginId: GIT_CATALOG_PLUGIN_ID, risk: 'elevated' }),
-  perm('catalog.git.sync', 'Sync Git catalog', 'Run a Git catalog sync now.', { cat: 'catalog', source: 'first-party-plugin', pluginId: GIT_CATALOG_PLUGIN_ID }),
-  perm('catalog.file.configure', 'Configure File catalog', 'Enable and configure the file catalog location.', { cat: 'catalog', source: 'first-party-plugin', pluginId: FILE_CATALOG_PLUGIN_ID, risk: 'elevated' }),
-];
-
-const PLUGIN_OWNED_PERMISSIONS = [
-  ...BEDROCK_CONNECT_PERMISSIONS,
-  ...JAVA_PERMISSIONS,
-  ...CATALOG_PLUGIN_PERMISSIONS,
-];
+const JAVA_PERMISSIONS = JAVA_PERMISSION_KEYS.map((key) => ({ key, edition: 'java' }));
+const JAVA_FIELD_PERMISSIONS = JAVA_FIELD_NAMES.map((field) => ({
+  key: `servers.java.${field}`,
+  field,
+}));
+const BEDROCK_CONNECT_PERMISSIONS = [];
+const CATALOG_PLUGIN_PERMISSIONS = [];
+const PLUGIN_OWNED_PERMISSIONS = [];
 
 function dep(key, displayName, description, aliasOf, extra = {}) {
   const replacements = extra.replacementKeys || (Array.isArray(aliasOf) ? aliasOf : [aliasOf]);
@@ -421,7 +386,7 @@ const DEPRECATED_PERMISSIONS = [
     'servers.remote.change_target_host',
     'servers.remote.change_target_port',
   ], { cat: 'servers' }),
-  dep('servers.change_java_settings', 'Change Java-only settings', 'Deprecated alias for Java Hosting plugin property permissions', JAVA_FIELD_PERMISSIONS.map((item) => item.key), { cat: 'servers', source: 'first-party-plugin', pluginId: JAVA_PLUGIN_ID }),
+  dep('servers.change_java_settings', 'Change Java-only settings', 'Deprecated alias for Java Hosting plugin property permissions', JAVA_FIELD_NAMES.map((field) => `servers.java.${field}`), { cat: 'servers', source: 'first-party-plugin', pluginId: JAVA_PLUGIN_ID }),
   dep('servers.create_bedrock_connect', 'Create a BedrockConnect server', 'Deprecated alias for bedrock_connect.create', 'bedrock_connect.create', { cat: 'bedrock-connect', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID }),
   dep('servers.start_bedrock_connect', 'Start a BedrockConnect server', 'Deprecated alias for bedrock_connect.start', 'bedrock_connect.start', { cat: 'bedrock-connect', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID }),
   dep('servers.stop_bedrock_connect', 'Stop a BedrockConnect server', 'Deprecated alias for bedrock_connect.stop', 'bedrock_connect.stop', { cat: 'bedrock-connect', source: 'first-party-plugin', pluginId: BEDROCK_CONNECT_PLUGIN_ID }),
@@ -491,7 +456,6 @@ const DEPRECATED_PERMISSIONS = [
 
 const LOOKUP_PERMISSIONS = [
   ...CORE_PERMISSIONS,
-  ...PLUGIN_OWNED_PERMISSIONS,
   ...DEPRECATED_PERMISSIONS,
 ];
 
@@ -542,7 +506,7 @@ const REMOTE_FIELD_MAP = {
 };
 
 const JAVA_FIELD_MAP = Object.fromEntries(
-  JAVA_FIELD_PERMISSIONS.map((item) => [item.key.replace(/^servers\.java\./, ''), item.key]),
+  JAVA_FIELD_NAMES.map((field) => [field, `servers.java.${field}`]),
 );
 
 const READ_ONLY_KEYS = [
@@ -630,6 +594,7 @@ const POWER_USER_KEYS = [
   'library.add_file',
   'library.remove_file',
   'players.add',
+  'players.scan',
   'players.remove_allowlist_all',
   'players.ban_all',
   'players.unban_all',
@@ -756,6 +721,8 @@ module.exports = {
   SUBCATEGORIES,
   perm,
   CORE_PERMISSIONS,
+  JAVA_PERMISSION_KEYS,
+  JAVA_FIELD_NAMES,
   BEDROCK_CONNECT_PERMISSIONS,
   JAVA_PERMISSIONS,
   JAVA_FIELD_PERMISSIONS,

@@ -104,6 +104,8 @@ function Dashboard() {
   const { servers, gateways, javaHostingAvailable, editions, loading, refresh } = useApi();
   const { connected } = useSocket();
   const { can, canCreateAnyServer } = useAuth();
+  const canRuntime = can('dashboard.view_runtime_status');
+  const canConnection = can('dashboard.view_connection_details');
   const [actions, setActions] = useState({});
   const [bcPreview, setBcPreview] = useState(null);
   const [bcBusy, setBcBusy] = useState(false);
@@ -358,15 +360,15 @@ function Dashboard() {
     );
   }
 
-  const activeCount = servers.filter(s => s.status === 'running').length;
-  const totalPlayers = servers.reduce((sum, s) => sum + (s.stats?.onlinePlayers || 0), 0);
+  const activeCount = canRuntime ? servers.filter(s => s.status === 'running').length : null;
+  const totalPlayers = canRuntime ? servers.reduce((sum, s) => sum + (typeof s.stats?.onlinePlayers === 'number' ? s.stats.onlinePlayers : 0), 0) : null;
   const gatewayTiles = (gateways || []).map((gateway) => ({
     ...gateway,
     kind: 'geyser_gateway',
-    port: gateway.port,
-    connectAddress: gateway.connectAddress
-      ? `${gateway.connectAddress}:${gateway.port}`
-      : `UDP ${gateway.port}`,
+    port: canConnection ? gateway.port : undefined,
+    connectAddress: canConnection && gateway.connectAddress
+      ? `${gateway.connectAddress}${gateway.port ? `:${gateway.port}` : ''}`
+      : undefined,
     stats: {},
   }));
   const dashboardCreates = (editions || []).filter((item) => (
@@ -505,7 +507,7 @@ function Dashboard() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-mc-textMuted">Active</p>
-              <p className="text-2xl font-bold text-green-400 mt-1">{activeCount}</p>
+              <p className="text-2xl font-bold text-green-400 mt-1">{canRuntime ? activeCount : '—'}</p>
             </div>
             <div className="w-10 h-10 bg-green-500/20 rounded-lg flex items-center justify-center">
               <Activity className="w-5 h-5 text-green-400" />
@@ -516,7 +518,7 @@ function Dashboard() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-mc-textMuted">Total Players</p>
-              <p className="text-2xl font-bold text-mc-text mt-1">{totalPlayers}</p>
+              <p className="text-2xl font-bold text-mc-text mt-1">{canRuntime ? totalPlayers : '—'}</p>
             </div>
             <div className="w-10 h-10 bg-purple-500/20 rounded-lg flex items-center justify-center">
               <Users className="w-5 h-5 text-purple-400" />
@@ -638,7 +640,9 @@ function Dashboard() {
                   : lanOn
                     ? 'Hide this server from console LAN games'
                     : 'Show this server under Friends → LAN Games on consoles';
-            const connectLabel = server.connectAddress || `Port ${server.port}`;
+            const connectLabel = canConnection
+              ? (server.connectAddress || (server.port != null ? `Port ${server.port}` : 'Connection hidden'))
+              : 'Connection hidden';
             const canOpen = can('servers.view_details');
             const canStart = can(startPermissionForKind(server.kind));
             const canStop = can(stopPermissionForKind(server.kind));
@@ -721,7 +725,9 @@ function Dashboard() {
                   {contributions.length > 0 && !geyser && (
                     <span className="text-[10px] uppercase tracking-wide text-mc-textMuted">Java</span>
                   )}
-                  {getStatusBadge(server.status)}
+                  {canRuntime ? getStatusBadge(server.status) : (
+                    <span className="badge badge-info">Status hidden</span>
+                  )}
                   <PluginIndicators server={server} />
                   {getRemoteReachableBadge(server)}
                 </div>
@@ -746,7 +752,7 @@ function Dashboard() {
                   There are missing dependencies.
                 </div>
               )}
-              {server.pending_restart === 1 && (
+              {canRuntime && server.pending_restart === 1 && (
                 <div className="mb-4 p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   <span>
@@ -754,12 +760,12 @@ function Dashboard() {
                   </span>
                 </div>
               )}
-              {server.pending_port && (
+              {canConnection && server.pending_port && (
                 <div className="mb-4 p-2.5 rounded-lg border border-blue-500/30 bg-blue-500/10 text-blue-300 text-xs">
                   IPv4 port will change to {server.pending_port} after restart.
                 </div>
               )}
-              {server.pending_ipv6_port && (
+              {canConnection && server.pending_ipv6_port && (
                 <div className="mb-4 p-2.5 rounded-lg border border-blue-500/30 bg-blue-500/10 text-blue-300 text-xs">
                   IPv6 port will change to {server.pending_ipv6_port} after restart.
                 </div>
@@ -775,17 +781,17 @@ function Dashboard() {
               <div className="grid grid-cols-3 gap-3 mb-4">
                 <div className="text-center p-2 bg-mc-darker rounded-lg">
                   <Users className="w-4 h-4 text-mc-textMuted mx-auto mb-1" />
-                  <p className="text-sm font-medium text-white">{isRemote(server) ? 'N/A' : (server.stats?.onlinePlayers || 0)}</p>
+                  <p className="text-sm font-medium text-white">{isRemote(server) ? 'N/A' : (canRuntime && typeof server.stats?.onlinePlayers === 'number' ? server.stats.onlinePlayers : '—')}</p>
                   <p className="text-xs text-mc-textMuted">Players</p>
                 </div>
                 <div className="text-center p-2 bg-mc-darker rounded-lg">
                   <Clock className="w-4 h-4 text-mc-textMuted mx-auto mb-1" />
-                  <p className="text-sm font-medium text-white">{server.stats?.uptime || '0m'}</p>
+                  <p className="text-sm font-medium text-white">{canRuntime && server.stats?.uptime ? server.stats.uptime : '—'}</p>
                   <p className="text-xs text-mc-textMuted">Uptime</p>
                 </div>
                 <div className="text-center p-2 bg-mc-darker rounded-lg">
                   <PackageIcon className="w-4 h-4 text-mc-textMuted mx-auto mb-1" />
-                  <p className="text-sm font-medium text-white">{isRemote(server) ? 'N/A' : (server.stats?.installedMods || 0)}</p>
+                  <p className="text-sm font-medium text-white">{isRemote(server) ? 'N/A' : (can('servers.mods.view') && typeof server.stats?.installedMods === 'number' ? server.stats.installedMods : '—')}</p>
                   <p className="text-xs text-mc-textMuted">Mods</p>
                 </div>
               </div>

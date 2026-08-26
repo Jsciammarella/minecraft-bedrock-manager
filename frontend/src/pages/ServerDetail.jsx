@@ -182,12 +182,11 @@ function ManagedServerDetail() {
 
   const loadServer = async () => {
     try {
-      const [res, accessRes] = await Promise.all([
-        serverApi.getById(id),
-        playerApi.getByServer(id),
-      ]);
+      const requests = [serverApi.getById(id)];
+      if (can('players.view_server_membership')) requests.push(playerApi.getByServer(id));
+      const [res, accessRes] = await Promise.all(requests);
       setServer(res.data);
-      setPlayerAccess(accessRes.data.players || []);
+      setPlayerAccess(accessRes?.data?.players || []);
       // Load auto-update status
       try {
         const auRes = await serverApi.getAutoUpdate(id);
@@ -666,6 +665,15 @@ function ManagedServerDetail() {
   );
   const canAddMods = can('servers.mods.install');
   const canRemoveMods = can('servers.mods.remove');
+  const canRuntime = can('servers.view_runtime_status');
+  const canConnection = can('servers.view_connection_details');
+  const canProperties = can('servers.view_properties');
+  const canRemoteTarget = can('servers.remote.view_target');
+  const canViewMods = can('servers.mods.view');
+  const canViewMembership = can('players.view_server_membership');
+  const canViewAllow = can('servers.allowlist.view');
+  const canViewBan = can('servers.banlist.view');
+  const canViewPlayerPerms = can('servers.player_permissions.view');
 
   const modsLocked = gameplayLocked;
 
@@ -675,8 +683,10 @@ function ManagedServerDetail() {
   const lanOn = Boolean(lan.native || lan.enabled);
   const bcRunning = servers.some(item => item.kind === 'bedrock_connect' && (item.status === 'running' || item.status === 'starting' || item.status === 'stopping'));
   const lanLocked = isBC || isJava || lan.native || bcRunning || isBuilding;
-  const connectLabel = server.connectAddress || `Port ${server.port}`;
-  const onlinePlayers = Array.isArray(server.onlinePlayers) ? server.onlinePlayers : [];
+  const connectLabel = canConnection
+    ? (server.connectAddress || (server.port != null ? `Port ${server.port}` : 'Hidden'))
+    : 'Hidden';
+  const onlinePlayers = canViewMembership && Array.isArray(server.onlinePlayers) ? server.onlinePlayers : [];
 
   return (
     <div className="p-4 md:p-6 max-w-6xl mx-auto">
@@ -856,8 +866,8 @@ function ManagedServerDetail() {
             </div>
             <p className="text-mc-textMuted mt-1 break-words">
               {isRemote
-                ? <>{server.remote_host || 'Remote'}{server.remote_ipv4_port ? `:${server.remote_ipv4_port}` : ''} • {connectLabel}</>
-                : <>v{server.version} • {connectLabel} • {server.gamemode} • {server.difficulty}</>}
+                ? <>{canRemoteTarget ? (server.remote_host || 'Remote') : 'Remote'}{canRemoteTarget && server.remote_ipv4_port ? `:${server.remote_ipv4_port}` : ''}{canConnection ? <> • {connectLabel}</> : null}</>
+                : <>{canProperties && server.version ? <>v{server.version}</> : 'Server'}{canConnection ? <> • {connectLabel}</> : null}{canProperties && server.gamemode ? <> • {server.gamemode}</> : null}{canProperties && server.difficulty ? <> • {server.difficulty}</> : null}</>}
             </p>
           </div>
         </div>
@@ -958,7 +968,7 @@ function ManagedServerDetail() {
             </div>
             <div>
               <p className="text-xs text-mc-textMuted">Players</p>
-              <p className={`text-lg font-bold ${gameplayLocked ? 'text-mc-textMuted' : 'text-white'}`}>{isRemote ? 'N/A' : `${onlinePlayers.length}/${server.max_players}`}</p>
+              <p className={`text-lg font-bold ${gameplayLocked ? 'text-mc-textMuted' : 'text-white'}`}>{isRemote ? 'N/A' : (canRuntime ? `${canViewMembership ? onlinePlayers.length : (typeof server.stats?.onlinePlayers === 'number' ? server.stats.onlinePlayers : '—')}${canProperties && server.max_players != null ? `/${server.max_players}` : ''}` : '—')}</p>
             </div>
           </div>
         </div>
@@ -969,7 +979,7 @@ function ManagedServerDetail() {
             </div>
             <div>
               <p className="text-xs text-mc-textMuted">Uptime</p>
-              <p className="text-lg font-bold text-white">{server.stats?.uptime || '0m'}</p>
+              <p className="text-lg font-bold text-white">{canRuntime && server.stats?.uptime ? server.stats.uptime : '—'}</p>
             </div>
           </div>
         </div>
@@ -980,7 +990,7 @@ function ManagedServerDetail() {
             </div>
             <div>
               <p className="text-xs text-mc-textMuted">Mods</p>
-              <p className={`text-lg font-bold ${gameplayLocked ? 'text-mc-textMuted' : 'text-white'}`}>{isRemote ? 'N/A' : (server.installedMods?.length || 0)}</p>
+              <p className={`text-lg font-bold ${gameplayLocked ? 'text-mc-textMuted' : 'text-white'}`}>{isRemote ? 'N/A' : (canViewMods && Array.isArray(server.installedMods) ? server.installedMods.length : '—')}</p>
             </div>
           </div>
         </div>
@@ -1395,6 +1405,7 @@ function ManagedServerDetail() {
           {!isRemote && (
           <>
           {/* Online Players */}
+          {canViewMembership && (
           <div className={`card ${gameplayLocked ? 'opacity-60' : ''}`}>
             <button
               onClick={() => setShowPlayers(!showPlayers)}
@@ -1432,8 +1443,10 @@ function ManagedServerDetail() {
               </div>
             )}
           </div>
+          )}
 
           {/* Installed Mods */}
+          {canViewMods && (
           <div className={`card ${modsLocked ? 'opacity-60' : ''}`}>
             <button
               onClick={() => setShowMods(!showMods)}
@@ -1501,6 +1514,7 @@ function ManagedServerDetail() {
               </div>
             )}
           </div>
+          )}
           </>
           )}
 
@@ -1508,11 +1522,11 @@ function ManagedServerDetail() {
           <div className="card">
             <h2 className="font-semibold text-white mb-3">Server Info</h2>
             <div className="space-y-2 text-sm">
-              {!isRemote && <InfoRow label="Version" value={server.version} />}
-              <InfoRow label="Address" value={connectLabel} />
-              <InfoRow label={isRemote ? 'Local IPv4 Port' : 'IPv4 Port'} value={server.pending_port ? `${server.port} → ${server.pending_port}` : server.port} />
-              <InfoRow label={isRemote ? 'Local IPv6 Port' : 'IPv6 Port'} value={server.pending_ipv6_port ? `${server.ipv6_port || 'unset'} → ${server.pending_ipv6_port}` : (server.ipv6_port || 'unset')} />
-              {isRemote && (
+              {canProperties && !isRemote && <InfoRow label="Version" value={server.version} />}
+              {canConnection && <InfoRow label="Address" value={connectLabel} />}
+              {canConnection && <InfoRow label={isRemote ? 'Local IPv4 Port' : 'IPv4 Port'} value={server.pending_port ? `${server.port} → ${server.pending_port}` : server.port} />}
+              {canConnection && <InfoRow label={isRemote ? 'Local IPv6 Port' : 'IPv6 Port'} value={server.pending_ipv6_port ? `${server.ipv6_port || 'unset'} → ${server.pending_ipv6_port}` : (server.ipv6_port || 'unset')} />}
+              {isRemote && canRemoteTarget && (
                 <>
                   <InfoRow label="Remote Host" value={server.remote_host || 'N/A'} />
                   <InfoRow label="Remote IPv4 Port" value={server.remote_ipv4_port || 'N/A'} />

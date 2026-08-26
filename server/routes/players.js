@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db/connection');
 const serverManager = require('../services/serverManager');
-const { requirePermission, assertPermission } = require('../middleware/auth');
+const { requirePermission, assertPermission, securedRoute } = require('../middleware/auth');
 
 // Get all known players
 router.get('/', requirePermission('players.view'), async (req, res) => {
@@ -29,14 +29,29 @@ router.get('/whitelisted', requirePermission('players.view_server_membership'), 
 router.get('/server/:serverId', requirePermission('players.view_server_membership'), async (req, res) => {
   try {
     require('../services/javaHostingPolicy').assertServerVisible(serverManager.getServer(req.params.serverId));
+    const principal = req.principal || req.user;
+    const auth = require('../services/authService');
     const online = await serverManager.getOnlinePlayers(req.params.serverId, { refresh: false });
     const players = serverManager.getPlayerAccess(req.params.serverId);
-    res.json({
-      online,
-      players,
-      whitelisted: players.filter(player => player.is_whitelisted === 1),
-      banned: players.filter(player => player.is_banned === 1),
-    });
+    const payload = { online };
+    if (auth.hasPermission(principal, 'servers.allowlist.view')
+      || auth.hasPermission(principal, 'servers.banlist.view')
+      || auth.hasPermission(principal, 'servers.player_permissions.view')) {
+      payload.players = players.map((player) => {
+        const row = { ...player };
+        if (!auth.hasPermission(principal, 'servers.allowlist.view')) delete row.is_whitelisted;
+        if (!auth.hasPermission(principal, 'servers.banlist.view')) delete row.is_banned;
+        if (!auth.hasPermission(principal, 'servers.player_permissions.view')) delete row.permission;
+        return row;
+      });
+    }
+    if (auth.hasPermission(principal, 'servers.allowlist.view')) {
+      payload.whitelisted = players.filter((player) => player.is_whitelisted === 1);
+    }
+    if (auth.hasPermission(principal, 'servers.banlist.view')) {
+      payload.banned = players.filter((player) => player.is_banned === 1);
+    }
+    res.json(payload);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
@@ -82,9 +97,19 @@ router.put('/server/:serverId/:playerId', async (req, res) => {
 });
 
 // Scan server for players
-router.post('/scan/:serverId', requirePermission('players.view_server_membership'), async (req, res) => {
+securedRoute(router, {
+  method: 'post',
+  path: '/scan/:serverId',
+  permissions: ['players.scan', 'servers.view_details'],
+  action: 'scan players',
+  risk: 'normal',
+}, async (req, res) => {
   try {
     const result = await serverManager.scanPlayers(req.params.serverId);
+    const auth = require('../services/authService');
+    if (!auth.hasPermission(req.principal || req.user, 'players.view_server_membership')) {
+      return res.json({ scanned: result.scanned, added: result.added, message: result.message });
+    }
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });

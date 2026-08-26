@@ -4,7 +4,7 @@ const catalog = require('./permissionCatalog');
 const defs = require('./permissionDefinitions');
 
 const MIGRATION_KEY = 'permission_catalog_v2';
-const SCHEMA_VERSION = String(defs.CATALOG_SCHEMA_VERSION);
+const SCHEMA_VERSION = '2';
 
 function nowIso() {
   return new Date().toISOString();

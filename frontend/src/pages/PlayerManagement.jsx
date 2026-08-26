@@ -187,7 +187,7 @@ function PlayerManagement() {
           </div>
         </div>
         <div className="page-header-actions flex items-center gap-3">
-          {runningGameServers.length > 0 && (
+          {can('players.scan') && runningGameServers.length > 0 && (
             <button
               onClick={handleScanAll}
               disabled={scanning}
@@ -249,6 +249,7 @@ function PlayerManagement() {
         </div>
 
         {/* Scan servers */}
+        {can('players.scan') ? (
         <div className="mt-4 pt-4 border-t border-mc-surfaceLight">
           <p className="text-sm text-mc-textMuted mb-3">Scan running servers for players:</p>
           <div className="flex flex-wrap gap-2">
@@ -273,6 +274,11 @@ function PlayerManagement() {
             )}
           </div>
         </div>
+        ) : (
+          <div className="mt-4 pt-4 border-t border-mc-surfaceLight">
+            <p className="text-sm text-mc-textMuted">Scanning servers requires the Scan Servers for Players permission.</p>
+          </div>
+        )}
       </div>
 
       {/* Player List */}
@@ -288,7 +294,7 @@ function PlayerManagement() {
               <button onClick={() => setShowAddModal(true)} className="btn btn-primary">
                 <Plus className="w-4 h-4" /> Add Player
               </button>
-              {runningGameServers.length > 0 && (
+              {can('players.scan') && runningGameServers.length > 0 && (
                 <button onClick={handleScanAll} disabled={scanning} className="btn btn-secondary">
                   <Scan className="w-4 h-4" /> Scan Server
                 </button>

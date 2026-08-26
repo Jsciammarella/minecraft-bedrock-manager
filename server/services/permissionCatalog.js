@@ -213,7 +213,7 @@ function requiredServerUpdatePermissions(server, body, currentValues) {
     if (changed(field)) needed.add(permission);
   }
   if (server?.kind === 'java') {
-    for (const [field, permission] of Object.entries(defs.JAVA_FIELD_MAP)) {
+    for (const [field, permission] of Object.entries(javaFieldMap())) {
       if (changed(field)) needed.add(permission);
     }
   }
@@ -222,7 +222,7 @@ function requiredServerUpdatePermissions(server, body, currentValues) {
 
 function propertyPermissionForField(field, kind) {
   if (kind === 'remote') return defs.REMOTE_FIELD_MAP[field] || null;
-  if (kind === 'java' && defs.JAVA_FIELD_MAP[field]) return defs.JAVA_FIELD_MAP[field];
+  if (kind === 'java' && javaFieldMap()[field]) return javaFieldMap()[field];
   return defs.PROPERTY_FIELD_MAP[field] || null;
 }
 
@@ -243,11 +243,91 @@ function listKeys() {
 }
 
 function bundleKeysFor(systemKey, assignableKeys = ASSIGNABLE_KEYS) {
-  if (systemKey === 'administrators') return [...assignableKeys];
+  if (systemKey === 'administrators') return listActiveGroupAssignablePermissions(assignableKeys);
   if (systemKey === 'read-only') return [...READ_ONLY_KEYS];
   if (systemKey === 'standard-users') return [...STANDARD_KEYS];
   if (systemKey === 'power-users') return [...POWER_USER_KEYS];
   return [];
+}
+
+function listActiveGroupAssignablePermissions(fallback = ASSIGNABLE_KEYS) {
+  try {
+    const db = require('../db/connection');
+    const rows = db.prepare(`
+      SELECT key FROM permission_defs
+      WHERE active = 1 AND deprecated = 0 AND assignable_to_groups = 1
+      ORDER BY key
+    `).all();
+    if (rows.length) return rows.map((row) => row.key);
+  } catch {
+    /* database may not be ready */
+  }
+  return [...fallback];
+}
+
+function mergedCategories({ includeInactive = false } = {}) {
+  const byId = new Map((defs.CATEGORIES || []).map((item) => [item.id, { ...item, source: item.source || 'core' }]));
+  try {
+    const pluginHost = require('./pluginHost');
+    const extra = typeof pluginHost.getPermissionCategories === 'function'
+      ? pluginHost.getPermissionCategories()
+      : [];
+    for (const item of extra || []) {
+      if (item?.id && !byId.has(item.id)) byId.set(item.id, item);
+    }
+  } catch {
+    /* plugins optional */
+  }
+  if (includeInactive) {
+    try {
+      const db = require('../db/connection');
+      const rows = db.prepare(`
+        SELECT DISTINCT primary_category AS id
+        FROM permission_defs
+        WHERE IFNULL(primary_category, '') != ''
+      `).all();
+      for (const row of rows) {
+        if (!byId.has(row.id)) {
+          byId.set(row.id, { id: row.id, label: row.id, source: 'historical', inactive: true });
+        }
+      }
+    } catch {
+      /* optional */
+    }
+  }
+  return [...byId.values()];
+}
+
+function mergedSubcategories() {
+  const items = [...(defs.SUBCATEGORIES || [])];
+  try {
+    const pluginHost = require('./pluginHost');
+    const extra = typeof pluginHost.getPermissionSubcategories === 'function'
+      ? pluginHost.getPermissionSubcategories()
+      : [];
+    const seen = new Set(items.map((item) => `${item.category}:${item.id}`));
+    for (const item of extra || []) {
+      const key = `${item.category}:${item.id}`;
+      if (item?.id && !seen.has(key)) {
+        seen.add(key);
+        items.push(item);
+      }
+    }
+  } catch {
+    /* plugins optional */
+  }
+  return items;
+}
+
+function javaFieldMap() {
+  const map = { ...defs.JAVA_FIELD_MAP };
+  try {
+    const pluginHost = require('./pluginHost');
+    Object.assign(map, pluginHost.getFieldMappings?.('server-edition-java') || {});
+  } catch {
+    /* plugin field mappings optional */
+  }
+  return map;
 }
 
 module.exports = {
@@ -295,4 +375,8 @@ module.exports = {
   pluginOwnsKey,
   listKeys,
   bundleKeysFor,
+  listActiveGroupAssignablePermissions,
+  mergedCategories,
+  mergedSubcategories,
+  javaFieldMap,
 };

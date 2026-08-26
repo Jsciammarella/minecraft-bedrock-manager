@@ -516,7 +516,9 @@ else
     fi
 fi
 
-wait_for_health || true
+wait_for_health || {
+    die "Health check failed after upgrade. Backup kept at: ${BACKUP_DIR:-unknown}. Installation state was not deleted."
+}
 
 echo
 log "Upgrade finished."

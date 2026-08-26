@@ -75,6 +75,45 @@ function requireAnyPermission(...keys) {
   };
 }
 
+function requireAllPermissions(...keys) {
+  return (req, res, next) => {
+    try {
+      const current = req.principal || req.user;
+      if (!current) return deny(res, 401, 'Authentication required');
+      for (const key of keys) {
+        security().requirePermission(current, key, undefined, { req });
+      }
+      next();
+    } catch (err) {
+      return fail(res, err);
+    }
+  };
+}
+
+const ROUTE_DECLARATIONS = [];
+
+function securedRoute(router, spec, handler) {
+  const method = String(spec.method || 'get').toLowerCase();
+  const permissions = spec.permissions || (spec.permission ? [spec.permission] : []);
+  ROUTE_DECLARATIONS.push({
+    method: method.toUpperCase(),
+    path: spec.path,
+    route: spec.route,
+    permissions,
+    action: spec.action,
+    permissionMode: spec.permissionMode || (permissions.length > 1 ? 'composite' : 'static'),
+    permissionResolver: spec.permissionResolver || spec.resolver || null,
+    risk: spec.risk || null,
+  });
+  const middleware = [];
+  if (spec.permissionMode !== 'dynamic' && spec.permissionMode !== 'field-mapped' && spec.permissionMode !== 'kind-specific') {
+    if (permissions.length === 1) middleware.push(requirePermission(permissions[0]));
+    else if (permissions.length > 1) middleware.push(requireAllPermissions(...permissions));
+  }
+  router[method](spec.path, ...middleware, handler);
+  return router;
+}
+
 function requireAdmin(req, res, next) {
   const current = req.principal || req.user;
   if (!current) return deny(res, 401, 'Authentication required');
@@ -267,6 +306,9 @@ module.exports = {
   optionalUser: optionalPrincipal,
   requirePermission,
   requireAnyPermission,
+  requireAllPermissions,
+  securedRoute,
+  ROUTE_DECLARATIONS,
   requireAdmin,
   requireUserManagement,
   requireServerStart,

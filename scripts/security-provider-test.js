@@ -360,7 +360,8 @@ function runSecurityProviderTests() {
       /No-auth will not be selected as a fallback|missing or invalid/i,
     );
 
-    assert.ok(catalog.PERMISSIONS.some((item) => item.key === 'servers.create_java'));
+    assert.equal(catalog.CORE_PERMISSIONS.some((item) => item.key === 'servers.create_java'), false);
+    assert.ok(require('../server/services/permissionDefinitions').JAVA_PERMISSION_KEYS.includes('servers.create_java'));
     assert.ok(catalog.PERMISSIONS.some((item) => item.administrative === true || item.destructive === true));
     assert.equal(catalog.startPermissionForKind('java'), 'servers.start_java');
     assert.equal(catalog.createPermissionForKind('java'), 'servers.create_java');
@@ -821,6 +822,8 @@ async function runSocketIntegrationTests() {
 }
 
 function runSecurityRouteCatalogTests() {
+  const pluginHost = require('../server/services/pluginHost');
+  if (!pluginHost.getPlugins().length) pluginHost.loadPlugins();
   const roots = [
     path.join(__dirname, '../server/routes'),
     path.join(__dirname, '../server/index.js'),

@@ -36,7 +36,8 @@ router.post('/users', requirePermission('users.create'), (req, res) => {
 });
 
 router.get('/users/:id', requirePermission('users.view_details'), (req, res) => {
-  const user = auth.getUser(req.params.id, { includePermissions: true, includeSensitive: true });
+  const includePermissions = req.user.isAdmin || auth.hasPermission(req.user, 'users.view_effective_permissions');
+  const user = auth.getUser(req.params.id, { includePermissions, includeSensitive: true });
   if (!user) return res.status(404).json({ error: 'User not found' });
   const guard = auth.lastAdminGuard(user.id);
   res.json({ ...user, isLastAdmin: guard.isLastAdmin });
@@ -122,7 +123,8 @@ router.post('/groups', requirePermission('groups.create'), (req, res) => {
 });
 
 router.get('/groups/:id', requirePermission('groups.view_details'), (req, res) => {
-  const group = auth.getGroup(req.params.id, { includePermissions: true, includeUsers: true });
+  const includePermissions = req.user.isAdmin || auth.hasPermission(req.user, 'groups.view_effective_permissions');
+  const group = auth.getGroup(req.params.id, { includePermissions, includeUsers: true });
   if (!group) return res.status(404).json({ error: 'Group not found' });
   res.json(group);
 });
@@ -133,9 +135,6 @@ router.put('/groups/:id', (req, res) => {
     if (body.permissions && !req.user.isAdmin && !auth.hasPermission(req.user, 'groups.assign_permissions')) {
       return permissionDenied(res, 'groups.assign_permissions');
     }
-    if (Array.isArray(body.userIds) && !req.user.isAdmin && !auth.hasPermission(req.user, 'groups.add_members') && !auth.hasPermission(req.user, 'groups.remove_members')) {
-      return permissionDenied(res, 'groups.add_members');
-    }
     if (body.name != null && !req.user.isAdmin && !auth.hasPermission(req.user, 'groups.edit_name')) {
       return permissionDenied(res, 'groups.edit_name');
     }
@@ -145,8 +144,15 @@ router.put('/groups/:id', (req, res) => {
         return permissionDenied(res, key);
       }
     }
-    res.json(auth.updateGroup(req.params.id, body));
+    res.json(auth.updateGroup(req.params.id, body, req.user));
   } catch (err) {
+    if (err.code === 'PERMISSION_REQUIRED') {
+      return res.status(403).json({
+        error: err.message,
+        code: err.code,
+        permission: err.permission,
+      });
+    }
     res.status(err.status || 400).json({ error: err.message });
   }
 });
@@ -171,8 +177,8 @@ router.post('/groups/:id/reset-defaults', requireAdmin, (req, res) => {
 
 router.get('/permissions', requireAnyPermission('permissions.view_catalog', 'permissions.view_assignments'), (req, res) => {
   res.json({
-    categories: catalog.CATEGORIES,
-    subcategories: catalog.SUBCATEGORIES,
+    categories: catalog.mergedCategories({ includeInactive: true }),
+    subcategories: catalog.mergedSubcategories(),
     permissions: auth.listPermissionDefs({
       includeDeprecated: Boolean(req.query.includeDeprecated) && (
         req.user.isAdmin || auth.hasPermission(req.user, 'permissions.view_deprecated')
@@ -224,8 +230,8 @@ router.put('/settings', requireAdmin, (req, res) => {
 
 router.get('/catalog', requirePermission('permissions.view_catalog'), (req, res) => {
   res.json({
-    categories: catalog.CATEGORIES,
-    subcategories: catalog.SUBCATEGORIES,
+    categories: catalog.mergedCategories({ includeInactive: true }),
+    subcategories: catalog.mergedSubcategories(),
     permissions: auth.listPermissionDefs({
       includeDeprecated: Boolean(req.query.includeDeprecated) && (
         req.user.isAdmin || auth.hasPermission(req.user, 'permissions.view_deprecated')

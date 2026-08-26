@@ -217,7 +217,6 @@ function upsertPermissionDefs(perms) {
 function ensurePermissionRows() {
   upsertPermissionDefs([
     ...catalog.CORE_PERMISSIONS,
-    ...catalog.PLUGIN_OWNED_PERMISSIONS,
     ...catalog.DEPRECATED_PERMISSIONS,
   ]);
 }
@@ -235,7 +234,9 @@ function seedUnusedDefaultGroupPerms() {
     `).get(def.systemKey, def.slug);
     if (!row) continue;
     const empty = countPerms.get(row.id).n === 0;
-    const keys = catalog.bundleKeysFor(def.systemKey);
+    const keys = def.systemKey === 'administrators'
+      ? catalog.listActiveGroupAssignablePermissions()
+      : catalog.bundleKeysFor(def.systemKey);
     if (empty) {
       for (const key of keys) insertAllow.run(row.id, key, stamp, stamp);
       db.prepare('UPDATE groups SET defaults_version = ? WHERE id = ?').run(catalog.DEFAULTS_VERSION, row.id);
@@ -326,21 +327,32 @@ function syncDynamicPermissions() {
   seedUnusedDefaultGroupPerms();
 }
 
+function runSecurityMigrations() {
+  const logger = require('./logger');
+  const errors = require('../security/errors');
+  const wrap = (migrationKey, fn) => {
+    try {
+      return fn();
+    } catch (err) {
+      if (err?.code === 'PERMISSION_MIGRATION_FAILED') throw err;
+      logger.error('Permission migration failed', {
+        migrationKey,
+        schemaVersion: String(catalog.CATALOG_SCHEMA_VERSION),
+        error: err.message,
+        recovery: 'Fix the reported error and restart. Do not sign in or start managed servers until migration succeeds.',
+      });
+      throw errors.permissionMigrationFailed(migrationKey, String(catalog.CATALOG_SCHEMA_VERSION), err);
+    }
+  };
+  wrap('permission_catalog_v2', () => require('./permissionCatalogMigration').migrate());
+  wrap('permission_catalog_v3', () => require('./permissionCatalogMigrationV3').migrate());
+  wrap('bedrock_connect_permission_schema', () => require('./bedrockConnectPermissionMigration').migrate());
+}
+
 function ensureSeed() {
   ensurePermissionRows();
   ensureDefaultGroups();
-  try {
-    require('./permissionCatalogMigration').migrate();
-  } catch (err) {
-    const logger = require('./logger');
-    logger.warn(`Permission catalog migration failed: ${err.message}`);
-  }
-  try {
-    require('./bedrockConnectPermissionMigration').migrate();
-  } catch (err) {
-    const logger = require('./logger');
-    logger.warn(`BedrockConnect permission migration failed: ${err.message}`);
-  }
+  runSecurityMigrations();
   seedUnusedDefaultGroupPerms();
 }
 
@@ -981,17 +993,42 @@ function replaceGroupPermissions(groupId, permissions) {
 
 function setGroupUsers(groupId, userIds) {
   const ids = [...new Set((userIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
-  const tx = db.transaction(() => {
-    db.prepare('DELETE FROM user_groups WHERE group_id = ?').run(groupId);
-    const insert = db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)');
-    for (const id of ids) {
-      if (getUserRow(id)) insert.run(id, groupId);
-    }
-  });
-  tx();
+  db.prepare('DELETE FROM user_groups WHERE group_id = ?').run(groupId);
+  const insert = db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)');
+  for (const id of ids) insert.run(id, groupId);
 }
 
-function updateGroup(id, data) {
+function applyGroupMembership(groupId, userIds, actor) {
+  const incoming = Array.isArray(userIds) ? userIds : [];
+  const requested = [];
+  const seen = new Set();
+  for (const raw of incoming) {
+    const id = Number(raw);
+    if (!Number.isInteger(id) || id < 1 || !getUserRow(id)) {
+      throw Object.assign(new Error('Invalid user id'), { status: 400 });
+    }
+    if (seen.has(id)) continue;
+    seen.add(id);
+    requested.push(id);
+  }
+  const current = db.prepare('SELECT user_id AS id FROM user_groups WHERE group_id = ?').all(groupId).map((row) => row.id);
+  const currentSet = new Set(current);
+  const requestedSet = new Set(requested);
+  const addedIds = requested.filter((id) => !currentSet.has(id));
+  const removedIds = current.filter((id) => !requestedSet.has(id));
+  const errors = require('../security/errors');
+  if (actor && !actor.isAdmin) {
+    if (addedIds.length && !hasPermission(actor, 'groups.add_members')) {
+      throw errors.permissionRequired('groups.add_members');
+    }
+    if (removedIds.length && !hasPermission(actor, 'groups.remove_members')) {
+      throw errors.permissionRequired('groups.remove_members');
+    }
+  }
+  setGroupUsers(groupId, requested);
+}
+
+function updateGroup(id, data, actor) {
   const row = db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
   if (!row) throw Object.assign(new Error('Group not found'), { status: 404 });
   const nextName = data.name != null ? String(data.name).trim() : row.name;
@@ -999,12 +1036,15 @@ function updateGroup(id, data) {
   const clash = db.prepare('SELECT id FROM groups WHERE name = ? COLLATE NOCASE AND id != ?').get(nextName, id);
   if (clash) throw new Error('A group with that name already exists');
   const nextActive = data.isActive == null ? row.is_active : (data.isActive ? 1 : 0);
-  db.prepare('UPDATE groups SET name = ?, is_active = ?, updated_at = ? WHERE id = ?')
-    .run(nextName, nextActive, nowIso(), id);
-  if (data.permissions && typeof data.permissions === 'object') {
-    replaceGroupPermissions(id, data.permissions);
-  }
-  if (Array.isArray(data.userIds)) setGroupUsers(id, data.userIds);
+  const tx = db.transaction(() => {
+    db.prepare('UPDATE groups SET name = ?, is_active = ?, updated_at = ? WHERE id = ?')
+      .run(nextName, nextActive, nowIso(), id);
+    if (data.permissions && typeof data.permissions === 'object') {
+      replaceGroupPermissions(id, data.permissions);
+    }
+    if (Array.isArray(data.userIds)) applyGroupMembership(id, data.userIds, actor);
+  });
+  tx.immediate();
   return getGroup(id, { includePermissions: true, includeUsers: true });
 }
 
@@ -1167,6 +1207,7 @@ module.exports = {
   DEFAULT_PASSWORD,
   KEYS,
   ensureSeed,
+  ensurePermissionRows,
   hashPassword,
   verifyPassword,
   hasPermission,
