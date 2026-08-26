@@ -894,6 +894,9 @@ async function run() {
 
   if (spawnSync('bash', ['-c', 'true']).status === 0) {
     const upgradeScript = path.join(__dirname, 'upgrade.sh');
+    const upgradeSource = fs.readFileSync(upgradeScript, 'utf8');
+    assert.doesNotMatch(upgradeSource, /\/api\/servers/, 'upgrade shutdown must not depend on an authenticated API request');
+    assert.match(upgradeSource, /stop_manager_for_upgrade/, 'upgrade must stop the owning service before backup');
     const runUpgrade = (args) => spawnSync('bash', [upgradeScript, ...args], {
       encoding: 'utf8',
       timeout: 8000,
@@ -1653,6 +1656,7 @@ async function run() {
   const storedRemote = serverManager.getServer(remoteCreated.id);
   assert.equal(storedRemote.remote_host, '127.0.0.1');
   assert.equal(Number(storedRemote.remote_ipv4_port), mockRemotePort);
+  assert.equal(Number(storedRemote.lan_broadcast), 0, 'new remote Bedrock servers should default LAN listing to off');
   assert.equal(udpGateway.isActive(remoteCreated.id), false);
 
   await serverManager.setLanBroadcast(remoteCreated.id, false);

@@ -45,7 +45,7 @@ Upgrade the Minecraft Bedrock Server Manager in place.
 Preserved: .env, Docker volumes (mc-data, mc-logs), native data/, mods,
 catalog settings, player records, allowlists, and worlds.
 
-Not preserved across the restart: running Bedrock processes. Start them
+Not preserved across the restart: running managed server processes. Start them
 again from the dashboard after the upgrade.
 
 Options:
@@ -252,42 +252,37 @@ confirm() {
     [[ "$answer" == "y" || "$answer" == "Y" ]]
 }
 
-stop_managed_servers() {
-    local port base
-    port="$(manager_port)"
-    base="http://127.0.0.1:${port}"
-    if ! curl -sf --max-time 3 "${base}/api/health" >/dev/null 2>&1; then
-        warn "Manager API is not reachable; Bedrock processes will stop when the manager restarts."
-        return 0
+stop_manager_for_upgrade() {
+    local mode="$1"
+
+    if [[ "$mode" == "docker" ]]; then
+        local container_id
+        container_id="$(docker compose -f "$APP_DIR/docker-compose.yml" ps -q mc-manager 2>/dev/null || true)"
+        if [[ -n "$container_id" ]]; then
+            log "Gracefully stopping the manager and all locally managed servers..."
+            docker compose -f "$APP_DIR/docker-compose.yml" stop --timeout 60 mc-manager
+            if [[ -n "$(docker compose -f "$APP_DIR/docker-compose.yml" ps -q mc-manager 2>/dev/null || true)" ]]; then
+                die "The manager container is still running. Stop it manually before retrying the upgrade."
+            fi
+            return
+        fi
     fi
-    if command -v python3 >/dev/null 2>&1; then
-        python3 - "$base" <<'PY'
-import json, sys, urllib.error, urllib.request
 
-base = sys.argv[1]
-try:
-    with urllib.request.urlopen(base + "/api/servers", timeout=10) as response:
-        servers = json.load(response)
-except Exception as exc:
-    print(f"Could not list servers: {exc}", file=sys.stderr)
-    sys.exit(0)
+    if command -v systemctl >/dev/null 2>&1 \
+        && systemctl list-unit-files mc-manager.service >/dev/null 2>&1 \
+        && systemctl is-active --quiet mc-manager.service; then
+        log "Gracefully stopping the manager and all locally managed servers..."
+        sudo systemctl stop mc-manager.service
+        if systemctl is-active --quiet mc-manager.service; then
+            die "mc-manager.service is still running. Stop it manually before retrying the upgrade."
+        fi
+        return
+    fi
 
-for server in servers:
-    if server.get("status") not in ("running", "starting"):
-        continue
-    name = server.get("name") or server.get("id")
-    req = urllib.request.Request(f"{base}/api/servers/{server['id']}/stop", method="POST")
-    try:
-        urllib.request.urlopen(req, timeout=60).read()
-        print(f"Stopped {name}")
-    except urllib.error.HTTPError as exc:
-        print(f"Could not stop {name}: HTTP {exc.code}", file=sys.stderr)
-    except Exception as exc:
-        print(f"Could not stop {name}: {exc}", file=sys.stderr)
-PY
-        sleep 2
-    else
-        warn "python3 is not available; skipping graceful Bedrock stop."
+    local port
+    port="$(manager_port)"
+    if curl -fsS --max-time 3 "http://127.0.0.1:${port}/api/health" >/dev/null 2>&1; then
+        die "The manager is running outside the selected ${mode} service. Stop it manually before retrying the upgrade."
     fi
 }
 
@@ -428,7 +423,7 @@ else
         echo "  - fetch and check out branch ${TARGET_BRANCH}"
     fi
     echo "  - rebuild and restart the manager"
-    echo "  - stop running Bedrock servers for the restart (start them again from the dashboard)"
+    echo "  - stop running managed servers for the restart (start them again from the dashboard)"
     if (( SKIP_BACKUP )); then
         echo "  - skip the local backup copy"
     else
@@ -449,8 +444,7 @@ else
         die "Tracked files have local changes. Commit, stash, or revert them, then rerun."
     fi
 
-    log "Stopping managed Bedrock servers (if the API is up)..."
-    stop_managed_servers || true
+    stop_manager_for_upgrade "$MODE"
     kill_stale_lan_proxies || true
 
     if (( ! SKIP_BACKUP )); then
@@ -490,16 +484,12 @@ merge_new_env_keys
 if [[ "$MODE" == "docker" ]]; then
     command -v docker >/dev/null 2>&1 || die "docker is required for a Docker upgrade."
     docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required."
-    log "Stopping the manager container so leftover LAN proxies can be reaped..."
-    docker compose -f "$APP_DIR/docker-compose.yml" stop mc-manager || true
+    stop_manager_for_upgrade docker
     kill_stale_lan_proxies || true
     log "Rebuilding and recreating the manager container (volumes are left in place)..."
     docker compose -f "$APP_DIR/docker-compose.yml" up -d --build
 else
-    if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files mc-manager.service >/dev/null 2>&1; then
-        log "Stopping mc-manager.service..."
-        sudo systemctl stop mc-manager || true
-    fi
+    stop_manager_for_upgrade native
     kill_stale_lan_proxies || true
     command -v node >/dev/null 2>&1 || die "Node.js 20.x is required for a native upgrade."
     log "Installing dependencies and rebuilding the UI..."
@@ -524,7 +514,7 @@ echo
 log "Upgrade finished."
 print_manager_connect_urls "$(manager_port)"
 echo
-echo "Start Bedrock servers from the dashboard if they were running before the upgrade."
+echo "Start managed servers from the dashboard if they were running before the upgrade."
 if [[ -n "${BACKUP_DIR:-}" ]]; then
     echo "Backup kept at: $BACKUP_DIR"
     echo "At most ${KEEP_UPGRADE_BACKUPS} timestamped copies are kept under upgrade-backups/."

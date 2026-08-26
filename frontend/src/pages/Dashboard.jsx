@@ -618,7 +618,6 @@ function Dashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {visibleServers.map((server) => {
             const geyser = isGeyserGateway(server);
-            const contributions = pluginContributionsOf(server);
             const splitActions = primarySplitActions(server);
             const javaControlsLocked = geyser || server.controlPolicy === 'remote-plugin-lifecycle' || server.coreActionsDisabled;
             const javaLockReason = CONTROL_DISABLED_REASONS[server.disabledReasonId] || CONTROL_DISABLED_REASONS['remote-java'];
@@ -652,7 +651,7 @@ function Dashboard() {
             return (
             <div
               key={server.id}
-              className={`card animate-slide-up transition-colors ${canOpen ? 'cursor-pointer hover:border-mc-accent/40' : ''}`}
+              className={`card flex h-full flex-col animate-slide-up transition-colors ${canOpen ? 'cursor-pointer hover:border-mc-accent/40' : ''}`}
               onClick={openServer}
               onKeyDown={(e) => {
                 if (canOpen && (e.key === 'Enter' || e.key === ' ')) openServer();
@@ -722,9 +721,6 @@ function Dashboard() {
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                  {contributions.length > 0 && !geyser && (
-                    <span className="text-[10px] uppercase tracking-wide text-mc-textMuted">Java</span>
-                  )}
                   {canRuntime ? getStatusBadge(server.status) : (
                     <span className="badge badge-info">Status hidden</span>
                   )}
@@ -778,7 +774,7 @@ function Dashboard() {
               )}
 
               {/* Server Info */}
-              <div className="grid grid-cols-3 gap-3 mb-4">
+              <div className="mt-auto grid grid-cols-3 gap-3 mb-4">
                 <div className="text-center p-2 bg-mc-darker rounded-lg">
                   <Users className="w-4 h-4 text-mc-textMuted mx-auto mb-1" />
                   <p className="text-sm font-medium text-white">{isRemote(server) ? 'N/A' : (canRuntime && typeof server.stats?.onlinePlayers === 'number' ? server.stats.onlinePlayers : '—')}</p>

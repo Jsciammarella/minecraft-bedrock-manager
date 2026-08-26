@@ -939,7 +939,7 @@ class ServerManager {
     const insert = db.prepare(`
       INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
         server_description, server_motd, status, data_path, lan_broadcast, ipv6_port)
-      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'creating', ?, 1, ?)
+      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'creating', ?, 0, ?)
     `);
     const result = insert.run(
       name, version || 'latest', port, maxPlayers || 10,
@@ -1033,7 +1033,7 @@ class ServerManager {
       INSERT INTO servers (name, version, port, max_players, whitelist_mode, difficulty, gamemode,
         server_description, server_motd, status, data_path, lan_broadcast, ipv6_port, kind,
         remote_host, remote_ipv4_port, remote_ipv6_port)
-      VALUES (?, 'N/A', ?, 0, 0, 'N/A', 'N/A', ?, ?, 'stopped', ?, 1, ?, 'remote', ?, ?, ?)
+      VALUES (?, 'N/A', ?, 0, 0, 'N/A', 'N/A', ?, ?, 'stopped', ?, 0, ?, 'remote', ?, ?, ?)
     `);
     const result = insert.run(
       name, port,
@@ -3655,6 +3655,22 @@ done
       timers.forEach(timer => clearTimeout(timer));
     }
     this.scheduledRestarts.clear();
+
+    const activeServers = this.getAllServers().filter((server) =>
+      ['running', 'starting'].includes(server.status)
+    );
+    if (activeServers.length > 0) {
+      logger.info(`Gracefully stopping ${activeServers.length} managed server(s)...`);
+      const results = await Promise.allSettled(
+        activeServers.map((server) => this.stopServer(server.id))
+      );
+      results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          logger.error(`Failed to gracefully stop ${activeServers[index].name}:`, result.reason);
+        }
+      });
+    }
+
     try {
       await require('./bedrockConnectLifecycle').shutdown();
     } catch (err) {
