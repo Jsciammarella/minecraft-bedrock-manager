@@ -645,6 +645,16 @@ function Dashboard() {
             const canOpen = can('servers.view_details');
             const canStart = can(startPermissionForKind(server.kind));
             const canStop = can(stopPermissionForKind(server.kind));
+            const hasMissingMods = isJava(server) && (missingModDependenciesOf(server)?.required || []).length > 0;
+            const hasLanError = Boolean(lan.error && !/Stop or remove Bedrock Connect/i.test(lan.error));
+            const hasNotification = Boolean(
+              isBuilding
+              || hasMissingMods
+              || (canRuntime && server.pending_restart === 1)
+              || (canConnection && server.pending_port)
+              || (canConnection && server.pending_ipv6_port)
+              || hasLanError
+            );
             const openServer = () => {
               if (canOpen) navigate(`/servers/${server.id}`);
             };
@@ -729,6 +739,7 @@ function Dashboard() {
                 </div>
               </div>
 
+              <div className={`flex min-h-0 flex-1 flex-col ${hasNotification ? '' : 'justify-center'}`}>
               {isBuilding && (
                 <div className="mb-4 p-2.5 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-yellow-300 text-sm flex items-start gap-2">
                   <Loader2 className="w-4 h-4 flex-shrink-0 mt-0.5 animate-spin" />
@@ -742,7 +753,7 @@ function Dashboard() {
                   </div>
                 </div>
               )}
-              {isJava(server) && (missingModDependenciesOf(server)?.required || []).length > 0 && (
+              {hasMissingMods && (
                 <div className="mb-4 p-2.5 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-yellow-300 text-xs flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   There are missing dependencies.
@@ -767,14 +778,14 @@ function Dashboard() {
                 </div>
               )}
 
-              {lan.error && !/Stop or remove Bedrock Connect/i.test(lan.error) && (
+              {hasLanError && (
                 <div className="mb-4 p-2.5 rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 text-xs">
                   {lan.error}
                 </div>
               )}
 
               {/* Server Info */}
-              <div className="mt-auto grid grid-cols-3 gap-3 mb-4">
+              <div className={`grid grid-cols-3 gap-3 mb-4 ${hasNotification ? 'mt-auto' : ''}`}>
                 <div className="text-center p-2 bg-mc-darker rounded-lg">
                   <Users className="w-4 h-4 text-mc-textMuted mx-auto mb-1" />
                   <p className="text-sm font-medium text-white">{isRemote(server) ? 'N/A' : (canRuntime && typeof server.stats?.onlinePlayers === 'number' ? server.stats.onlinePlayers : '—')}</p>
@@ -791,9 +802,10 @@ function Dashboard() {
                   <p className="text-xs text-mc-textMuted">Mods</p>
                 </div>
               </div>
+              </div>
 
               {/* Actions */}
-              <div className="page-actions flex items-center gap-2">
+              <div className="page-actions mt-auto flex items-center gap-2">
                 {(geyser || splitActions.length > 0) ? (
                   <div className="primary-split">
                     {geyser || javaControlsLocked ? (
