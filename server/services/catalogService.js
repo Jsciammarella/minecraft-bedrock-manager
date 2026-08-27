@@ -9,6 +9,8 @@ const catalogDownloadPolicy = require('./catalogDownloadPolicy');
 const catalogModMeta = require('./catalogModMeta');
 const minecraftVersions = require('./minecraftVersions');
 const catalogFilterAvailability = require('./catalogFilterAvailability');
+const catalogFilterRegistry = require('./catalogFilterRegistry');
+const catalogCompatibility = require('./catalogCompatibility');
 
 const CATALOG_PAGE_SIZE = 40;
 const LOCAL_FETCH_SIZE = 10000;
@@ -143,7 +145,11 @@ async function searchProvider(entry, query, options, errors, strict) {
     if (requested.length && !versions.length) {
       return { results: [], total: 0 };
     }
-    const result = await entry.provider.search(query, { ...options, minecraftVersions: versions });
+    const result = await entry.provider.search(query, {
+      ...options,
+      minecraftVersions: versions,
+      compatibilityTargets: options.compatibilityTargets || [],
+    });
     return {
       results: result.results || [],
       total: result.total || 0,
@@ -165,7 +171,11 @@ async function searchProvider(entry, query, options, errors, strict) {
 async function searchMods(query = '', options = {}) {
   const source = options.source || 'all';
   const provider = options.provider || '';
-  const edition = normalizeEdition(options.edition);
+  let edition = normalizeEdition(options.edition);
+  const context = { principal: options.principal };
+  const resolvedFilters = catalogFilterRegistry.resolveSelection(options.catalogFilters, context);
+  const compatibilityTargets = resolvedFilters.compatibilityTargets || [];
+  if (compatibilityTargets.length && edition === 'all') edition = 'java';
   const validated = catalogFilterAvailability.assertSearchFilters({
     edition,
     loader: options.loader || '',
@@ -183,7 +193,12 @@ async function searchMods(query = '', options = {}) {
     gameVersions: minecraftVersions.parseRequestedGameVersions(options.gameVersions),
     loader: validated.loader,
     environment: validated.environment,
+    compatibilityTargets,
+    compatibilityKey: catalogCompatibility.cacheKey(compatibilityTargets),
   };
+  const wrap = (result, errorsArg, availableArg, warning) => (
+    withMeta(result, errorsArg, availableArg, warning, options)
+  );
   const available = sourceStatus();
   const errors = [];
   const matched = matchingEntries({ source, provider, edition });
@@ -192,20 +207,20 @@ async function searchMods(query = '', options = {}) {
     throw new Error(configureError(source));
   }
   if ((source === JAVA_CURSEFORGE_ID || provider === JAVA_CURSEFORGE_ID) && !catalogProviderRegistry.get(JAVA_CURSEFORGE_ID)) {
-    return withMeta(unsupportedCombination(source, edition, JAVA_CURSEFORGE_ID), errors, available, {
+    return wrap(unsupportedCombination(source, edition, JAVA_CURSEFORGE_ID), errors, available, {
       warning: 'CurseForge Java is disabled. Enable it in the CurseForge Catalog plugin settings to search Java projects.',
     });
   }
   if ((source === JAVA_MODRINTH_ID || provider === JAVA_MODRINTH_ID) && !catalogProviderRegistry.get(JAVA_MODRINTH_ID)) {
-    return withMeta(unsupportedCombination(source, edition, JAVA_MODRINTH_ID), errors, available, {
+    return wrap(unsupportedCombination(source, edition, JAVA_MODRINTH_ID), errors, available, {
       warning: 'Modrinth is disabled. Enable the Modrinth Java Catalog plugin to search Java projects.',
     });
   }
   if ((provider || (source && source !== 'all')) && !matched.length) {
-    return withMeta(unsupportedCombination(source, edition, provider), errors, available);
+    return wrap(unsupportedCombination(source, edition, provider), errors, available);
   }
   if (!matched.length) {
-    return withMeta({
+    return wrap({
       results: [],
       total: 0,
       page,
@@ -222,10 +237,10 @@ async function searchMods(query = '', options = {}) {
   if (matched.length === 1 && !LOCAL_PROVIDER_IDS.has(matched[0].id)) {
     const category = categoryForProvider(matched[0], options.category);
     if (category === '__skip__') {
-      return withMeta(unsupportedCombination(source, edition, matched[0].id), errors, available);
+      return wrap(unsupportedCombination(source, edition, matched[0].id), errors, available);
     }
     const result = await searchProvider(matched[0], query, { ...options, category }, errors, true);
-    return withMeta({
+    return wrap({
       results: (result.results || []).map(catalogDownloadPolicy.applyCachedProjectAvailability),
       total: result.total,
       page,
@@ -247,7 +262,7 @@ async function searchMods(query = '', options = {}) {
 
   if (!remotes.length) {
     const start = Math.max(0, (page - 1) * pageSize);
-    return withMeta({
+    return wrap({
       results: local.slice(start, start + pageSize),
       total: local.length,
       page,
@@ -296,7 +311,7 @@ async function searchMods(query = '', options = {}) {
     warning = 'No catalog sources are configured. Open CurseForge, Git, or File Catalog plugin settings to add a source.';
   }
 
-  return withMeta({
+  return wrap({
     results: [...localSlice, ...remoteResults],
     total: local.length + remoteTotal,
     page,
@@ -541,12 +556,12 @@ async function getDetails(slug, query = {}) {
   return details ? catalogDownloadPolicy.applyCachedProjectAvailability(details) : details;
 }
 
-function listProviders() {
+function listProviders(context = {}) {
   const listed = publicSources();
   return {
     ...listed,
     editions: catalogProviderRegistry.availableEditions(),
-    filterAvailability: catalogFilterAvailability.listFilterAvailability(),
+    filterAvailability: catalogFilterAvailability.listFilterAvailability(context),
   };
 }
 
@@ -691,15 +706,26 @@ async function testFileConnection(body = {}) {
   });
 }
 
-function withMeta(result, errors, available, warning) {
+function withMeta(result, errors, available, warning, extra = {}) {
   const { sources, providers } = publicSources();
   const warningText = warning && typeof warning === 'object' ? warning.warning : warning;
+  const targets = extra.compatibilityTargets || [];
+  let next = result;
+  if (targets.length && Array.isArray(result?.results)) {
+    next = {
+      ...result,
+      results: result.results.map((item) => ({
+        ...item,
+        compatibleWith: catalogCompatibility.matchingServerNames(item, targets),
+      })),
+    };
+  }
   return {
-    ...result,
+    ...next,
     sources,
     providers,
     errors,
-    warning: warningText || result.warning,
+    warning: warningText || next.warning,
   };
 }
 
