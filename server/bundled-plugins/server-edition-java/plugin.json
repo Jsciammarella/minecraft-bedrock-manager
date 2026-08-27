@@ -106,7 +106,28 @@
     { "key": "servers.java.simulation_distance", "displayName": "Change Java simulation distance", "description": "Change simulation distance.", "primaryCategory": "servers", "subcategory": "java", "riskLevel": "normal", "resourceScopes": ["server"], "assignableAtServerScope": true, "serverKinds": ["java"] },
     { "key": "servers.java.spawn_protection", "displayName": "Change Java spawn protection", "description": "Change spawn protection radius.", "primaryCategory": "servers", "subcategory": "java", "riskLevel": "normal", "resourceScopes": ["server"], "assignableAtServerScope": true, "serverKinds": ["java"] },
     { "key": "servers.java.op_permission_level", "displayName": "Change Java op permission level", "description": "Change the operator permission level.", "primaryCategory": "servers", "subcategory": "java", "riskLevel": "normal", "resourceScopes": ["server"], "assignableAtServerScope": true, "serverKinds": ["java"] },
-    { "key": "servers.java.function_permission_level", "displayName": "Change Java function permission level", "description": "Change the function permission level.", "primaryCategory": "servers", "subcategory": "java", "riskLevel": "normal", "resourceScopes": ["server"], "assignableAtServerScope": true, "serverKinds": ["java"] }
+    {
+      "key": "servers.java.function_permission_level",
+      "displayName": "Change Java function permission level",
+      "description": "Change the function permission level.",
+      "primaryCategory": "servers",
+      "subcategory": "java",
+      "riskLevel": "normal",
+      "resourceScopes": ["server"],
+      "assignableAtServerScope": true,
+      "serverKinds": ["java"]
+    },
+    {
+      "key": "servers.java.mods.override_compatibility",
+      "displayName": "Override Java mod compatibility",
+      "description": "Install a Java mod when its Minecraft version or loader compatibility cannot be confirmed.",
+      "primaryCategory": "servers",
+      "subcategory": "java",
+      "riskLevel": "elevated",
+      "resourceScopes": ["server"],
+      "assignableAtServerScope": true,
+      "serverKinds": ["java"]
+    }
   ],
   "backend": "backend.js",
   "capabilities": [

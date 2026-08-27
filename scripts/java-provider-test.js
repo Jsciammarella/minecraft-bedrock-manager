@@ -513,6 +513,17 @@ versionRange="[13.0.8,)"
   const neoServer = { loader_provider_id: 'neoforge', minecraft_version: '1.21.1' };
   assert.equal(javaModFiles.bestFileForServer(fabricLibraryMod, neoServer, { sha256: 'abc123' }), null);
   assert.equal(javaModFiles.bestFileForServer(fabricLibraryMod, neoServer, { sha256: 'abc123', allowMismatch: true })?.sha256, 'abc123');
+  const clientOnlyMod = {
+    file_path: '/tmp/iris-client.jar',
+    loader: 'fabric',
+    extra_files: null,
+    sha256: 'client-sha',
+    minecraft_versions: JSON.stringify(['1.21.1']),
+    environment: 'client',
+  };
+  const fabricServer = { loader_provider_id: 'fabric', minecraft_version: '1.21.1' };
+  assert.equal(javaModFiles.bestFileForServer(clientOnlyMod, fabricServer, { allowMismatch: true }), null);
+  assert.equal(javaModFiles.bestFileForServer(clientOnlyMod, fabricServer, { sha256: 'client-sha', allowMismatch: true }), null);
   const modCompatibility = require('../server/services/modCompatibility');
   assert.equal(modCompatibility.loadersCompatible('fabric', 'neoforge', { allowUnknown: false }), false);
   assert.equal(modCompatibility.loadersCompatible('neoforge', 'neoforge', { allowUnknown: false }), true);
@@ -1511,6 +1522,8 @@ versionRange="[13.0.8,)"
   assert.equal(hostingOff.editions.some((item) => item.id === 'java'), false);
   assert.equal(hostingOff.loaders.length, 0);
   assert.equal(hostingOff.environments.length, 0);
+  const hostingFilter = (hostingOff.catalogFilters || []).find((item) => item.id === 'java-installed-servers');
+  if (hostingFilter) assert.equal(hostingFilter.available, false);
   await assert.rejects(
     () => catalogService.searchMods('x', { edition: 'java' }),
     (err) => err.status === 409 && err.code === 'JAVA_HOSTING_DISABLED'
@@ -1555,6 +1568,78 @@ versionRange="[13.0.8,)"
   assert.equal(db.prepare('SELECT status FROM gateways WHERE id = ?').get(created.id).status, 'stopped');
   assert.ok(pluginDashboard.list().some((item) => item.id === `gateway:${created.id}`));
   assert.ok(javaEdition.PERMISSIONS.some((item) => item.key === 'servers.create_java'));
+  const javaPluginPerms = pluginHost.getPlugin('server-edition-java')?.permissions || [];
+  assert.ok(javaPluginPerms.some((item) => item.key === 'servers.java.mods.override_compatibility'));
+
+  const catalogFilterRegistry = require('../server/services/catalogFilterRegistry');
+  assert.ok(pluginHost.getPlugin('catalog-java-server-compatibility'));
+  const filtersOn = catalogFilterAvailability.listFilterAvailability();
+  assert.ok((filtersOn.catalogFilters || []).some((item) => item.id === 'java-installed-servers'));
+
+  const mismatchJar = path.join(testRoot, 'fabric-mismatch.jar');
+  fs.writeFileSync(mismatchJar, zipStore({
+    'fabric.mod.json': JSON.stringify({
+      id: 'mismatch',
+      name: 'Mismatch',
+      version: '1.0.0',
+      environment: '*',
+      depends: { minecraft: '1.20.1' },
+    }),
+  }));
+  const mismatchMod = db.prepare(`
+    INSERT INTO mods (name, slug, type, description, file_path, source, edition, environment, loader, minecraft_versions, sha256)
+    VALUES (?, ?, 'mod', '', ?, 'upload', 'java', 'both', 'fabric', ?, ?)
+  `).run('Mismatch', `mismatch-${Date.now()}`, mismatchJar, JSON.stringify(['1.20.1']), 'sha-mismatch');
+  const neoDir = path.join(testRoot, 'override-neo');
+  fs.mkdirSync(path.join(neoDir, 'mods'), { recursive: true });
+  const neoInstall = db.prepare(`
+    INSERT INTO servers (name, version, port, data_path, kind, status, loader_provider_id, minecraft_version)
+    VALUES (?, '1.21.1', ?, ?, 'java', 'stopped', 'neoforge', '1.21.1')
+  `).run('Override Neo', 25611, neoDir);
+  const neoInstallServer = db.prepare('SELECT * FROM servers WHERE id = ?').get(neoInstall.lastInsertRowid);
+  assert.throws(
+    () => javaModInstall.install(neoInstallServer, mismatchMod.lastInsertRowid),
+    /does not match/
+  );
+  const overridden = javaModInstall.install(neoInstallServer, mismatchMod.lastInsertRowid, {
+    override: true,
+    actor: { id: 1, username: 'admin' },
+  });
+  assert.equal(overridden.override, true);
+  const overrideRow = db.prepare('SELECT * FROM server_mods WHERE server_id = ? AND mod_id = ?').get(
+    neoInstallServer.id,
+    mismatchMod.lastInsertRowid
+  );
+  assert.equal(Number(overrideRow.compatibility_override), 1);
+
+  const clientJar = path.join(testRoot, 'client-only-install.jar');
+  fs.writeFileSync(clientJar, zipStore({
+    'fabric.mod.json': JSON.stringify({
+      id: 'iris',
+      name: 'Iris',
+      version: '1.0.0',
+      environment: 'client',
+      depends: { minecraft: '1.21.1' },
+    }),
+  }));
+  const clientMod = db.prepare(`
+    INSERT INTO mods (name, slug, type, description, file_path, source, edition, environment, loader, minecraft_versions, sha256)
+    VALUES (?, ?, 'mod', '', ?, 'upload', 'java', 'client', 'neoforge', ?, ?)
+  `).run('Iris Client', `iris-client-${Date.now()}`, clientJar, JSON.stringify(['1.21.1']), 'sha-client');
+  assert.throws(
+    () => javaModInstall.install(neoInstallServer, clientMod.lastInsertRowid, { override: true }),
+    (err) => err.code === 'CLIENT_ONLY'
+  );
+
+  await pluginHost.setPluginEnabled('catalog-java-server-compatibility', false);
+  assert.equal(javaHostingPolicy.isJavaHostingAvailable(), true);
+  assert.equal(
+    (catalogFilterAvailability.listFilterAvailability().catalogFilters || []).some((item) => item.id === 'java-installed-servers'),
+    false
+  );
+  assert.equal(catalogFilterRegistry.get('java-installed-servers'), null);
+  await pluginHost.setPluginEnabled('catalog-java-server-compatibility', true);
+  assert.ok((catalogFilterAvailability.listFilterAvailability().catalogFilters || []).some((item) => item.id === 'java-installed-servers'));
 
   const createUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/CreateServer.jsx'), 'utf8');
   assert.match(createUi, /serverApi\.editions/);

@@ -221,6 +221,7 @@ class ModManager {
       const result = require('./javaModInstall').install(server, modId, {
         fileSha256: options.fileSha256,
         override: Boolean(options.override),
+        actor: options.actor,
       });
       if (result.restartRequired) serverManager.markRestartRequired(serverId, 'Java mods changed');
       return { success: true, ...result };
