@@ -430,6 +430,11 @@ function runSecurityProviderTests() {
     if (familyScript.pluginPresent()) {
       familyScript.validate('0.5.9', { versionOverridden: true });
       assert.throws(() => familyScript.validate('0.5.6', { versionOverridden: true }), /must not include/);
+    } else {
+      familyScript.validate('0.5.0', { versionOverridden: true });
+      familyScript.validate('0.5.3', { versionOverridden: true });
+      familyScript.validate('0.5.6', { versionOverridden: true });
+      assert.throws(() => familyScript.validate('0.5.9', { versionOverridden: true }), /must include/);
     }
 
     assert.throws(
