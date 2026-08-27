@@ -143,7 +143,7 @@ export const modApi = {
   },
   getAvailable: (serverId) => api.get(`/mods/available/${serverId}`),
   getInstalled: (serverId) => api.get(`/mods/installed/${serverId}`),
-  install: (modId, serverId, body = null) => api.post(`/mods/${modId}/install/${serverId}`, body, {
+  install: (modId, serverId) => api.post(`/mods/${modId}/install/${serverId}`, null, {
     timeout: 10 * 60 * 1000,
   }),
   uninstall: (modId, serverId) => api.delete(`/mods/${modId}/uninstall/${serverId}`, {

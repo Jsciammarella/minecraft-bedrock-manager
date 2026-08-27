@@ -4,13 +4,10 @@ import { modApi } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import ModTileTags from '../components/ModTileTags';
 import CatalogVersionFilter from '../components/CatalogVersionFilter';
-import CatalogPluginFilter from '../components/CatalogPluginFilter';
 import { loaderDisplayName, modLoaderIds, modVersionTags } from '../utils/modCompatibility';
 import {
   EMPTY_FILTER_AVAILABILITY,
-  catalogFiltersParam,
   parseFilterAvailability,
-  reconcileCatalogFilterSelections,
   reconcileCatalogQuery,
 } from '../utils/catalogFilters';
 import { useGitCatalogSync } from '../hooks/useGitCatalogSync';
@@ -39,7 +36,6 @@ function reconcileCatalogFilters({
   category = '',
   loader = '',
   environment = 'all',
-  selectedCatalogFilters = {},
 } = {}) {
   const ids = new Set((providers || []).map((item) => item.id));
   let nextSource = source || 'all';
@@ -64,14 +60,12 @@ function reconcileCatalogFilters({
     loader,
     environment,
   }, availability);
-  const catalogFilters = reconcileCatalogFilterSelections(selectedCatalogFilters, availability);
   const changed = next.source !== (source || 'all')
     || next.edition !== (edition || 'all')
     || next.category !== (category || '')
     || next.loader !== (loader || '')
-    || next.environment !== (environment || 'all')
-    || catalogFilters.changed;
-  return { ...next, catalogFilters: catalogFilters.selected, changed };
+    || next.environment !== (environment || 'all');
+  return { ...next, changed };
 }
 
 function isClientOnlyProject(mod) {
@@ -176,7 +170,6 @@ function ModCatalog() {
   const [sortBy, setSortBy] = useState('relevancy');
   const [loader, setLoader] = useState('');
   const [environment, setEnvironment] = useState('all');
-  const [selectedCatalogFilters, setSelectedCatalogFilters] = useState({});
   const [filterAvailability, setFilterAvailability] = useState(EMPTY_FILTER_AVAILABILITY);
   const [downloadModal, setDownloadModal] = useState(null);
   const [filePicker, setFilePicker] = useState(null);
@@ -187,11 +180,11 @@ function ModCatalog() {
   const [expandedMod, setExpandedMod] = useState(null);
   const { status, startSync } = useGitCatalogSync();
   const wasSyncing = useRef(false);
-  const filtersRef = useRef({ source: 'all', edition: 'all', category: '', gameVersions: '', loader: '', environment: 'all', catalogFilters: {} });
+  const filtersRef = useRef({ source: 'all', edition: 'all', category: '', gameVersions: '', loader: '', environment: 'all' });
   const queryRef = useRef({ q: '', sortBy: 'relevancy' });
   const installedVersions = installedCatalogVersions(servers);
   const gameVersions = gameVersionsParam(versionAll, selectedVersionKeys);
-  filtersRef.current = { source, edition, category, gameVersions, loader, environment, catalogFilters: selectedCatalogFilters };
+  filtersRef.current = { source, edition, category, gameVersions, loader, environment };
   queryRef.current = { q: search, sortBy };
 
   const availableEditions = (filterAvailability.editions || []).map((item) => item.id);
@@ -267,7 +260,6 @@ function ModCatalog() {
         category: current.category,
         loader: current.loader,
         environment: current.environment,
-        selectedCatalogFilters: current.catalogFilters,
       });
       filtersRef.current = { ...current, ...reconciled };
       if (reconciled.changed) {
@@ -276,7 +268,6 @@ function ModCatalog() {
         setCategory(reconciled.category);
         setLoader(reconciled.loader);
         setEnvironment(reconciled.environment);
-        setSelectedCatalogFilters(reconciled.catalogFilters || {});
       }
       setPage(1);
       if (search) {
@@ -286,11 +277,10 @@ function ModCatalog() {
     } catch {
       setFilterAvailability(EMPTY_FILTER_AVAILABILITY);
       const nextEdition = filtersRef.current.edition === 'java' ? 'all' : filtersRef.current.edition;
-      filtersRef.current = { ...filtersRef.current, edition: nextEdition, loader: '', environment: 'all', catalogFilters: {} };
+      filtersRef.current = { ...filtersRef.current, edition: nextEdition, loader: '', environment: 'all' };
       setEdition(nextEdition);
       setLoader('');
       setEnvironment('all');
-      setSelectedCatalogFilters({});
       if (search) {
         await loadCategories();
         await searchMods();
@@ -340,7 +330,6 @@ function ModCatalog() {
         gameVersions: filtersRef.current.gameVersions,
         loader: filtersRef.current.loader,
         environment: filtersRef.current.environment,
-        catalogFilters: catalogFiltersParam(filtersRef.current.catalogFilters),
       });
       setMods(res.data.results || []);
       setTotal(Number(res.data.total) || 0);
@@ -353,10 +342,6 @@ function ModCatalog() {
         setError(res.data.errors.map(item => item.error).join(' '));
       }
     } catch (err) {
-      if (err.response?.data?.code === 'CATALOG_FILTER_UNAVAILABLE') {
-        setSelectedCatalogFilters({});
-        filtersRef.current = { ...filtersRef.current, catalogFilters: {} };
-      }
       setMods([]);
       setTotal(0);
       setError(err.response?.data?.error || 'Failed to load the catalog. Check catalog plugin settings.');
@@ -705,39 +690,6 @@ function ModCatalog() {
                 searchMods(1, source, edition, category);
               }}
             />
-            {(filterAvailability.catalogFilters || []).filter((item) => item.available).map((item) => (
-              <CatalogPluginFilter
-                key={item.id}
-                className="w-full min-w-0"
-                filter={item}
-                selectedIds={selectedCatalogFilters[item.id] || []}
-                onChange={({ filterId, selectedIds, editions }) => {
-                  const next = { ...selectedCatalogFilters };
-                  if (!selectedIds.length) delete next[filterId];
-                  else next[filterId] = selectedIds;
-                  setSelectedCatalogFilters(next);
-                  if (selectedIds.length && (editions || []).includes('java')) {
-                    setEdition('java');
-                    filtersRef.current = {
-                      ...filtersRef.current,
-                      catalogFilters: next,
-                      edition: 'java',
-                    };
-                  } else {
-                    filtersRef.current = { ...filtersRef.current, catalogFilters: next };
-                  }
-                }}
-                onClose={() => {
-                  setPage(1);
-                  const nextEdition = Object.values(filtersRef.current.catalogFilters || {}).some((values) => (
-                    Array.isArray(values) && values.length
-                  )) && (item.editions || []).includes('java')
-                    ? 'java'
-                    : edition;
-                  searchMods(1, source, nextEdition, category);
-                }}
-              />
-            ))}
             {javaHostingAvailable && (
             <select
               aria-label="Loader"
@@ -1200,11 +1152,6 @@ function ModTile({ mod, expanded = false, onOpen, onClose, onDownload, getTypeBa
         {modVersionTags(mod).map((version) => (
           <span key={version} className="badge badge-success">{version}</span>
         ))}
-        {Array.isArray(mod.compatibleWith) && mod.compatibleWith.length > 0 && (
-          <span className="badge badge-info" title={mod.compatibleWith.join(', ')}>
-            Compatible with: {mod.compatibleWith.join(', ')}
-          </span>
-        )}
       </ModTileTags>
 
       <h3

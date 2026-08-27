@@ -133,18 +133,17 @@ function matchingFiles(mod, server, options = {}) {
 
 function bestFileForServer(mod, server, { sha256, allowUnknown = false, allowMismatch = false } = {}) {
   const files = listFiles(mod);
-  const nonClient = files.filter((file) => file.environment !== 'client');
   if (sha256) {
     const exact = files.find((file) => file.sha256 && file.sha256 === sha256)
       || files.find((file) => path.basename(file.path) === sha256)
       || files.find((file) => file.path === sha256);
-    if (exact && exact.environment !== 'client') {
+    if (exact) {
       if (allowMismatch || fileMatchesServer(exact, server, { allowUnknown })) return exact;
     }
   }
   const matched = files.filter((file) => fileMatchesServer(file, server, { allowUnknown }));
   if (matched.length) return matched[0];
-  if (allowMismatch) return nonClient[0] || null;
+  if (allowMismatch) return files.find((file) => file.environment !== 'client') || files[0] || null;
   return null;
 }
 

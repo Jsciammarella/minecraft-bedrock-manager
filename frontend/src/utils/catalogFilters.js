@@ -5,7 +5,6 @@ export const EMPTY_FILTER_AVAILABILITY = {
   editions: [],
   loaders: [],
   environments: [],
-  catalogFilters: [],
 };
 
 export function parseFilterAvailability(data) {
@@ -15,7 +14,6 @@ export function parseFilterAvailability(data) {
     editions: Array.isArray(data.editions) ? data.editions : [],
     loaders: Array.isArray(data.loaders) ? data.loaders : [],
     environments: Array.isArray(data.environments) ? data.environments : [],
-    catalogFilters: Array.isArray(data.catalogFilters) ? data.catalogFilters : [],
   };
 }
 
@@ -52,35 +50,6 @@ export function reconcileCatalogQuery(current = {}, availability = EMPTY_FILTER_
     environment,
     changed,
   };
-}
-
-export function catalogFiltersParam(selected = {}) {
-  const payload = {};
-  for (const [id, values] of Object.entries(selected || {})) {
-    const list = Array.isArray(values) ? values.map(String).filter(Boolean) : [];
-    if (list.length) payload[id] = list;
-  }
-  return Object.keys(payload).length ? JSON.stringify(payload) : '';
-}
-
-export function reconcileCatalogFilterSelections(selected = {}, availability = EMPTY_FILTER_AVAILABILITY) {
-  const listed = new Map((availability.catalogFilters || []).map((item) => [item.id, item]));
-  const next = {};
-  let changed = false;
-  for (const [id, values] of Object.entries(selected || {})) {
-    const filter = listed.get(id);
-    if (!filter || !filter.available) {
-      changed = true;
-      continue;
-    }
-    const allowed = new Set(
-      (filter.options || []).filter((item) => !item.disabled).map((item) => String(item.id))
-    );
-    const kept = (Array.isArray(values) ? values : []).map(String).filter((value) => allowed.has(value));
-    if (kept.length !== (Array.isArray(values) ? values.length : 0)) changed = true;
-    if (kept.length) next[id] = kept;
-  }
-  return { selected: next, changed };
 }
 
 export function libraryFilterOptions(availability = EMPTY_FILTER_AVAILABILITY) {

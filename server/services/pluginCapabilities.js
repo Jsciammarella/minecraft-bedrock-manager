@@ -11,7 +11,6 @@ const PRIVILEGED_CAPABILITIES = new Set([
   'provider:java-loader',
   'provider:gateway',
   'provider:catalog-source',
-  'provider:catalog-filter',
   'provider:server-edition',
   'provider:resource-authorization',
   'download:official-sources',

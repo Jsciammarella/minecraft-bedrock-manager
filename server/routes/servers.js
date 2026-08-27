@@ -464,25 +464,17 @@ router.post('/:id/java/mods', requirePermission('servers.mods.install'), (req, r
   try {
     const server = serverManager.getServer(req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
-    const override = Boolean(req.body?.override);
-    if (override) {
-      if (String(server.kind || '') !== 'java' || server.remote_host) {
-        return res.status(400).json({ error: 'Compatibility override is only available for local Java servers' });
-      }
-      assertPermission(req, 'servers.java.mods.override_compatibility', server);
-    }
     const javaModInstall = require('../services/javaModInstall');
     const result = javaModInstall.install(server, req.body?.modId, {
       fileSha256: req.body?.fileSha256,
-      override,
-      actor: req.principal || req.user,
+      override: false,
     });
     if (result.restartRequired) {
       serverManager.markRestartRequired(server.id, 'Java mods changed');
     }
     res.status(201).json({ ...result, mods: javaModInstall.list(server.id) });
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message, code: err.code, reasons: err.reasons, files: err.files });
+    res.status(err.status || 400).json({ error: err.message, code: err.code });
   }
 });
 

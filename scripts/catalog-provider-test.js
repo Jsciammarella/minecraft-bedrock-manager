@@ -88,9 +88,6 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   const uploadedCaps = pluginCapabilities.parseCapabilities(['provider:catalog-source', 'ui:pages'], 'user');
   assert.deepEqual(uploadedCaps.capabilities, ['ui:pages']);
   assert.deepEqual(uploadedCaps.rejectedPrivileged, ['provider:catalog-source']);
-  const uploadedFilter = pluginCapabilities.parseCapabilities(['provider:catalog-filter', 'ui:pages'], 'user');
-  assert.deepEqual(uploadedFilter.capabilities, ['ui:pages']);
-  assert.deepEqual(uploadedFilter.rejectedPrivileged, ['provider:catalog-filter']);
   assert.equal(pluginCapabilities.parseCapabilities(['not-a-cap'], 'bundled').ok, false);
 
   catalogProviderRegistry.clear();
@@ -971,17 +968,8 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   assert.match(catalogFiltersSrc, /reconcileCatalogQuery/);
   assert.match(catalogFiltersSrc, /libraryFilterOptions/);
   assert.match(catalogFiltersSrc, /modMatchesLibraryFilter/);
-  assert.match(catalogFiltersSrc, /catalogFiltersParam/);
-  assert.match(catalogFiltersSrc, /reconcileCatalogFilterSelections/);
   const libraryUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/ModLibrary.jsx'), 'utf8');
-  assert.match(frontendSource, /catalogFilters/);
-  assert.match(frontendSource, /CatalogPluginFilter/);
-  assert.match(libraryUi, /Show incompatible servers/);
-  assert.match(libraryUi, /Compatibility could not be confirmed/);
-  const serverDetailUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/ServerDetail.jsx'), 'utf8');
-  assert.match(serverDetailUi, /Show incompatible mods/);
-  assert.match(serverDetailUi, /Compatibility could not be confirmed/);
-  assert.doesNotMatch(serverDetailUi, /Show incompatible servers/);
+  assert.match(libraryUi, /catalogFilterAvailability/);
   assert.match(libraryUi, /libraryFilterOptions/);
   assert.match(libraryUi, /mbm-plugins-changed/);
   assert.doesNotMatch(libraryUi, /<option value="fabric">Fabric<\/option>/);
@@ -1061,162 +1049,6 @@ async function runCatalogProviderTests({ pluginHost, testRoot }) {
   } finally {
     await new Promise((resolve) => modsServer.close(resolve));
     javaLoaderRegistry.unregisterPlugins(['java-loader-quilt', 'java-loader-vanilla-stub']);
-  }
-
-  const catalogFilterRegistry = require('../server/services/catalogFilterRegistry');
-  const catalogCompatibility = require('../server/services/catalogCompatibility');
-  catalogFilterRegistry.clear();
-  const filterPlugin = {
-    id: 'catalog-java-server-compatibility',
-    source: 'bundled',
-    capabilities: ['provider:catalog-filter'],
-  };
-  const filterProvider = {
-    getMetadata: () => ({
-      id: 'java-installed-servers',
-      label: 'Compatible with Servers',
-      type: 'multi-select',
-      editions: ['java'],
-      emptyLabel: 'All Java Servers',
-    }),
-    isAvailable: () => true,
-    listOptions: () => ([
-      { id: '12', label: 'Survival — 1.21.1 — NeoForge' },
-      { id: '18', label: 'Creative — 1.20.1 — Fabric' },
-    ]),
-    resolveSelection: (values) => values.map((id) => (
-      id === '12'
-        ? { serverId: 12, serverName: 'Survival', minecraftVersion: '1.21.1', loader: 'neoforge' }
-        : { serverId: 18, serverName: 'Creative', minecraftVersion: '1.20.1', loader: 'fabric' }
-    )),
-  };
-  catalogFilterRegistry.register(filterPlugin, filterProvider);
-  assert.equal(catalogFilterRegistry.list().some((item) => item.id === 'java-installed-servers'), true);
-  catalogFilterRegistry.register(filterPlugin, filterProvider);
-  assert.equal(catalogFilterRegistry.list().filter((item) => item.id === 'java-installed-servers').length, 1);
-  assert.throws(
-    () => catalogFilterRegistry.register({
-      id: 'other-filter',
-      source: 'bundled',
-      capabilities: ['provider:catalog-filter'],
-    }, filterProvider),
-    /already registered/
-  );
-  assert.throws(
-    () => catalogFilterRegistry.register({
-      id: 'evil-filter',
-      source: 'user',
-      capabilities: ['provider:catalog-filter'],
-    }, filterProvider),
-    /bundled/
-  );
-  const resolved = catalogFilterRegistry.resolveSelection({
-    'java-installed-servers': ['18', '12'],
-  });
-  assert.equal(resolved.compatibilityTargets.length, 2);
-  assert.equal(catalogCompatibility.cacheKey(resolved.compatibilityTargets), catalogCompatibility.cacheKey([
-    resolved.compatibilityTargets[1],
-    resolved.compatibilityTargets[0],
-  ]));
-  const configs = catalogCompatibility.uniqueConfigs([
-    { serverId: 1, minecraftVersion: '1.21.1', loader: 'neoforge' },
-    { serverId: 2, minecraftVersion: '1.21.1', loader: 'neoforge' },
-    { serverId: 3, minecraftVersion: '1.20.1', loader: 'fabric' },
-  ]);
-  assert.equal(configs.length, 2);
-  const matching = {
-    edition: 'java',
-    files: [{ loader: 'neoforge', minecraftVersions: ['1.21.1'], environment: 'both' }],
-  };
-  const clientOnly = {
-    edition: 'java',
-    files: [{ loader: 'neoforge', minecraftVersions: ['1.21.1'], environment: 'client' }],
-  };
-  const unknownOnly = {
-    edition: 'java',
-    files: [{ loader: 'unknown', minecraftVersions: [], environment: 'unknown' }],
-  };
-  const otherLoader = {
-    edition: 'java',
-    files: [{ loader: 'fabric', minecraftVersions: ['1.21.1'], environment: 'both' }],
-  };
-  assert.equal(catalogCompatibility.projectMatchesTarget(matching, { minecraftVersion: '1.21.1', loader: 'neoforge' }), true);
-  assert.equal(catalogCompatibility.projectMatchesTarget(clientOnly, { minecraftVersion: '1.21.1', loader: 'neoforge' }), false);
-  assert.equal(catalogCompatibility.projectMatchesTarget(unknownOnly, { minecraftVersion: '1.21.1', loader: 'neoforge' }), false);
-  assert.equal(catalogCompatibility.projectMatchesTarget(otherLoader, { minecraftVersion: '1.21.1', loader: 'neoforge' }), false);
-  assert.equal(catalogCompatibility.projectMatchesAnyTarget(matching, [
-    { minecraftVersion: '1.20.1', loader: 'fabric' },
-    { minecraftVersion: '1.21.1', loader: 'neoforge' },
-  ]), true);
-  const crossFalse = catalogCompatibility.projectMatchesAnyTarget({
-    edition: 'java',
-    files: [{ loader: 'fabric', minecraftVersions: ['1.21.1'], environment: 'both' }],
-  }, [
-    { minecraftVersion: '1.21.1', loader: 'neoforge' },
-    { minecraftVersion: '1.20.1', loader: 'fabric' },
-  ]);
-  assert.equal(crossFalse, false);
-  const merged = catalogCompatibility.mergeTargetSearches([
-    { results: [{ id: 1, providerId: 'curseforge-java', name: 'A', downloads: 2 }] },
-    { results: [{ id: 1, providerId: 'curseforge-java', name: 'A', downloads: 2 }, { id: 2, providerId: 'curseforge-java', name: 'B', downloads: 9 }] },
-  ], { page: 1, pageSize: 40 });
-  assert.equal(merged.total, 2);
-  catalogFilterRegistry.unregisterPlugins(['catalog-java-server-compatibility']);
-  assert.equal(catalogFilterRegistry.get('java-installed-servers'), null);
-  assert.throws(
-    () => catalogFilterRegistry.resolveSelection({ 'java-installed-servers': ['12'] }),
-    (err) => err.status === 409 && err.code === 'CATALOG_FILTER_UNAVAILABLE'
-  );
-
-  const calls = [];
-  const cfProvider = javaCatalog.createProvider({
-    catalogHttp: {
-      isConfigured: () => true,
-      request: async ({ url, params }) => {
-        if (String(url || '').includes('/categories')) {
-          return { data: { data: [] } };
-        }
-        calls.push({ gameVersion: params.gameVersion, modLoaderType: params.modLoaderType });
-        return {
-          data: {
-            data: [{
-              id: `${params.gameVersion}:${params.modLoaderType}`,
-              name: `Mod ${params.gameVersion}`,
-              slug: `mod-${params.gameVersion}`,
-              summary: '',
-              authors: [{ name: 'A' }],
-              logo: {},
-              links: {},
-              downloadCount: 1,
-              classId: 6,
-              latestFiles: [{
-                id: 1,
-                gameVersions: [params.gameVersion, params.modLoaderType === 6 ? 'NeoForge' : 'Fabric', 'Server'],
-                fileName: 'a.jar',
-              }],
-            }],
-            pagination: { totalCount: 1 },
-          },
-        };
-      },
-    },
-  });
-  const paired = await cfProvider.search('x', {
-    compatibilityTargets: [
-      { serverId: 1, minecraftVersion: '1.21.1', loader: 'neoforge' },
-      { serverId: 2, minecraftVersion: '1.21.1', loader: 'neoforge' },
-      { serverId: 3, minecraftVersion: '1.20.1', loader: 'fabric' },
-    ],
-    pageSize: 40,
-    page: 1,
-  });
-  assert.equal(calls.length, 2, 'duplicate server configs must be queried once');
-  assert.ok(calls.every((item) => item.gameVersion && item.modLoaderType));
-  assert.ok(paired.results.length >= 1);
-
-  for (const name of ['catalogService.js', 'catalogFilterRegistry.js', 'catalogFilterAvailability.js', 'pluginHost.js']) {
-    const src = fs.readFileSync(path.join(__dirname, '../server/services', name), 'utf8');
-    assert.doesNotMatch(src, /catalog-java-server-compatibility/);
   }
 
   catalogProviderRegistry.clear();

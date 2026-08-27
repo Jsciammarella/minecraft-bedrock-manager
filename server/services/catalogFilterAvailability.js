@@ -19,7 +19,7 @@ function listModCapableLoaders() {
     }));
 }
 
-function listFilterAvailability(context = {}) {
+function listFilterAvailability() {
   const javaHostingAvailable = javaHostingPolicy.isJavaHostingAvailable();
   const editions = [];
   if (catalogHasBedrockSource()) {
@@ -27,12 +27,6 @@ function listFilterAvailability(context = {}) {
   }
   if (javaHostingAvailable) {
     editions.push({ id: 'java', name: 'Java', type: 'edition' });
-  }
-  let catalogFilters = [];
-  try {
-    catalogFilters = require('./catalogFilterRegistry').list(context, { includeOptions: true });
-  } catch {
-    catalogFilters = [];
   }
   return {
     javaHostingAvailable,
@@ -44,7 +38,6 @@ function listFilterAvailability(context = {}) {
         { id: 'client', name: 'Client-side', type: 'environment' },
       ]
       : [],
-    catalogFilters,
   };
 }
 

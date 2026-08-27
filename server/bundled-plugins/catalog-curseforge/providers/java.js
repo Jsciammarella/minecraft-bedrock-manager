@@ -88,15 +88,6 @@ function formatProject(item) {
   const files = item.latestFiles || [];
   const parsed = parseGameVersions(files[0]?.gameVersions || item.latestFilesIndexes?.[0]?.gameVersions || []);
   const slug = item.slug || String(item.id);
-  const formattedFiles = files.map(formatFile);
-  const indexFiles = (item.latestFilesIndexes || []).map((idx) => {
-    const parsedIdx = parseGameVersions(idx.gameVersions || []);
-    return {
-      loader: parsedIdx.loader,
-      minecraftVersions: parsedIdx.minecraftVersions,
-      environment: parsedIdx.environment,
-    };
-  });
   return {
     id: item.id,
     providerId: 'curseforge-java',
@@ -116,7 +107,6 @@ function formatProject(item) {
     loader: parsed.loader,
     minecraftVersions: parsed.minecraftVersions,
     environment: parsed.environment,
-    files: formattedFiles.length ? formattedFiles : indexFiles,
     downloadState: 'unknown',
     type: 'mod',
     projectClass: classSlug(item),
@@ -306,15 +296,6 @@ function createProvider(services) {
         }));
     },
     async search(query, options = {}) {
-      const catalogCompatibility = require('../../../services/catalogCompatibility');
-      const targets = options.compatibilityTargets || [];
-      if (targets.length) {
-        return catalogCompatibility.searchPairedConfigs(
-          targets,
-          (opts) => this.search(query, { ...opts, compatibilityTargets: [] }),
-          options
-        );
-      }
       if (!this.isAvailable()) {
         const err = new Error('CurseForge catalog access requires an API key. Open the CurseForge Catalog plugin settings to add it.');
         err.status = 400;

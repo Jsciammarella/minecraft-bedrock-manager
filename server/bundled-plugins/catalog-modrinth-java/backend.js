@@ -232,20 +232,8 @@ function selectPrimaryFile(files = []) {
 
 function formatProject(hit = {}) {
   const slug = safeSlug(hit.slug) || String(hit.project_id || hit.id || '');
-  const uniqueLoaders = [...new Set((hit.categories || []).map(mapLoader).filter((item) => item !== 'unknown'))];
   const env = summarizeProjectEnvironment(hit.environment);
-  const versions = Array.isArray(hit.versions) ? hit.versions.map(String) : [];
-  const files = uniqueLoaders.length
-    ? uniqueLoaders.map((loader) => ({
-      loader,
-      minecraftVersions: versions,
-      environment: env.environment,
-    }))
-    : [{
-      loader: uniqueLoaders.length === 1 ? uniqueLoaders[0] : (uniqueLoaders.length ? 'any' : 'unknown'),
-      minecraftVersions: versions,
-      environment: env.environment,
-    }];
+  const uniqueLoaders = [...new Set((hit.categories || []).map(mapLoader).filter((item) => item !== 'unknown'))];
   return {
     id: hit.project_id || hit.id,
     providerId: PROVIDER_ID,
@@ -267,11 +255,10 @@ function formatProject(hit = {}) {
     datePublished: hit.date_created || hit.published || '',
     license: sanitizeText(typeof hit.license === 'object' ? (hit.license?.id || hit.license?.name) : hit.license, 80),
     loader: uniqueLoaders.length === 1 ? uniqueLoaders[0] : (uniqueLoaders.length ? 'any' : 'unknown'),
-    minecraftVersions: versions,
+    minecraftVersions: Array.isArray(hit.versions) ? hit.versions.map(String) : [],
     environment: env.environment,
     environmentLabel: env.label,
     environmentRaw: env.raw,
-    files,
     downloadState: 'unknown',
     type: 'mod',
     projectClass: 'mod',
@@ -546,15 +533,6 @@ function createProvider(services) {
       }));
     },
     async search(query, options = {}) {
-      const catalogCompatibility = require('../../services/catalogCompatibility');
-      const targets = options.compatibilityTargets || [];
-      if (targets.length) {
-        return catalogCompatibility.searchPairedConfigs(
-          targets,
-          (opts) => this.search(query, { ...opts, compatibilityTargets: [] }),
-          options
-        );
-      }
       if (!this.isAvailable()) {
         throw Object.assign(new Error('The Modrinth Java catalog is not available.'), { status: 400 });
       }
