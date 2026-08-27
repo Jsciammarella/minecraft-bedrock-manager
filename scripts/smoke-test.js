@@ -83,6 +83,9 @@ function zipStore(files) {
 function testUserManagement() {
   const auth = require('../server/services/authService');
   const catalog = require('../server/services/permissionCatalog');
+  pluginHost.resetForTests();
+  pluginHost.loadPlugins();
+  auth.syncDynamicPermissions();
   auth.ensureSeed();
   if (auth.needsAdministratorBootstrap()) {
     auth.bootstrapAdministrator({ username: 'admin', password: 'mcadmin' });
@@ -90,9 +93,13 @@ function testUserManagement() {
   const login = auth.login('admin', 'mcadmin');
   assert.equal(login.user.username, 'admin');
   assert.equal(login.user.isAdmin, true);
+  const security = require('../server/security');
+  const profile = security.publicInfo().securityProfile;
+  const catalogKeys = auth.listPermissionDefs().map((item) => item.key);
   assert.deepEqual(
     new Set(login.user.permissions),
-    new Set(auth.listPermissionDefs().map((item) => item.key)),
+    new Set(catalogKeys),
+    `administrator permissions must match the catalog under ${profile} (granted ${login.user.permissions.length}, catalog ${catalogKeys.length})`,
   );
 
   const groups = auth.listGroups();

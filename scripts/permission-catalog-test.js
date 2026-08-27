@@ -282,24 +282,54 @@ async function runPermissionCatalogTests({ auth, catalog, db, pluginHost }) {
     onlinePlayers: [{ id: 1, username: 'Steve' }],
     pluginContributions: [{ connectAddress: '10.0.0.5:19132', status: 'running' }],
   };
+  const security = require('../server/security');
+  const profile = security.publicInfo().securityProfile;
+  const allowAll = profile === security.profiles.PROFILE_NO_AUTH;
   const noProps = serializer.serializeServerForPrincipal(sample, { isAdmin: false, isActive: true, permissions: ['servers.view_details'] }, { context: 'detail', skipAttach: true, stats: sample.stats, onlinePlayers: sample.onlinePlayers, installedModIds: [9] });
-  assert.equal(noProps.max_players, undefined);
-  assert.equal(noProps.gamemode, undefined);
-  assert.equal(noProps.port, undefined);
-  assert.equal(noProps.status, undefined);
-  assert.equal(noProps.pid, undefined);
-  assert.equal(noProps.installedModIds, undefined);
-  assert.equal(noProps.onlinePlayers, undefined);
+  assert.equal(noProps.pid, undefined, `pid must never be serialized under ${profile}`);
+  if (allowAll) {
+    assert.equal(noProps.max_players, 10, `no-auth should include server properties under ${profile}`);
+    assert.equal(noProps.gamemode, 'survival', `no-auth should include gamemode under ${profile}`);
+    assert.equal(noProps.port, 19132, `no-auth should include connection details under ${profile}`);
+    assert.equal(noProps.status, 'running', `no-auth should include runtime status under ${profile}`);
+    assert.deepEqual(noProps.installedModIds, [9], `no-auth should include installed mods under ${profile}`);
+    assert.deepEqual(noProps.onlinePlayers, [{ id: 1, username: 'Steve' }], `no-auth should include player names under ${profile}`);
+  } else {
+    assert.equal(noProps.max_players, undefined, `local-rbac should omit properties without servers.view_properties under ${profile}`);
+    assert.equal(noProps.gamemode, undefined, `local-rbac should omit gamemode without servers.view_properties under ${profile}`);
+    assert.equal(noProps.port, undefined, `local-rbac should omit connection details without servers.view_connection_details under ${profile}`);
+    assert.equal(noProps.status, undefined, `local-rbac should omit runtime status without servers.view_runtime_status under ${profile}`);
+    assert.equal(noProps.installedModIds, undefined, `local-rbac should omit mods without servers.mods.view under ${profile}`);
+    assert.equal(noProps.onlinePlayers, undefined, `local-rbac should omit player names without players.view_server_membership under ${profile}`);
+  }
   const withRuntime = serializer.serializeServerForPrincipal(sample, { isAdmin: false, isActive: true, permissions: ['servers.view_details', 'servers.view_runtime_status'] }, { context: 'detail', skipAttach: true, stats: sample.stats, onlinePlayers: sample.onlinePlayers });
   assert.equal(withRuntime.status, 'running');
   assert.equal(withRuntime.stats.onlinePlayers, 3);
-  assert.equal(withRuntime.onlinePlayers, undefined);
+  if (allowAll) {
+    assert.deepEqual(
+      withRuntime.onlinePlayers,
+      [{ id: 1, username: 'Steve' }],
+      `no-auth should include player names under ${profile}`,
+    );
+  } else {
+    assert.equal(
+      withRuntime.onlinePlayers,
+      undefined,
+      `local-rbac should omit player names without players.view_server_membership under ${profile}`,
+    );
+  }
   const dash = serializer.serializeGatewayForPrincipal({
     id: 'gateway:1', name: 'Geyser', status: 'running', connectAddress: '10.0.0.8', port: 19132, targetSummary: 'Remote Java x:25565',
   }, { isAdmin: false, isActive: true, permissions: ['dashboard.view'] }, { context: 'dashboard' });
-  assert.equal(dash.status, undefined);
-  assert.equal(dash.connectAddress, undefined);
-  assert.equal(dash.port, undefined);
+  if (allowAll) {
+    assert.equal(dash.status, 'running', `no-auth dashboard should include runtime status under ${profile}`);
+    assert.equal(dash.connectAddress, '10.0.0.8', `no-auth dashboard should include connection details under ${profile}`);
+    assert.equal(dash.port, 19132, `no-auth dashboard should include port under ${profile}`);
+  } else {
+    assert.equal(dash.status, undefined, `local-rbac dashboard should omit runtime status without dashboard.view_runtime_status under ${profile}`);
+    assert.equal(dash.connectAddress, undefined, `local-rbac dashboard should omit connection details without dashboard.view_connection_details under ${profile}`);
+    assert.equal(dash.port, undefined, `local-rbac dashboard should omit port without dashboard.view_connection_details under ${profile}`);
+  }
 
   const addOnly = auth.createUser({
     username: `addonly-${Date.now()}`,
