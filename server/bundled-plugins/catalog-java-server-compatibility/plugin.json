@@ -1,0 +1,21 @@
+{
+  "id": "catalog-java-server-compatibility",
+  "name": "Java Server Compatibility Filter",
+  "version": "1.0.0",
+  "author": "Minecraft Bedrock Manager",
+  "description": "Filters the Mod Catalog by compatibility with selected local Java servers. Disable this plugin to hide the filter without affecting Java hosting.",
+  "pages": [],
+  "menus": [],
+  "backend": "backend.js",
+  "capabilities": [
+    "provider:catalog-filter"
+  ],
+  "providers": [
+    {
+      "type": "catalog-filter",
+      "id": "java-installed-servers",
+      "name": "Compatible with Servers",
+      "editions": ["java"]
+    }
+  ]
+}

@@ -248,13 +248,26 @@ router.get('/installed/:serverId', resolveServerResource('serverId'), requireSer
 // Install mod to server
 router.post('/:modId/install/:serverId', resolveServerResource('serverId'), requireServerVisible, requireServerPermission('servers.mods.install'), async (req, res) => {
   try {
+    const override = Boolean(req.body?.override);
+    const server = req.server;
+    if (override) {
+      if (String(server?.kind || '') !== 'java' || server.remote_host) {
+        return res.status(400).json({ error: 'Compatibility override is only available for local Java servers' });
+      }
+      assertPermission(req, 'servers.java.mods.override_compatibility', server);
+    }
     await modManager.installModToServer(req.params.serverId, req.params.modId, {
       fileSha256: req.body?.fileSha256,
-      override: false,
+      override,
+      actor: req.principal || req.user,
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    const body = { error: err.message };
+    if (err.code) body.code = err.code;
+    if (err.reasons) body.reasons = err.reasons;
+    if (err.files) body.files = err.files;
+    res.status(err.status || 400).json(body);
   }
 });
 
@@ -354,6 +367,8 @@ router.get('/catalog/search', requirePermission('catalog.search'), async (req, r
       gameVersions: req.query.gameVersions,
       loader: req.query.loader || '',
       environment: req.query.environment || '',
+      catalogFilters: req.query.catalogFilters,
+      principal: req.principal || req.user,
     });
     res.json(result);
   } catch (err) {
@@ -366,7 +381,7 @@ router.get('/catalog/search', requirePermission('catalog.search'), async (req, r
 
 router.get('/catalog/filter-availability', requirePermission('catalog.view'), (req, res) => {
   try {
-    res.json(catalog.listFilterAvailability());
+    res.json(catalog.listFilterAvailability({ principal: req.principal || req.user }));
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
@@ -374,7 +389,7 @@ router.get('/catalog/filter-availability', requirePermission('catalog.view'), (r
 
 router.get('/catalog/providers', requirePermission('catalog.view'), async (req, res) => {
   try {
-    res.json(catalog.listProviders());
+    res.json(catalog.listProviders({ principal: req.principal || req.user }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
