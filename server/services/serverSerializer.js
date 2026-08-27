@@ -149,6 +149,7 @@ function capabilitiesFor(principal, server) {
     propertiesEdit: can(principal, 'servers.view_properties', server),
     modsView: can(principal, 'servers.mods.view', server),
     modsInstall: can(principal, 'servers.mods.install', server),
+    modsOverrideCompatibility: can(principal, 'servers.java.mods.override_compatibility', server),
     modsRemove: can(principal, 'servers.mods.remove', server),
     lan: can(principal, 'servers.manage_lan_broadcast', server),
     update: can(principal, 'servers.update_software', server),

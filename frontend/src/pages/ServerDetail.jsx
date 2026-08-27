@@ -6,7 +6,7 @@ import { useApi } from '../context/ApiContext';
 import { useSocket } from '../context/SocketContext';
 import { startPermissionForKind, stopPermissionForKind, useAuth } from '../context/AuthContext';
 
-import { isModCompatibleWithServer, loaderDisplayName, missingModDependenciesOf, serverLoaderId } from '../utils/modCompatibility';
+import { isJavaLibraryMod, isModCompatibleWithServer, isClientOnlyOnly, candidateInstallFiles, incompatibilityReasonCodes, incompatibilityReasonLabel, canOverrideCompatibility, needsJarSelection, loaderDisplayName, missingModDependenciesOf, serverLoaderId } from '../utils/modCompatibility';
 import { serverCapability } from '../utils/serverCapabilities';
 import { PluginDetailSummary, runPluginAction } from '../components/PluginAugmentations';
 
@@ -110,6 +110,9 @@ function ManagedServerDetail() {
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [librarySearch, setLibrarySearch] = useState('');
   const [busyModId, setBusyModId] = useState(null);
+  const [showIncompatibleMods, setShowIncompatibleMods] = useState(false);
+  const [overrideConfirm, setOverrideConfirm] = useState(null);
+  const [installFileSha, setInstallFileSha] = useState('');
   const [removeModModal, setRemoveModModal] = useState(null);
   const [restartScheduling, setRestartScheduling] = useState(false);
   const [updateError, setUpdateError] = useState('');
@@ -495,14 +498,18 @@ function ManagedServerDetail() {
     }
   };
 
-  const handleInstallMod = async (mod) => {
+  const handleInstallMod = async (mod, { override = false, fileSha256 } = {}) => {
     if (busyModId || server?.kind === 'bedrock_connect' || server?.kind === 'remote') return;
     setBusyModId(mod.id);
     setModMessage(null);
     try {
-      await modApi.install(mod.id, id);
+      const body = {};
+      if (override) body.override = true;
+      if (fileSha256) body.fileSha256 = fileSha256;
+      await modApi.install(mod.id, id, Object.keys(body).length ? body : null);
       await loadServer();
       await refresh();
+      setOverrideConfirm(null);
       setModMessage({ type: 'success', text: `${mod.name} was installed on this server.` });
     } catch (err) {
       setModMessage({ type: 'error', text: err.response?.data?.error || err.message });
@@ -644,9 +651,17 @@ function ManagedServerDetail() {
   const isBC = server.kind === 'bedrock_connect';
   const isRemote = server.kind === 'remote';
   const isJava = server.kind === 'java';
+  const canOverrideMods = serverCapability(server, 'modsOverrideCompatibility', can('servers.java.mods.override_compatibility'));
   const visibleLibraryMods = libraryMods
-    .filter((mod) => isModCompatibleWithServer(mod, server))
-    .filter((mod) => !librarySearch || mod.name.toLowerCase().includes(librarySearch.toLowerCase()));
+    .filter((mod) => {
+      if (librarySearch && !mod.name.toLowerCase().includes(librarySearch.toLowerCase())) return false;
+      const installed = Boolean(server.installedMods?.some((row) => row.id === mod.id));
+      if (isModCompatibleWithServer(mod, server)) return true;
+      if (installed) return true;
+      if (!isJava || !showIncompatibleMods) return false;
+      if (!isJavaLibraryMod(mod) || isClientOnlyOnly(mod)) return false;
+      return canOverrideCompatibility(incompatibilityReasonCodes(mod, server));
+    });
   const gameplayLocked = isBC || isRemote;
   const canStart = serverCapability(server, 'start', can(startPermissionForKind(server.kind)));
   const canStop = serverCapability(server, 'stop', can(stopPermissionForKind(server.kind)));
@@ -1677,6 +1692,17 @@ function ManagedServerDetail() {
               />
             </div>
 
+            {isJava && canOverrideMods && (
+              <label className="flex items-center gap-2 text-sm text-mc-text mb-3">
+                <input
+                  type="checkbox"
+                  checked={showIncompatibleMods}
+                  onChange={(e) => setShowIncompatibleMods(e.target.checked)}
+                />
+                Show incompatible mods
+              </label>
+            )}
+
             <div className="flex-1 overflow-y-auto space-y-2 min-h-[12rem]">
               {libraryLoading ? (
                 <div className="flex items-center justify-center py-10">
@@ -1699,10 +1725,12 @@ function ManagedServerDetail() {
                     const thumb = modThumbnailSrc(mod);
                     const busy = busyModId === mod.id;
                     const removing = busy && removingModId === mod.id;
+                    const incompatible = isJava && !installed && !isModCompatibleWithServer(mod, server);
+                    const reasons = incompatible ? incompatibilityReasonCodes(mod, server) : [];
                     return (
                       <div
                         key={mod.id}
-                        className="flex items-center gap-3 p-2 bg-mc-darker rounded-lg"
+                        className={`flex items-center gap-3 p-2 bg-mc-darker rounded-lg ${incompatible ? 'border border-yellow-500/40' : ''}`}
                       >
                         <div className="w-10 h-10 bg-mc-surfaceLight rounded flex items-center justify-center flex-shrink-0 overflow-hidden">
                           {thumb ? (
@@ -1716,6 +1744,12 @@ function ManagedServerDetail() {
                           <p className="text-xs text-mc-textMuted capitalize">
                             {(mod.type || 'addon').replace('_', ' ')}
                           </p>
+                          {incompatible && (
+                            <p className="text-xs text-yellow-300 mt-1 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3" />
+                              {incompatibilityReasonLabel(reasons)}
+                            </p>
+                          )}
                         </div>
                         {busy ? (
                           <button
@@ -1738,7 +1772,20 @@ function ManagedServerDetail() {
                         ) : (
                           <button
                             type="button"
-                            onClick={() => handleInstallMod(mod)}
+                            onClick={() => {
+                              if (incompatible) {
+                                const needsFile = needsJarSelection(mod, server);
+                                setOverrideConfirm({
+                                  mod,
+                                  needsFile,
+                                  files: candidateInstallFiles(mod),
+                                  reasons,
+                                });
+                                setInstallFileSha(needsFile ? '' : (candidateInstallFiles(mod)[0]?.sha256 || ''));
+                                return;
+                              }
+                              handleInstallMod(mod);
+                            }}
                             disabled={Boolean(busyModId) || modsLocked}
                             className="btn text-xs px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white"
                           >
@@ -1750,6 +1797,56 @@ function ManagedServerDetail() {
                     );
                   })
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {overrideConfirm && server && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[80] p-4">
+          <div className="card max-w-lg w-full animate-slide-up">
+            <h3 className="text-lg font-semibold text-white mb-2">Compatibility could not be confirmed.</h3>
+            <p className="text-sm text-mc-textMuted mb-3">
+              This mod may prevent the server from starting. Verify the Minecraft version, loader, dependencies, and selected JAR before continuing.
+            </p>
+            <p className="text-sm text-mc-text mb-3">
+              Server: <strong className="text-white">{server.name}</strong>. Mod:{' '}
+              <strong className="text-white">{overrideConfirm.mod.name}</strong>.
+            </p>
+            {overrideConfirm.needsFile && (
+              <div className="space-y-2 mb-4 max-h-56 overflow-y-auto">
+                {overrideConfirm.files.map((file) => (
+                  <label key={file.sha256 || file.name} className="flex items-start gap-2 p-2 bg-mc-darker rounded-lg text-sm">
+                    <input
+                      type="radio"
+                      name="server-override-jar"
+                      checked={installFileSha === file.sha256}
+                      onChange={() => setInstallFileSha(file.sha256)}
+                    />
+                    <span>
+                      <span className="text-white block">{file.name}</span>
+                      <span className="text-xs text-mc-textMuted">
+                        {[file.version, loaderDisplayName(file.loader) || file.loader, (file.minecraftVersions || []).join(', '), file.environment]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button className="btn btn-secondary flex-1" onClick={() => setOverrideConfirm(null)}>Cancel</button>
+              <button
+                className="btn btn-primary flex-1"
+                disabled={busyModId || (overrideConfirm.needsFile && !installFileSha)}
+                onClick={() => handleInstallMod(overrideConfirm.mod, {
+                  override: true,
+                  fileSha256: installFileSha || undefined,
+                })}
+              >
+                Install anyway
+              </button>
             </div>
           </div>
         </div>
