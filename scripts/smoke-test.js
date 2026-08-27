@@ -31,6 +31,7 @@ const connectHost = require('../server/services/connectHost');
 const portRanges = require('../server/services/portRanges');
 const pluginHost = require('../server/services/pluginHost');
 const pluginRoutes = require('../server/routes/plugins');
+const security = require('../server/security');
 const { runJavaProviderTests } = require('./java-provider-test');
 const { runCatalogProviderTests } = require('./catalog-provider-test');
 const { runPluginSettingsTests } = require('./plugin-settings-test');
@@ -354,7 +355,34 @@ async function testPluginHost() {
     const backendRes = await fetch(`${pluginOrigin}/api/plugins/hello-world/hello`, {
       headers: { 'x-test-user': 'none' },
     });
-    assert.equal(backendRes.status, 403, 'plugin permission should be required when no user is attached');
+    const backendRaw = await backendRes.text();
+    let backendBody = null;
+    try { backendBody = JSON.parse(backendRaw); } catch { /* not json */ }
+    const profile = security.publicInfo().securityProfile;
+    const expectedStatus = profile === security.profiles.PROFILE_NO_AUTH ? 200 : 403;
+    const successPayload = {
+      plugin: 'hello-world',
+      message: 'Hello from the example plugin backend.',
+    };
+    assert.equal(
+      backendRes.status,
+      expectedStatus,
+      `unprivileged plugin backend under ${profile} should return ${expectedStatus}, got ${backendRes.status}`,
+    );
+    if (expectedStatus === 200) {
+      assert.deepEqual(
+        backendBody,
+        successPayload,
+        `no-auth plugin backend should return the greeting payload under ${profile}`,
+      );
+    } else {
+      assert.notDeepEqual(backendBody, successPayload);
+      assert.equal(
+        backendRaw.includes(successPayload.message),
+        false,
+        `local-rbac plugin backend must not leak the greeting payload under ${profile} (status ${backendRes.status})`,
+      );
+    }
   } finally {
     await new Promise((resolve) => pluginServer.close(resolve));
   }
