@@ -578,6 +578,9 @@ function createProviderServices(plugin) {
     catalogHttp: (plugin.capabilities || []).includes('provider:catalog-source')
       ? require('./catalogHttp').forPlugin()
       : undefined,
+    javaServers: (plugin.capabilities || []).includes('provider:catalog-filter')
+      ? require('./javaServerSummaries').forPlugin()
+      : undefined,
     gitCatalog: plugin.id === 'catalog-git' ? require('./gitCatalogService').forPlugin(plugin) : undefined,
     fileCatalog: plugin.id === 'catalog-file' ? require('./fileCatalogService').forPlugin(plugin) : undefined,
     catalogConfig: plugin.id === 'catalog-curseforge' ? require('./catalogPluginConfig') : undefined,
@@ -642,6 +645,12 @@ function loadBackend(plugin) {
         : undefined,
       unregisterCatalogSource: plugin.source === 'bundled'
         ? (providerId) => catalogProviderRegistry.unregister(plugin, providerId)
+        : undefined,
+      registerCatalogFilter: plugin.source === 'bundled'
+        ? (provider) => require('./catalogFilterRegistry').register(plugin, provider)
+        : undefined,
+      unregisterCatalogFilter: plugin.source === 'bundled'
+        ? (filterId) => require('./catalogFilterRegistry').unregister(plugin, filterId)
         : undefined,
       registerPluginAction: plugin.source === 'bundled'
         ? (spec) => pluginActions.register(plugin.id, spec)
@@ -743,6 +752,7 @@ function unloadPlugins() {
   try { require('./javaLoaderRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./gatewayRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./catalogProviderRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
+  try { require('./catalogFilterRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./serverEditionRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./resourceAuthorizationRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
 }
@@ -755,6 +765,7 @@ function resetForTests() {
   try { require('./serverEditionRegistry').clear(); } catch { /* ignore */ }
   try { require('./gatewayRegistry').clear(); } catch { /* ignore */ }
   try { require('./javaLoaderRegistry').clear(); } catch { /* ignore */ }
+  try { require('./catalogFilterRegistry').clear(); } catch { /* ignore */ }
   try { require('./resourceAuthorizationRegistry').resetForTests(); } catch { /* ignore */ }
 }
 
