@@ -31,7 +31,6 @@ const connectHost = require('../server/services/connectHost');
 const portRanges = require('../server/services/portRanges');
 const pluginHost = require('../server/services/pluginHost');
 const pluginRoutes = require('../server/routes/plugins');
-const security = require('../server/security');
 const { runJavaProviderTests } = require('./java-provider-test');
 const { runCatalogProviderTests } = require('./catalog-provider-test');
 const { runPluginSettingsTests } = require('./plugin-settings-test');
@@ -358,6 +357,7 @@ async function testPluginHost() {
     const backendRaw = await backendRes.text();
     let backendBody = null;
     try { backendBody = JSON.parse(backendRaw); } catch { /* not json */ }
+    const security = require('../server/security');
     const profile = security.publicInfo().securityProfile;
     const expectedStatus = profile === security.profiles.PROFILE_NO_AUTH ? 200 : 403;
     const successPayload = {
