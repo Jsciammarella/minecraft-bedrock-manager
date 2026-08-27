@@ -213,6 +213,7 @@ function run() {
   assert.equal(emitted[0]?.event, 'server-access-revoked');
 
   registry.resetForTests();
+  state.markSuspended('server');
   if (pluginPresent) runServiceMutationTests();
   console.log('server-access-test: ok');
 }
