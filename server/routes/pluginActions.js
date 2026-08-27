@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pluginActions = require('../services/pluginActions');
+const { resolveServerResource, requireServerVisible } = require('../middleware/auth');
 
 function sendError(res, err) {
   const status = Number(err?.status) || 400;
@@ -29,7 +30,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-router.post('/servers/:id', async (req, res) => {
+router.post('/servers/:id', resolveServerResource(), requireServerVisible, async (req, res) => {
   try {
     if (String(req.params.id).startsWith('gateway:')) {
       return res.status(400).json({

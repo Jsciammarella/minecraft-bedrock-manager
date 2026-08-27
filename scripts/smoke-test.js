@@ -35,6 +35,7 @@ const { runModrinthProviderTests } = require('./modrinth-provider-test');
 const { runBedrockConnectLifecycleTests } = require('./bedrock-connect-lifecycle-test');
 const { runBedrockConnectPluginTests } = require('./bedrock-connect-plugin-test');
 const { runPermissionCatalogTests } = require('./permission-catalog-test');
+const { runServerAccessTests } = require('./server-access-test');
 
 function zipStore(files) {
   const locals = [];
@@ -421,6 +422,9 @@ async function run() {
   await testPluginHost();
   testUserManagement();
   await runPermissionCatalogTests({ auth: require('../server/services/authService'), catalog: require('../server/services/permissionCatalog'), db, pluginHost });
+  runServerAccessTests();
+  pluginHost.resetForTests();
+  pluginHost.loadPlugins();
   await runJavaProviderTests({ pluginHost, testRoot });
   await runCatalogProviderTests({ pluginHost, testRoot });
   await runPluginSettingsTests({ pluginHost, testRoot });

@@ -45,25 +45,35 @@ LocalRbacProvider.prototype.getCurrentPrincipal = function getCurrentPrincipal(r
   return this.authenticate(request).principal;
 };
 
-LocalRbacProvider.prototype.authorize = function authorize(principal, action, _resource, _context = {}) {
+LocalRbacProvider.prototype.decide = function decide(principal, action, resource, context = {}) {
+  const evaluate = require('../evaluate');
+  const decision = require('../decision');
   const key = String(action || '');
-  if (!principal || principal.authenticated === false || principal.isActive === false) return false;
-
+  if (!principal || principal.authenticated === false || principal.isActive === false) {
+    return decision.defaultDeny(key, resource);
+  }
   if (!isRecognized(key) && !isPluginAction(key)) {
-    return denyUnknown(key, this.id);
+    denyUnknown(key, this.id);
+    return decision.defaultDeny(key, resource);
   }
-
-  if (isSystemPrincipal(principal)) return true;
-
-  if (key === 'admin') return Boolean(principal.isAdmin);
-
+  if (isSystemPrincipal(principal)) return decision.administrator(key, resource);
+  if (key === 'admin') {
+    return principal.isAdmin
+      ? decision.administrator(key, resource)
+      : decision.defaultDeny(key, resource);
+  }
   if (key === 'gateway:lifecycle') {
-    return auth().hasPermission(principal, 'servers.start_java')
-      && auth().hasPermission(principal, 'servers.stop_java');
+    const start = evaluate.decide(principal, 'servers.start_java', resource, context);
+    const stop = evaluate.decide(principal, 'servers.stop_java', resource, context);
+    return start.decision === 'allow' && stop.decision === 'allow'
+      ? start
+      : decision.defaultDeny(key, resource, [...start.sources, ...stop.sources]);
   }
+  return evaluate.decide(principal, key, resource, context);
+};
 
-  if (!auth().hasPermission(principal, key)) return false;
-  return true;
+LocalRbacProvider.prototype.authorize = function authorize(principal, action, resource, context = {}) {
+  return this.decide(principal, action, resource, context).decision === 'allow';
 };
 
 LocalRbacProvider.prototype.getCapabilities = function getCapabilities(principal) {

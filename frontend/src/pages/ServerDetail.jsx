@@ -7,10 +7,11 @@ import { useSocket } from '../context/SocketContext';
 import { startPermissionForKind, stopPermissionForKind, useAuth } from '../context/AuthContext';
 
 import { isModCompatibleWithServer, loaderDisplayName, missingModDependenciesOf, serverLoaderId } from '../utils/modCompatibility';
+import { serverCapability } from '../utils/serverCapabilities';
 import { PluginDetailSummary, runPluginAction } from '../components/PluginAugmentations';
 
 import {
-  ArrowLeft, Play, Square, RotateCcw, Terminal, Send, Users,
+  ArrowLeft, Play, Square, RotateCcw, Terminal, Send, Users, UserCog,
   Settings, ArrowUpRight, Clock, Package, ChevronDown, ChevronUp,
   Copy, Trash2, Download, AlertCircle, AlertTriangle, Check, Loader2,
   Shield, ShieldOff, Ban, UserPlus, Radio, Plus, X, Search
@@ -647,33 +648,33 @@ function ManagedServerDetail() {
     .filter((mod) => isModCompatibleWithServer(mod, server))
     .filter((mod) => !librarySearch || mod.name.toLowerCase().includes(librarySearch.toLowerCase()));
   const gameplayLocked = isBC || isRemote;
-  const canStart = can(startPermissionForKind(server.kind));
-  const canStop = can(stopPermissionForKind(server.kind));
-  const canUpdate = can('servers.update_software');
-  const canLan = can('servers.manage_lan_broadcast');
-  const canConsoleView = can('servers.console.view');
-  const canConsole = can('servers.console.send_commands');
-  const canAddAllow = can('servers.allowlist.add');
-  const canRemoveAllow = can('servers.allowlist.remove');
-  const canAddBan = can('servers.banlist.add');
-  const canRemoveBan = can('servers.banlist.remove');
-  const canPlayerPerms = canAny(
+  const canStart = serverCapability(server, 'start', can(startPermissionForKind(server.kind)));
+  const canStop = serverCapability(server, 'stop', can(stopPermissionForKind(server.kind)));
+  const canUpdate = serverCapability(server, 'update', can('servers.update_software'));
+  const canLan = serverCapability(server, 'lan', can('servers.manage_lan_broadcast'));
+  const canConsoleView = serverCapability(server, 'consoleView', can('servers.console.view'));
+  const canConsole = serverCapability(server, 'consoleSend', can('servers.console.send_commands'));
+  const canAddAllow = serverCapability(server, 'allowAdd', can('servers.allowlist.add'));
+  const canRemoveAllow = serverCapability(server, 'allowRemove', can('servers.allowlist.remove'));
+  const canAddBan = serverCapability(server, 'banAdd', can('servers.banlist.add'));
+  const canRemoveBan = serverCapability(server, 'banRemove', can('servers.banlist.remove'));
+  const canPlayerPerms = serverCapability(server, 'playerPermsEdit', canAny(
     'servers.player_permissions.set_visitor',
     'servers.player_permissions.set_member',
     'servers.player_permissions.set_operator',
     'servers.player_permissions.reset',
-  );
-  const canAddMods = can('servers.mods.install');
-  const canRemoveMods = can('servers.mods.remove');
-  const canRuntime = can('servers.view_runtime_status');
-  const canConnection = can('servers.view_connection_details');
-  const canProperties = can('servers.view_properties');
-  const canRemoteTarget = can('servers.remote.view_target');
-  const canViewMods = can('servers.mods.view');
-  const canViewMembership = can('players.view_server_membership');
-  const canViewAllow = can('servers.allowlist.view');
-  const canViewBan = can('servers.banlist.view');
-  const canViewPlayerPerms = can('servers.player_permissions.view');
+  ));
+  const canAddMods = serverCapability(server, 'modsInstall', can('servers.mods.install'));
+  const canRemoveMods = serverCapability(server, 'modsRemove', can('servers.mods.remove'));
+  const canRuntime = serverCapability(server, 'runtime', can('servers.view_runtime_status'));
+  const canConnection = serverCapability(server, 'connection', can('servers.view_connection_details'));
+  const canProperties = serverCapability(server, 'propertiesView', can('servers.view_properties'));
+  const canRemoteTarget = serverCapability(server, 'remoteTarget', can('servers.remote.view_target'));
+  const canViewMods = serverCapability(server, 'modsView', can('servers.mods.view'));
+  const canViewMembership = serverCapability(server, 'membership', can('players.view_server_membership'));
+  const canViewAllow = serverCapability(server, 'allowView', can('servers.allowlist.view'));
+  const canViewBan = serverCapability(server, 'banView', can('servers.banlist.view'));
+  const canViewPlayerPerms = serverCapability(server, 'playerRoles', can('servers.player_permissions.view'));
 
   const modsLocked = gameplayLocked;
 
@@ -884,15 +885,25 @@ function ManagedServerDetail() {
           )}
           {!gameplayLocked && canPlayerPerms && (
             <button
-              onClick={() => navigate(`/servers/${id}/users`)}
+              onClick={() => navigate(`/servers/${id}/player-roles`)}
               className="btn btn-secondary text-sm"
-              title="Manage player permissions for this server"
+              title="Manage Minecraft player roles for this server"
             >
               <Users className="w-4 h-4" />
+              Player Roles
+            </button>
+          )}
+          {serverCapability(server, 'serverAccess') && (
+            <button
+              onClick={() => navigate(`/servers/${id}/users`)}
+              className="btn btn-secondary text-sm"
+              title="Manage management-console users for this server"
+            >
+              <UserCog className="w-4 h-4" />
               Users
             </button>
           )}
-          {can('servers.view_properties') && (
+          {canProperties && (
           <button
             onClick={() => navigate(`/servers/${id}/properties`)}
             className="btn btn-secondary text-sm"

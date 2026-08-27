@@ -42,11 +42,105 @@ function optionalPrincipal(req, _res, next) {
 }
 
 function resolveResource(req, options) {
-  if (options == null) return undefined;
+  if (options == null) {
+    if (req.resource) return req.resource;
+    if (req.server) return req.server;
+    return undefined;
+  }
   if (typeof options === 'function') return options(req);
   if (typeof options.resource === 'function') return options.resource(req);
   if (Object.prototype.hasOwnProperty.call(options, 'resource')) return options.resource;
   return options;
+}
+
+function serverNotFoundBody() {
+  return { error: 'Server not found', code: 'NOT_FOUND' };
+}
+
+function isHiddenServer(principal, server) {
+  if (!server) return true;
+  if (!principal) return true;
+  try {
+    if (security().isAdministrator(principal)) return false;
+    return !security().authorize(principal, 'servers.view', server)
+      && !security().authorize(principal, 'servers.view_details', server);
+  } catch {
+    return true;
+  }
+}
+
+function failServer(res, req, err) {
+  const current = req.principal || req.user;
+  const server = req.server;
+  if (err?.code === 'PERMISSION_REQUIRED' && isHiddenServer(current, server)) {
+    return res.status(404).json(serverNotFoundBody());
+  }
+  if (err?.status === 404) return deny(res, 404, err.message || 'Server not found', { code: err.code || 'NOT_FOUND' });
+  return fail(res, err);
+}
+
+function attachServerResource(req, server) {
+  req.server = server;
+  req.resource = { type: 'server', id: server.id, kind: server.kind };
+  return server;
+}
+
+function lookupServer(req, param = 'id') {
+  const raw = req.params?.[param] ?? req.params?.serverId;
+  const javaHostingPolicy = require('../services/javaHostingPolicy');
+  const server = serverManager.getServer(raw);
+  if (!server) return null;
+  try {
+    javaHostingPolicy.assertServerVisible(server);
+  } catch {
+    return null;
+  }
+  return server;
+}
+
+function resolveServerResource(param = 'id') {
+  return (req, res, next) => {
+    try {
+      const server = lookupServer(req, param);
+      if (!server) return res.status(404).json(serverNotFoundBody());
+      attachServerResource(req, server);
+      next();
+    } catch (err) {
+      return failServer(res, req, err);
+    }
+  };
+}
+
+function requireServerVisible(req, res, next) {
+  try {
+    const current = req.principal || req.user;
+    if (!current) return deny(res, 401, 'Authentication required');
+    const server = req.server || lookupServer(req);
+    if (!server) return res.status(404).json(serverNotFoundBody());
+    attachServerResource(req, server);
+    if (isHiddenServer(current, server)) return res.status(404).json(serverNotFoundBody());
+    next();
+  } catch (err) {
+    return failServer(res, req, err);
+  }
+}
+
+function requireServerPermission(action, options = {}) {
+  return (req, res, next) => {
+    try {
+      const current = req.principal || req.user;
+      if (!current) return deny(res, 401, 'Authentication required');
+      const server = req.server || lookupServer(req, options.param || 'id');
+      if (!server) return res.status(404).json(serverNotFoundBody());
+      attachServerResource(req, server);
+      if (isHiddenServer(current, server)) return res.status(404).json(serverNotFoundBody());
+      const key = typeof action === 'function' ? action(req, server) : action;
+      if (key) security().requirePermission(current, key, server, { req, resource: server });
+      next();
+    } catch (err) {
+      return failServer(res, req, err);
+    }
+  };
 }
 
 function requirePermission(action, options) {
@@ -67,7 +161,8 @@ function requireAnyPermission(...keys) {
   return (req, res, next) => {
     const current = req.principal || req.user;
     if (!current) return deny(res, 401, 'Authentication required');
-    if (keys.some((key) => security().authorize(current, key))) return next();
+    const resource = resolveResource(req);
+    if (keys.some((key) => security().authorize(current, key, resource))) return next();
     return deny(res, 403, 'You do not have permission to do that', {
       code: 'PERMISSION_REQUIRED',
       permission: keys[0],
@@ -80,8 +175,9 @@ function requireAllPermissions(...keys) {
     try {
       const current = req.principal || req.user;
       if (!current) return deny(res, 401, 'Authentication required');
+      const resource = resolveResource(req);
       for (const key of keys) {
-        security().requirePermission(current, key, undefined, { req });
+        security().requirePermission(current, key, resource, { req, resource });
       }
       next();
     } catch (err) {
@@ -158,14 +254,14 @@ function requireServerStart(req, res, next) {
     } else {
       javaHostingPolicy.assertServerVisible(server);
     }
+    attachServerResource(req, server);
     assertPermission(req, catalog.startPermissionForKind(server.kind), server);
-    req.server = server;
     next();
   } catch (err) {
-    if (err.code) {
+    if (err.code && err.code !== 'PERMISSION_REQUIRED') {
       return res.status(err.status || 409).json({ error: err.message, code: err.code, plugin: err.plugin });
     }
-    return fail(res, err);
+    return failServer(res, req, err);
   }
 }
 
@@ -180,14 +276,14 @@ function requireServerStop(req, res, next) {
     } else {
       javaHostingPolicy.assertServerVisible(server);
     }
+    attachServerResource(req, server);
     assertPermission(req, catalog.stopPermissionForKind(server.kind), server);
-    req.server = server;
     next();
   } catch (err) {
-    if (err.code) {
+    if (err.code && err.code !== 'PERMISSION_REQUIRED') {
       return res.status(err.status || 409).json({ error: err.message, code: err.code, plugin: err.plugin });
     }
-    return fail(res, err);
+    return failServer(res, req, err);
   }
 }
 
@@ -197,6 +293,7 @@ function requireServerRestart(req, res, next) {
     if (!server) return deny(res, 404, 'Server not found');
     const javaHostingPolicy = require('../services/javaHostingPolicy');
     const bedrockConnectPolicy = require('../services/bedrockConnectPolicy');
+    attachServerResource(req, server);
     if (server.kind === 'bedrock_connect') {
       bedrockConnectPolicy.assertAvailable('restart');
       const restartKey = catalog.restartPermissionForKind(server.kind);
@@ -206,13 +303,12 @@ function requireServerRestart(req, res, next) {
       const restartKey = catalog.restartPermissionForKind(server.kind);
       if (restartKey) assertPermission(req, restartKey, server);
     }
-    req.server = server;
     next();
   } catch (err) {
-    if (err.code) {
+    if (err.code && err.code !== 'PERMISSION_REQUIRED') {
       return res.status(err.status || 409).json({ error: err.message, code: err.code, plugin: err.plugin });
     }
-    return fail(res, err);
+    return failServer(res, req, err);
   }
 }
 
@@ -227,14 +323,14 @@ function requireServerRestartWithWarning(req, res, next) {
     } else {
       javaHostingPolicy.assertServerVisible(server);
     }
+    attachServerResource(req, server);
     assertPermission(req, 'servers.restart_with_warning', server);
-    req.server = server;
     next();
   } catch (err) {
     if (err.code && err.code !== 'PERMISSION_REQUIRED') {
       return res.status(err.status || 409).json({ error: err.message, code: err.code, plugin: err.plugin });
     }
-    return fail(res, err);
+    return failServer(res, req, err);
   }
 }
 
@@ -244,14 +340,14 @@ function requireServerCancelRestart(req, res, next) {
     if (!server) return deny(res, 404, 'Server not found');
     const javaHostingPolicy = require('../services/javaHostingPolicy');
     if (server.kind !== 'bedrock_connect') javaHostingPolicy.assertServerVisible(server);
+    attachServerResource(req, server);
     assertPermission(req, 'servers.cancel_scheduled_restart', server);
-    req.server = server;
     next();
   } catch (err) {
     if (err.code && err.code !== 'PERMISSION_REQUIRED') {
       return res.status(err.status || 409).json({ error: err.message, code: err.code, plugin: err.plugin });
     }
-    return fail(res, err);
+    return failServer(res, req, err);
   }
 }
 
@@ -317,6 +413,11 @@ module.exports = {
   requireServerRestartWithWarning,
   requireServerCancelRestart,
   requireServerUpdate,
+  resolveServerResource,
+  requireServerVisible,
+  requireServerPermission,
+  isHiddenServer,
+  failServer,
   assertPermission,
   isPublicApiPath,
   deny,

@@ -299,7 +299,7 @@ function runSecurityProviderTests() {
     const login = rbac.provider.login('admin', 'mcadmin');
     assert.equal(login.user.username, 'admin');
     assert.equal(rbac.authorize(login.user, 'servers.start'), true);
-    assert.equal(rbac.authorize({ ...login.user, isAdmin: false, permissions: [] }, 'servers.start'), false);
+    assert.equal(rbac.authorize({ ...login.user, id: -1, isAdmin: false, permissions: [] }, 'servers.start'), false);
     assert.equal(rbac.authorize(login.user, 'totally.unknown'), false);
     assert.equal(rbac.authorize(restrictedPrincipal(), 'plugin.unknown.action'), false);
 

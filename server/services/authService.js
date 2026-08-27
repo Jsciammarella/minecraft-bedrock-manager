@@ -592,6 +592,59 @@ function hasPermission(user, key) {
   return aliases.some((item) => perms.includes(item));
 }
 
+function collectGlobalSources(user, key) {
+  const decision = require('../security/decision');
+  if (!user || user.id == null || user.isActive === false) return [];
+  const row = getUserRow(user.id) || (user.is_admin != null ? user : null);
+  if (!row) return [];
+  const canonical = typeof catalog.canonicalPermission === 'function'
+    ? catalog.canonicalPermission(key)
+    : String(key || '');
+  const flags = permissionFlags();
+  const groups = loadGroupsForUser(row.id);
+  const activeGroups = groups.filter((g) => g.is_active === 1);
+  const groupMap = groupPermissionMap(activeGroups.map((g) => g.id), flags);
+  const userMap = userPermissionMap(row.id, flags);
+  const sources = [];
+  if (activeGroups.length) {
+    const placeholders = activeGroups.map(() => '?').join(',');
+    const groupRows = db.prepare(`
+      SELECT g.id, g.name, gp.permission_key, gp.value
+      FROM group_permissions gp
+      JOIN groups g ON g.id = gp.group_id
+      WHERE gp.group_id IN (${placeholders})
+    `).all(...activeGroups.map((g) => g.id));
+    const aliases = new Set(typeof catalog.permissionAliases === 'function'
+      ? catalog.permissionAliases(canonical)
+      : [canonical]);
+    for (const item of groupRows) {
+      if (!aliases.has(item.permission_key) && item.permission_key !== canonical) continue;
+      const flag = flags[item.permission_key];
+      if (flag && flag.allowGroup === false && !flag.deprecated) continue;
+      sources.push(decision.source({
+        origin: 'global-group',
+        scope: 'global',
+        value: item.value,
+        groupId: item.id,
+        groupName: item.name,
+        permission: canonical,
+      }));
+    }
+  }
+  const userVal = assignmentValue(canonical, userMap);
+  if (userVal) {
+    sources.push(decision.source({
+      origin: 'global-user',
+      scope: 'global',
+      value: userVal,
+      userId: row.id,
+      permission: canonical,
+    }));
+  }
+  void groupMap;
+  return sources;
+}
+
 function canAccessUserManagement(user) {
   if (!user) return false;
   if (user.isAdmin) return true;
@@ -1211,6 +1264,7 @@ module.exports = {
   hashPassword,
   verifyPassword,
   hasPermission,
+  collectGlobalSources,
   canAccessUserManagement,
   listUsers,
   getUser,

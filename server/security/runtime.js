@@ -72,15 +72,24 @@ function createRuntime(options = {}) {
       return provider.authenticate(request || {}).principal;
     },
 
+    decide(current, action, resource, context) {
+      if (typeof provider.decide === 'function') {
+        return provider.decide(current, action, resource, context);
+      }
+      const allowed = Boolean(provider.authorize(current, action, resource, context));
+      return require('./decision').fromBoolean(allowed, action, resource);
+    },
+
     authorize(current, action, resource, context) {
-      return Boolean(provider.authorize(current, action, resource, context));
+      return runtime.decide(current, action, resource, context).decision === 'allow';
     },
 
     requirePermission(current, action, resource, context) {
       if (!current || current.authenticated === false) {
         throw errors.unauthorized();
       }
-      if (!provider.authorize(current, action, resource, context)) {
+      const outcome = runtime.decide(current, action, resource, context);
+      if (outcome.decision !== 'allow') {
         throw errors.permissionRequired(action);
       }
       return true;

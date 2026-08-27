@@ -10,6 +10,7 @@ import { useSocket } from '../context/SocketContext';
 import { startPermissionForKind, stopPermissionForKind, useAuth } from '../context/AuthContext';
 
 import { loaderDisplayName, missingModDependenciesOf, serverLoaderId } from '../utils/modCompatibility';
+import { serverCapability } from '../utils/serverCapabilities';
 import {
   CONTROL_DISABLED_REASONS,
   PluginIndicators,
@@ -642,9 +643,9 @@ function Dashboard() {
             const connectLabel = canConnection
               ? (server.connectAddress || (server.port != null ? `Port ${server.port}` : 'Connection hidden'))
               : 'Connection hidden';
-            const canOpen = can('servers.view_details');
-            const canStart = can(startPermissionForKind(server.kind));
-            const canStop = can(stopPermissionForKind(server.kind));
+            const canOpen = serverCapability(server, 'details', can('servers.view_details'));
+            const canStart = serverCapability(server, 'start', can(startPermissionForKind(server.kind)));
+            const canStop = serverCapability(server, 'stop', can(stopPermissionForKind(server.kind)));
             const hasMissingMods = isJava(server) && (missingModDependenciesOf(server)?.required || []).length > 0;
             const hasLanError = Boolean(lan.error && !/Stop or remove Bedrock Connect/i.test(lan.error));
             const hasNotification = Boolean(
@@ -798,7 +799,7 @@ function Dashboard() {
                 </div>
                 <div className="text-center p-2 bg-mc-darker rounded-lg">
                   <PackageIcon className="w-4 h-4 text-mc-textMuted mx-auto mb-1" />
-                  <p className="text-sm font-medium text-white">{isRemote(server) ? 'N/A' : (can('servers.mods.view') && typeof server.stats?.installedMods === 'number' ? server.stats.installedMods : '—')}</p>
+                  <p className="text-sm font-medium text-white">{isRemote(server) ? 'N/A' : (serverCapability(server, 'modsView', can('servers.mods.view')) && typeof server.stats?.installedMods === 'number' ? server.stats.installedMods : '—')}</p>
                   <p className="text-xs text-mc-textMuted">Mods</p>
                 </div>
               </div>
@@ -928,7 +929,7 @@ function Dashboard() {
                   <Terminal className="w-3.5 h-3.5" />
                 </button>
                 )}
-                {can('servers.view_properties') && (
+                {serverCapability(server, 'propertiesView', can('servers.view_properties')) && (
                 <button
                   onClick={(e) => { e.stopPropagation(); if (!javaControlsLocked) navigate(`/servers/${server.id}/properties`); }}
                   disabled={javaControlsLocked}
@@ -938,7 +939,7 @@ function Dashboard() {
                   <Settings className="w-3.5 h-3.5" />
                 </button>
                 )}
-                {can('servers.manage_lan_broadcast') && (
+                {serverCapability(server, 'lan', can('servers.manage_lan_broadcast')) && (
                 <button
                   onClick={(e) => { if (javaControlsLocked) { e.stopPropagation(); return; } beginLanToggle(server, e); }}
                   disabled={lanLocked || lanBusy[server.id] || javaControlsLocked}
@@ -955,7 +956,7 @@ function Dashboard() {
                   {lanBusy[server.id] ? '...' : 'LAN'}
                 </button>
                 )}
-                {can('servers.delete') && (
+                {serverCapability(server, 'delete', can('servers.delete')) && (
                 <button
                   onClick={(e) => { e.stopPropagation(); if (!javaControlsLocked) handleDelete(server.id, server.name); }}
                   disabled={javaControlsLocked}

@@ -21,6 +21,14 @@ function permissionRequired(permission, message = 'You do not have permission to
   return forbidden(message, { code: 'PERMISSION_REQUIRED', permission });
 }
 
+function featureUnavailable(message = 'This feature is not available') {
+  return new SecurityError(message, { status: 404, code: 'FEATURE_UNAVAILABLE' });
+}
+
+function serverNotFound() {
+  return new SecurityError('Server not found', { status: 404, code: 'NOT_FOUND' });
+}
+
 function permissionMigrationFailed(migrationKey, schemaVersion, cause) {
   const err = new SecurityError(
     `Permission migration "${migrationKey}" failed`,
@@ -38,5 +46,7 @@ module.exports = {
   unauthorized,
   forbidden,
   permissionRequired,
+  featureUnavailable,
+  serverNotFound,
   permissionMigrationFailed,
 };

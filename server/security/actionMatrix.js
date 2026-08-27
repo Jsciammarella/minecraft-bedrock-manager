@@ -52,8 +52,8 @@ const ACTION_MATRIX = [
   { method: 'PUT', route: '/api/players/server/:serverId/:playerId', action: 'update player server access', mode: 'field-mapped', resolver: 'players.updateServerAccess', risk: 'normal' },
   { method: 'POST', route: '/api/players/scan/:serverId', action: 'scan players', mode: 'composite', permissions: ['players.scan', 'servers.view_details'], risk: 'normal' },
   { method: 'POST', route: '/api/players', action: 'add player', mode: 'static', permission: 'players.add', risk: 'normal' },
-  { method: 'POST', route: '/api/players/:id/whitelist', action: 'allowlist player', mode: 'static', permission: 'servers.allowlist.add', risk: 'normal' },
-  { method: 'POST', route: '/api/players/:id/unwhitelist', action: 'remove allowlist', mode: 'static', permission: 'servers.allowlist.remove', risk: 'normal' },
+  { method: 'POST', route: '/api/players/:id/whitelist', action: 'allowlist player', mode: 'static', permission: 'servers.allowlist.add', risk: 'normal', resourceResolver: 'server' },
+  { method: 'POST', route: '/api/players/:id/unwhitelist', action: 'remove allowlist', mode: 'static', permission: 'servers.allowlist.remove', risk: 'normal', resourceResolver: 'server' },
   { method: 'POST', route: '/api/players/:id/unwhitelist-all', action: 'remove allowlist everywhere', mode: 'static', permission: 'players.remove_allowlist_all', risk: 'normal' },
   { method: 'POST', route: '/api/players/:id/ban-all', action: 'ban player everywhere', mode: 'static', permission: 'players.ban_all', risk: 'elevated' },
   { method: 'POST', route: '/api/players/:id/unban-all', action: 'unban player everywhere', mode: 'static', permission: 'players.unban_all', risk: 'elevated' },
@@ -78,11 +78,31 @@ const ACTION_MATRIX = [
   { method: 'POST', route: '/api/plugin-actions', action: 'invoke plugin action', mode: 'plugin-action', resolver: 'pluginActions.invoke', risk: 'elevated' },
   { method: 'POST', route: '/api/plugin-actions/servers/:id', action: 'invoke plugin server action', mode: 'plugin-action', resolver: 'pluginActions.invoke', risk: 'elevated' },
 
-  { method: 'WS', route: 'join-server', action: 'subscribe to console', mode: 'static', permission: 'servers.console.view', risk: 'normal' },
-  { method: 'WS', route: 'send-command', action: 'send console command', mode: 'static', permission: 'servers.console.send_commands', risk: 'elevated' },
-  { method: 'WS', route: 'start-server', action: 'start server', mode: 'kind-specific', resolver: 'startPermissionForKind', risk: 'normal' },
-  { method: 'WS', route: 'stop-server', action: 'stop server', mode: 'kind-specific', resolver: 'stopPermissionForKind', risk: 'normal' },
+  { method: 'POST', route: '/api/server-access/servers/:serverId/users', action: 'add server access user', mode: 'static', permission: 'server_access.users.add', risk: 'elevated', resourceResolver: 'server' },
+  { method: 'PATCH', route: '/api/server-access/servers/:serverId/users/:userId', action: 'update server access user', mode: 'static', permission: 'server_access.users.assign_permissions', risk: 'elevated', resourceResolver: 'server' },
+  { method: 'DELETE', route: '/api/server-access/servers/:serverId/users/:userId', action: 'remove server access user', mode: 'static', permission: 'server_access.users.remove', risk: 'elevated', resourceResolver: 'server' },
+  { method: 'POST', route: '/api/server-access/servers/:serverId/groups', action: 'create server access group', mode: 'static', permission: 'server_access.groups.create', risk: 'elevated', resourceResolver: 'server' },
+  { method: 'PATCH', route: '/api/server-access/servers/:serverId/groups/:groupId', action: 'update server access group', mode: 'field-mapped', resolver: 'serverAccess.patchGroup', risk: 'elevated', resourceResolver: 'server' },
+  { method: 'DELETE', route: '/api/server-access/servers/:serverId/groups/:groupId', action: 'delete server access group', mode: 'static', permission: 'server_access.groups.delete', risk: 'destructive', resourceResolver: 'server' },
+  { method: 'PATCH', route: '/api/server-access/servers/:serverId/mode', action: 'change server access mode', mode: 'static', permission: 'server_access.mode.change', risk: 'elevated', resourceResolver: 'server' },
+
+  { method: 'WS', route: 'join-server', action: 'subscribe to console', mode: 'static', permission: 'servers.console.view', risk: 'normal', resourceResolver: 'server' },
+  { method: 'WS', route: 'send-command', action: 'send console command', mode: 'static', permission: 'servers.console.send_commands', risk: 'elevated', resourceResolver: 'server' },
+  { method: 'WS', route: 'start-server', action: 'start server', mode: 'kind-specific', resolver: 'startPermissionForKind', risk: 'normal', resourceResolver: 'server' },
+  { method: 'WS', route: 'stop-server', action: 'stop server', mode: 'kind-specific', resolver: 'stopPermissionForKind', risk: 'normal', resourceResolver: 'server' },
 ];
+
+for (const item of ACTION_MATRIX) {
+  const route = String(item.route || '');
+  const serverRoute = /^\/api\/servers\/:id(?:\/|$)/.test(route)
+    || /:serverId/.test(route)
+    || /\/plugin-actions\/servers\/:id/.test(route)
+    || /\/mods\/:modId\/(?:install|uninstall)\/:serverId/.test(route)
+    || item.method === 'WS';
+  if (!serverRoute || item.resourceResolver) continue;
+  item.resourceResolver = 'server';
+  if (item.assignableAtServerScope == null) item.assignableAtServerScope = true;
+}
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const ROUTE_FILE_PREFIXES = {
@@ -97,6 +117,7 @@ const ROUTE_FILE_PREFIXES = {
   'bedrockConnect.js': '/api/bedrock-connect',
   'pluginActions.js': '/api/plugin-actions',
   'dashboard.js': '/api/dashboard',
+  'serverAccess.js': '/api/server-access',
   'ports.js': '/api/ports',
   'api.js': '/api/v1',
 };

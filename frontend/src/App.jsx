@@ -1,4 +1,5 @@
-import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Outlet, Route, Routes, useLocation, useParams } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
@@ -6,6 +7,9 @@ import ServerDetail from './pages/ServerDetail';
 import CreateServer from './pages/CreateServer';
 import ServerProperties from './pages/ServerProperties';
 import ServerUsers from './pages/ServerUsers';
+import ServerAccess from './pages/ServerAccess';
+import ServerAccessGroup from './pages/ServerAccessGroup';
+import ServerAccessUser from './pages/ServerAccessUser';
 import ModCatalog from './pages/ModCatalog';
 import ModLibrary from './pages/ModLibrary';
 import PlayerManagement from './pages/PlayerManagement';
@@ -22,6 +26,7 @@ import GroupDetail from './pages/GroupDetail';
 import PermissionsPage from './pages/PermissionsPage';
 import AccountSettings from './pages/AccountSettings';
 import { useAuth } from './context/AuthContext';
+import { serverAccessApi } from './services/api';
 
 function RequireAuth() {
   const { user, loading, authenticationRequired, securityError } = useAuth();
@@ -82,6 +87,31 @@ function RequireUserManagement() {
   return <Outlet />;
 }
 
+function RequireServerAccess() {
+  const { id } = useParams();
+  const [state, setState] = useState('loading');
+  useEffect(() => {
+    let cancelled = false;
+    serverAccessApi.availability()
+      .then((res) => {
+        if (!cancelled) setState(res.data?.available ? 'ok' : 'no');
+      })
+      .catch(() => {
+        if (!cancelled) setState('no');
+      });
+    return () => { cancelled = true; };
+  }, []);
+  if (state === 'loading') {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <Loader2 className="w-8 h-8 text-mc-accent animate-spin" />
+      </div>
+    );
+  }
+  if (state === 'no') return <Navigate to={id ? `/servers/${id}` : '/'} replace />;
+  return <Outlet />;
+}
+
 import Gateways from './pages/Gateways';
 
 
@@ -95,7 +125,12 @@ function App() {
           <Route path="servers" element={<Dashboard />} />
           <Route path="servers/new" element={<CreateServer />} />
           <Route path="servers/:id" element={<ServerDetail />} />
-          <Route path="servers/:id/users" element={<ServerUsers />} />
+          <Route path="servers/:id/player-roles" element={<ServerUsers />} />
+          <Route path="servers/:id/users" element={<RequireServerAccess />}>
+            <Route index element={<ServerAccess />} />
+            <Route path="groups/:groupId" element={<ServerAccessGroup />} />
+            <Route path=":userId" element={<ServerAccessUser />} />
+          </Route>
           <Route path="servers/:id/properties" element={<ServerProperties />} />
           <Route path="mods" element={<ModLibrary />} />
           <Route path="mods/catalog" element={<ModCatalog />} />

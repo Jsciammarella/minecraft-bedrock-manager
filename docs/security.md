@@ -113,3 +113,12 @@ has a permission, and request that core perform an action. They may not
 register a security provider, grant permissions, construct a system principal,
 or treat hidden buttons as authorization. Trusted background work uses
 `createSystemPrincipal(reason)` with an audit reason.
+
+## Resource authorization
+
+Bundled first-party plugins may register a resource-authorization provider
+through the privileged capability `provider:resource-authorization`.
+Third-party plugins cannot register or intercept authorization. See
+[server-access.md](server-access.md) for the optional server-scoped manager
+access plugin, inherited vs restricted modes, and fail-closed behavior.
+

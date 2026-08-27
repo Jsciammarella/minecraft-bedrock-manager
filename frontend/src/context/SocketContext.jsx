@@ -71,8 +71,17 @@ export function SocketProvider({ children }) {
     socket.on('dashboard-refresh', (data) => {
       window.dispatchEvent(new CustomEvent('server-status-change', { detail: { source: 'dashboard' } }));
       const type = String(data?.type || '');
-      if (/^plugin\.|^provider\./.test(type)) {
+      if (/^plugin\.|^provider\.|^server-access\./.test(type)) {
         window.dispatchEvent(new Event('mbm-plugins-changed'));
+      }
+    });
+
+    socket.on('server-access-revoked', (data) => {
+      window.dispatchEvent(new CustomEvent('server-status-change', { detail: data }));
+      window.dispatchEvent(new CustomEvent('server-access-revoked', { detail: data }));
+      if (activeServerRef.current != null && String(activeServerRef.current) === String(data?.serverId)) {
+        socket.emit('leave-server', data.serverId);
+        activeServerRef.current = null;
       }
     });
 

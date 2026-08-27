@@ -108,6 +108,7 @@ app.use('/api/plugins', pluginRoutes);
 app.use('/api/java', require('./routes/java'));
 app.use('/api/gateways', require('./routes/gateways'));
 app.use('/api/dashboard', require('./routes/dashboard'));
+app.use('/api/server-access', require('./routes/serverAccess'));
 app.use('/api/plugin-actions', require('./routes/pluginActions'));
 app.get('/api/editions', (req, res) => {
   try {

@@ -31,6 +31,9 @@ module.exports = {
   authorize(current, action, resource, context) {
     return getRuntime().authorize(current, action, resource, context);
   },
+  decide(current, action, resource, context) {
+    return getRuntime().decide(current, action, resource, context);
+  },
   requireAction(current, action, resource, context) {
     return getRuntime().requirePermission(current, action, resource, context);
   },

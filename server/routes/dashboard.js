@@ -12,7 +12,11 @@ function redactGateways(req, gateways) {
 router.get('/', requirePermission('dashboard.view'), (req, res) => {
   try {
     const javaHostingPolicy = require('../services/javaHostingPolicy');
-    const gateways = redactGateways(req, pluginDashboard.list());
+    const gateways = redactGateways(req, pluginDashboard.list()).filter((entity) => {
+      if (!entity) return false;
+      return serializer.can(req.principal || req.user, 'servers.view', entity)
+        || serializer.can(req.principal || req.user, 'servers.view_details', entity);
+    });
     res.json({
       gateways,
       geyserCount: gateways.length,

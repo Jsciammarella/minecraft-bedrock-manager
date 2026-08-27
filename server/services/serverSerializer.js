@@ -116,17 +116,60 @@ const REMOTE_CONTRIBUTION_KEYS = new Set([
   'remoteIpv6Port',
 ]);
 
-function authService() {
-  return require('./authService');
-}
-
-function can(principal, permission) {
+function can(principal, permission, resource) {
   if (!permission) return true;
   try {
-    return authService().hasPermission(principal, permission);
+    return require('../security').authorize(principal, permission, resource);
   } catch {
     return false;
   }
+}
+
+function capabilitiesFor(principal, server) {
+  const catalog = require('./permissionCatalog');
+  const scoped = Boolean(require('./resourceAuthorizationRegistry').get('server'));
+  let userManagement = false;
+  try {
+    userManagement = require('../security').supports('userManagement');
+  } catch {
+    userManagement = false;
+  }
+  const startKey = catalog.startPermissionForKind(server?.kind);
+  const stopKey = catalog.stopPermissionForKind(server?.kind);
+  return {
+    authorizationScoped: scoped,
+    view: can(principal, 'servers.view', server),
+    details: can(principal, 'servers.view_details', server),
+    start: Boolean(startKey) && can(principal, startKey, server),
+    stop: Boolean(stopKey) && can(principal, stopKey, server),
+    restart: can(principal, catalog.restartPermissionForKind(server?.kind), server),
+    consoleView: can(principal, 'servers.console.view', server),
+    consoleSend: can(principal, 'servers.console.send_commands', server),
+    propertiesView: can(principal, 'servers.view_properties', server),
+    propertiesEdit: can(principal, 'servers.view_properties', server),
+    modsView: can(principal, 'servers.mods.view', server),
+    modsInstall: can(principal, 'servers.mods.install', server),
+    modsRemove: can(principal, 'servers.mods.remove', server),
+    lan: can(principal, 'servers.manage_lan_broadcast', server),
+    update: can(principal, 'servers.update_software', server),
+    delete: can(principal, catalog.deletePermissionForKind(server?.kind), server),
+    runtime: can(principal, 'servers.view_runtime_status', server),
+    connection: can(principal, 'servers.view_connection_details', server),
+    remoteTarget: can(principal, 'servers.remote.view_target', server),
+    membership: can(principal, 'players.view_server_membership', server),
+    allowView: can(principal, 'servers.allowlist.view', server),
+    allowAdd: can(principal, 'servers.allowlist.add', server),
+    allowRemove: can(principal, 'servers.allowlist.remove', server),
+    banView: can(principal, 'servers.banlist.view', server),
+    banAdd: can(principal, 'servers.banlist.add', server),
+    banRemove: can(principal, 'servers.banlist.remove', server),
+    playerRoles: can(principal, 'servers.player_permissions.view', server),
+    playerPermsEdit: can(principal, 'servers.player_permissions.set_visitor', server)
+      || can(principal, 'servers.player_permissions.set_member', server)
+      || can(principal, 'servers.player_permissions.set_operator', server)
+      || can(principal, 'servers.player_permissions.reset', server),
+    serverAccess: scoped && userManagement && can(principal, 'server_access.view', server),
+  };
 }
 
 function editionOf(server) {
@@ -152,32 +195,32 @@ function connectionPermission(context) {
   return context === 'dashboard' ? 'dashboard.view_connection_details' : 'servers.view_connection_details';
 }
 
-function redactValue(value, principal, context) {
+function redactValue(value, principal, context, resource) {
   if (Array.isArray(value)) {
-    return value.map((item) => redactValue(item, principal, context));
+    return value.map((item) => redactValue(item, principal, context, resource));
   }
   if (!value || typeof value !== 'object') return value;
   const required = value.requiresPermission || value.permission;
-  if (required && !can(principal, required)) return undefined;
+  if (required && !can(principal, required, resource)) return undefined;
   const out = {};
   for (const [key, nested] of Object.entries(value)) {
     if (key === 'requiresPermission' || key === 'permission') {
       out[key] = nested;
       continue;
     }
-    if (CONNECTION_CONTRIBUTION_KEYS.has(key) && !can(principal, connectionPermission(context))) continue;
-    if (RUNTIME_CONTRIBUTION_KEYS.has(key) && !can(principal, runtimePermission(context))) continue;
-    if (REMOTE_CONTRIBUTION_KEYS.has(key) && !can(principal, 'servers.remote.view_target')) continue;
-    const redacted = redactValue(nested, principal, context);
+    if (CONNECTION_CONTRIBUTION_KEYS.has(key) && !can(principal, connectionPermission(context), resource)) continue;
+    if (RUNTIME_CONTRIBUTION_KEYS.has(key) && !can(principal, runtimePermission(context), resource)) continue;
+    if (REMOTE_CONTRIBUTION_KEYS.has(key) && !can(principal, 'servers.remote.view_target', resource)) continue;
+    const redacted = redactValue(nested, principal, context, resource);
     if (redacted !== undefined) out[key] = redacted;
   }
   return out;
 }
 
-function redactContributions(contributions, principal, context) {
+function redactContributions(contributions, principal, context, resource) {
   if (!Array.isArray(contributions)) return [];
   return contributions
-    .map((item) => redactValue(item, principal, context))
+    .map((item) => redactValue(item, principal, context, resource))
     .filter((item) => item && typeof item === 'object');
 }
 
@@ -242,12 +285,12 @@ function serializeServerForPrincipal(server, principal, options = {}) {
   if (!server) return server;
   const stats = options.stats || server.stats || null;
   const contributions = options.pluginContributions || server.pluginContributions || [];
-  const showRuntime = can(principal, runtimePermission(context));
-  const showConnection = can(principal, connectionPermission(context));
-  const showProperties = context === 'dashboard' ? false : can(principal, 'servers.view_properties');
-  const showRemote = can(principal, 'servers.remote.view_target');
-  const showMods = can(principal, 'servers.mods.view');
-  const showPlayerNames = can(principal, 'players.view_server_membership');
+  const showRuntime = can(principal, runtimePermission(context), server);
+  const showConnection = can(principal, connectionPermission(context), server);
+  const showProperties = context === 'dashboard' ? false : can(principal, 'servers.view_properties', server);
+  const showRemote = can(principal, 'servers.remote.view_target', server);
+  const showMods = can(principal, 'servers.mods.view', server);
+  const showPlayerNames = can(principal, 'players.view_server_membership', server);
 
   const out = {
     id: server.id,
@@ -331,7 +374,9 @@ function serializeServerForPrincipal(server, principal, options = {}) {
     out.onlinePlayers = options.onlinePlayers;
   }
 
-  out.pluginContributions = redactContributions(contributions, principal, context);
+  out.pluginContributions = redactContributions(contributions, principal, context, server);
+  out.authorizationScoped = Boolean(require('./resourceAuthorizationRegistry').get('server'));
+  out.capabilities = capabilitiesFor(principal, server);
   return omitKeys(out, ALWAYS_OMIT);
 }
 
@@ -345,6 +390,7 @@ module.exports = {
   serializeGatewayForPrincipal,
   redactContributions,
   can,
+  capabilitiesFor,
   runtimePermission,
   connectionPermission,
   RUNTIME_STATUS_FIELDS,

@@ -54,13 +54,17 @@ function Plugins() {
   }, [uploadOpen]);
 
   const isServerEditionPlugin = (plugin) => (plugin.capabilities || []).includes('provider:server-edition');
+  const needsDisableConfirm = (plugin) => (
+    isServerEditionPlugin(plugin)
+    || (plugin.capabilities || []).includes('provider:resource-authorization')
+  );
 
   const togglePlugin = async (plugin) => {
     const allowed = plugin.enabled ? canDisable : canEnable;
     if (!allowed) return;
     setError('');
     setMessage('');
-    if (plugin.enabled && isServerEditionPlugin(plugin) && !disableConfirm) {
+    if (plugin.enabled && needsDisableConfirm(plugin) && !disableConfirm) {
       setBusyId(plugin.id);
       try {
         const res = await pluginApi.disableImpact(plugin.id);
@@ -76,13 +80,13 @@ function Plugins() {
     setBusyId(plugin.id);
     try {
       const res = await pluginApi.setEnabled(plugin.id, !plugin.enabled, {
-        confirm: Boolean(disableConfirm && plugin.enabled && isServerEditionPlugin(plugin)),
+        confirm: Boolean(disableConfirm && plugin.enabled && needsDisableConfirm(plugin)),
       });
       applyPayload(res.data);
       setDisableConfirm(null);
     } catch (err) {
       const data = err.response?.data;
-      if (data?.code === 'JAVA_HOSTING_DISABLE_CONFIRM') {
+      if (data?.code === 'JAVA_HOSTING_DISABLE_CONFIRM' || data?.code === 'RESOURCE_AUTHORIZATION_DISABLE_CONFIRM') {
         setDisableConfirm({ plugin, impact: data.impact || data });
         setBusyId('');
         return;
@@ -301,6 +305,16 @@ function Plugins() {
               {disableConfirm.impact?.message
                 || 'Disabling Minecraft Java Hosting will stop all running Java servers and hide them from the dashboard. No server data will be deleted.'}
             </p>
+            {disableConfirm.impact?.configuredServers != null && (
+              <ul className="text-sm text-mc-text mb-4 space-y-1">
+                <li>Configured servers: {disableConfirm.impact.configuredServers}</li>
+                <li>Server groups: {disableConfirm.impact.serverGroups}</li>
+                <li>Assigned users: {disableConfirm.impact.assignedUsers}</li>
+                <li>Allow assignments: {disableConfirm.impact.allowAssignments}</li>
+                <li>Deny assignments: {disableConfirm.impact.denyAssignments}</li>
+                <li>Restricted servers: {disableConfirm.impact.restrictedServers}</li>
+              </ul>
+            )}
             <div className="flex flex-wrap items-center justify-center gap-3">
               <button
                 type="button"

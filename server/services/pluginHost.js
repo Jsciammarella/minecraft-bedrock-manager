@@ -288,11 +288,11 @@ function knownCategoryIds(pluginCategories) {
 function pluginOwnsDeclaredKey(pluginId, key, pluginSource) {
   try {
     const catalog = require('./permissionCatalog');
-    if (typeof catalog.pluginOwnsKey === 'function') return catalog.pluginOwnsKey(pluginId, key);
-    return catalog.permissionByKey(key)?.pluginId === pluginId;
+    if (typeof catalog.pluginOwnsKey === 'function' && catalog.pluginOwnsKey(pluginId, key)) return true;
   } catch {
-    return pluginSource === 'bundled' && String(key).startsWith('bedrock_connect.');
+    /* catalog optional during parse */
   }
+  return pluginSource === 'bundled' && !isCoreNamespaceKey(key);
 }
 
 function isCoreNamespaceKey(key) {
@@ -333,6 +333,13 @@ function normalizePluginPermission(row, pluginId, pluginName, pluginSource, cate
   const subcategory = row.subcategory ? String(row.subcategory).trim() : null;
   const assignableToUsers = riskLevel === 'administrator-only' ? false : row.assignableToUsers !== false;
   const assignableToGroups = riskLevel === 'administrator-only' ? false : row.assignableToGroups !== false;
+  const resourceScopes = Array.isArray(row.resourceScopes)
+    ? row.resourceScopes.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  const serverKinds = Array.isArray(row.serverKinds)
+    ? row.serverKinds.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  const assignableAtServerScope = row.assignableAtServerScope === true || resourceScopes.includes('server');
   if (ownedFirstParty) {
     if (seen.has(local)) return { ok: false, error: `duplicate permission key "${local}"` };
     seen.add(local);
@@ -350,6 +357,9 @@ function normalizePluginPermission(row, pluginId, pluginName, pluginSource, cate
         riskLevel,
         assignableToUsers,
         assignableToGroups,
+        resourceScopes,
+        assignableAtServerScope,
+        serverKinds,
         pluginId,
         source: 'first-party-plugin',
       },
@@ -374,6 +384,9 @@ function normalizePluginPermission(row, pluginId, pluginName, pluginSource, cate
       riskLevel,
       assignableToUsers,
       assignableToGroups,
+      resourceScopes,
+      assignableAtServerScope,
+      serverKinds,
       pluginId,
       source: pluginSource === 'bundled' ? 'first-party-plugin' : 'third-party-plugin',
     },
@@ -571,6 +584,9 @@ function createProviderServices(plugin) {
     gateways,
     audit: pluginAudit,
     logger,
+    database: (plugin.capabilities || []).includes('provider:resource-authorization')
+      ? { getConnection: () => require('../db/connection') }
+      : undefined,
   };
 }
 
@@ -632,7 +648,14 @@ function loadBackend(plugin) {
         : undefined,
       registerPluginSettings: plugin.source === 'bundled'
         ? (spec) => require('./pluginSettings').register(plugin, spec)
-        : undefined,    });
+        : undefined,
+      registerResourceAuthorizationProvider: plugin.source === 'bundled'
+        ? (provider) => require('./resourceAuthorizationRegistry').register(plugin, provider)
+        : undefined,
+      unregisterResourceAuthorizationProvider: plugin.source === 'bundled'
+        ? (resourceType) => require('./resourceAuthorizationRegistry').unregister(plugin, resourceType)
+        : undefined,
+    });
     plugin.router = router;
     backendModules.push(resolved);
   } catch (err) {
@@ -720,6 +743,7 @@ function unloadPlugins() {
   try { require('./gatewayRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./catalogProviderRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
   try { require('./serverEditionRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
+  try { require('./resourceAuthorizationRegistry').unregisterPlugins(ids); } catch { /* ignore */ }
 }
 
 function resetForTests() {
@@ -805,6 +829,17 @@ async function setPluginEnabled(id, enabled, options = {}) {
       throw editionPolicy.confirmError(editionPolicy.disableImpact());
     }
     await editionPolicy.performDisable();
+  }
+  if (!enabled && (plugin.capabilities || []).includes('provider:resource-authorization')) {
+    const registry = require('./resourceAuthorizationRegistry');
+    const confirm = options.confirm === true || options.confirm === 'true' || options.confirm === 1 || options.confirm === '1';
+    const impact = registry.getDisableImpactForPlugin(plugin.id);
+    if (impact?.required && !confirm) {
+      throw registry.confirmError(impact);
+    }
+    if (confirm || impact?.required) {
+      registry.suspendProvidersForPlugin(plugin.id);
+    }
   }
   if (!enabled && (plugin.capabilities || []).includes('provider:gateway')) {
     const gatewayManager = require('./gatewayManager');
@@ -1048,6 +1083,9 @@ function getDynamicPermissions() {
         riskLevel: perm.riskLevel || 'normal',
         assignableToUsers: perm.assignableToUsers !== false,
         assignableToGroups: perm.assignableToGroups !== false,
+        resourceScopes: perm.resourceScopes || [],
+        assignableAtServerScope: Boolean(perm.assignableAtServerScope),
+        serverKinds: perm.serverKinds || [],
         pluginId: perm.pluginId || plugin.id,
         source: perm.source || (plugin.source === 'bundled' ? 'first-party-plugin' : 'third-party-plugin'),
         active: plugin.enabled !== false,

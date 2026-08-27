@@ -194,6 +194,10 @@ router.put('/:pluginId/enabled', async (req, res) => {
 router.get('/:pluginId/disable-impact', requirePermission('plugins.view_details'), (req, res) => {
   const plugin = pluginHost.getPlugin(req.params.pluginId);
   if (!plugin) return res.status(404).json({ error: 'Plugin not found' });
+  if ((plugin.capabilities || []).includes('provider:resource-authorization')) {
+    const impact = require('../services/resourceAuthorizationRegistry').getDisableImpactForPlugin(plugin.id);
+    return res.json(impact);
+  }
   if (!(plugin.capabilities || []).includes('provider:server-edition')) {
     return res.json({ required: false, pluginId: plugin.id });
   }

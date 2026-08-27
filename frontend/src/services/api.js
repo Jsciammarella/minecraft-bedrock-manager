@@ -281,4 +281,22 @@ export const userManagementApi = {
   saveSettings: (data) => api.put('/user-management/settings', data),
 };
 
+export const serverAccessApi = {
+  availability: () => api.get('/server-access/availability'),
+  server: (serverId) => api.get(`/server-access/servers/${serverId}`),
+  capabilities: (serverId) => api.get(`/server-access/servers/${serverId}/capabilities`),
+  setMode: (serverId, accessMode) => api.patch(`/server-access/servers/${serverId}/mode`, { accessMode }),
+  users: (serverId) => api.get(`/server-access/servers/${serverId}/users`),
+  addUser: (serverId, userId) => api.post(`/server-access/servers/${serverId}/users`, { userId }),
+  getUser: (serverId, userId) => api.get(`/server-access/servers/${serverId}/users/${userId}`),
+  updateUser: (serverId, userId, data) => api.patch(`/server-access/servers/${serverId}/users/${userId}`, data),
+  removeUser: (serverId, userId) => api.delete(`/server-access/servers/${serverId}/users/${userId}`),
+  groups: (serverId) => api.get(`/server-access/servers/${serverId}/groups`),
+  createGroup: (serverId, data) => api.post(`/server-access/servers/${serverId}/groups`, data),
+  getGroup: (serverId, groupId) => api.get(`/server-access/servers/${serverId}/groups/${groupId}`),
+  updateGroup: (serverId, groupId, data) => api.patch(`/server-access/servers/${serverId}/groups/${groupId}`, data),
+  deleteGroup: (serverId, groupId) => api.delete(`/server-access/servers/${serverId}/groups/${groupId}`),
+  effective: (serverId, userId) => api.get(`/server-access/servers/${serverId}/effective/${userId}`),
+};
+
 export default api;

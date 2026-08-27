@@ -10,7 +10,7 @@ const fileCatalog = require('../services/fileCatalogClient');
 const packFiles = require('../services/packFiles');
 const curseforgeImporter = require('../services/curseforgeImporter');
 const mcpedlImporter = require('../services/mcpedlImporter');
-const { requirePermission, assertPermission } = require('../middleware/auth');
+const { requirePermission, assertPermission, resolveServerResource, requireServerVisible, requireServerPermission } = require('../middleware/auth');
 
 // Multer config for file uploads
 const uploadsDir = path.join(__dirname, '../../data/uploads');
@@ -226,7 +226,7 @@ router.delete('/:id', requirePermission('library.delete_entry'), async (req, res
 });
 
 // Get available mods for a server (not yet installed)
-router.get('/available/:serverId', requirePermission('servers.mods.view'), async (req, res) => {
+router.get('/available/:serverId', resolveServerResource('serverId'), requireServerVisible, requireServerPermission('servers.mods.view'), async (req, res) => {
   try {
     const mods = await modManager.getAvailableMods(req.params.serverId);
     res.json(mods);
@@ -236,7 +236,7 @@ router.get('/available/:serverId', requirePermission('servers.mods.view'), async
 });
 
 // Get installed mods for a server
-router.get('/installed/:serverId', requirePermission('servers.mods.view'), async (req, res) => {
+router.get('/installed/:serverId', resolveServerResource('serverId'), requireServerVisible, requireServerPermission('servers.mods.view'), async (req, res) => {
   try {
     const mods = await modManager.getInstalledMods(req.params.serverId);
     res.json(mods);
@@ -246,7 +246,7 @@ router.get('/installed/:serverId', requirePermission('servers.mods.view'), async
 });
 
 // Install mod to server
-router.post('/:modId/install/:serverId', requirePermission('servers.mods.install'), async (req, res) => {
+router.post('/:modId/install/:serverId', resolveServerResource('serverId'), requireServerVisible, requireServerPermission('servers.mods.install'), async (req, res) => {
   try {
     await modManager.installModToServer(req.params.serverId, req.params.modId, {
       fileSha256: req.body?.fileSha256,
@@ -259,7 +259,7 @@ router.post('/:modId/install/:serverId', requirePermission('servers.mods.install
 });
 
 // Uninstall mod from server
-router.delete('/:modId/uninstall/:serverId', requirePermission('servers.mods.remove'), async (req, res) => {
+router.delete('/:modId/uninstall/:serverId', resolveServerResource('serverId'), requireServerVisible, requireServerPermission('servers.mods.remove'), async (req, res) => {
   try {
     await modManager.uninstallModFromServer(req.params.serverId, req.params.modId);
     res.json({ success: true });

@@ -12,6 +12,9 @@ const {
   requireServerRestartWithWarning,
   requireServerCancelRestart,
   requireServerUpdate,
+  requireServerVisible,
+  requireServerPermission,
+  resolveServerResource,
   assertPermission,
 } = require('../middleware/auth');
 const pluginContributions = require('../services/pluginContributions');
@@ -41,13 +44,14 @@ router.param('id', (req, res, next, id) => {
 // ========== SERVER CRUD ==========
 
 // Get all servers with stats
-router.get('/', requirePermission('servers.view'), async (req, res) => {
+router.get('/', requirePermission('dashboard.view'), async (req, res) => {
   try {
-    const servers = javaHostingPolicy.filterVisibleServers(serverManager.getAllServers());
+    const principal = req.principal || req.user;
+    const servers = javaHostingPolicy.filterVisibleServers(serverManager.getAllServers())
+      .filter((server) => serializer.can(principal, 'servers.view', server));
     await serverManager.refreshRunningOnlinePlayers();
-    const canMods = serializer.can(req.principal || req.user, 'servers.mods.view');
-    const installedByServer = canMods ? modManager.getInstalledModIdsByServer() : {};
     const result = await Promise.all(servers.map(async (s) => {
+      const canMods = serializer.can(principal, 'servers.mods.view', s);
       const stats = await serverManager.getServerStats(s.id);
       const attached = pluginContributions.attachToServer({
         ...s,
@@ -55,9 +59,9 @@ router.get('/', requirePermission('servers.view'), async (req, res) => {
         stats,
         lan: stats.lan,
         remoteReachable: stats.remoteReachable,
-        installedModIds: canMods ? (installedByServer[String(s.id)] || []) : undefined,
+        installedModIds: canMods ? (modManager.getInstalledModIdsByServer()[String(s.id)] || []) : undefined,
       });
-      return serializer.serializeServerForPrincipal(attached, req.principal || req.user, {
+      return serializer.serializeServerForPrincipal(attached, principal, {
         context: 'list',
         req,
         stats,
@@ -82,7 +86,11 @@ router.get('/check-updates', requirePermission('servers.view'), async (req, res)
 
 router.get('/auto-update/all', requirePermission('servers.view'), async (req, res) => {
   try {
-    const configs = autoUpdateScheduler.getAllAutoUpdateConfigs();
+    const principal = req.principal || req.user;
+    const configs = autoUpdateScheduler.getAllAutoUpdateConfigs().filter((row) => {
+      const server = serverManager.getServer(row.server_id);
+      return Boolean(server) && serializer.can(principal, 'servers.view', server);
+    });
     res.json(configs);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -140,16 +148,18 @@ router.get('/java/versions', requireAnyPermission('servers.create_java', 'server
   }
 });
 
+router.use('/:id', resolveServerResource(), requireServerVisible);
+
 // Get single server
-router.get('/:id', requirePermission('servers.view_details'), async (req, res) => {
+router.get('/:id', requireServerPermission('servers.view_details'), async (req, res) => {
   try {
     const principal = req.principal || req.user;
-    const server = javaHostingPolicy.assertServerVisible(serverManager.getServer(req.params.id));
+    const server = req.server;
     const stats = await serverManager.getServerStats(req.params.id);
-    const onlinePlayers = serializer.can(principal, 'players.view_server_membership')
+    const onlinePlayers = serializer.can(principal, 'players.view_server_membership', server)
       ? await serverManager.getOnlinePlayers(req.params.id)
       : undefined;
-    const installedMods = serializer.can(principal, 'servers.mods.view')
+    const installedMods = serializer.can(principal, 'servers.mods.view', server)
       ? await modManager.getInstalledMods(req.params.id)
       : undefined;
     const attached = pluginContributions.attachToServer({
@@ -207,14 +217,13 @@ router.put('/:id', requireServerUpdate, async (req, res) => {
 // Delete server
 router.delete('/:id', async (req, res) => {
   try {
-    const server = serverManager.getServer(req.params.id);
-    if (!server) return res.status(404).json({ error: 'Server not found' });
+    const server = req.server;
     if (server.kind === 'bedrock_connect') {
       bedrockConnectPolicy.assertAvailable('delete');
       assertPermission(req, catalog.deletePermissionForKind(server.kind), server);
     } else {
       javaHostingPolicy.assertServerVisible(server);
-      assertPermission(req, 'servers.delete', server);
+      assertPermission(req, catalog.deletePermissionForKind(server.kind), server);
     }
     const truthy = (value) => value === true || value === '1' || value === 'true';
     await serverManager.deleteServer(req.params.id, {
@@ -241,13 +250,15 @@ router.post('/:id/plugin-actions', async (req, res) => {
       pluginId: req.body?.pluginId,
       actionId: req.body?.actionId,
       attachmentId: req.body?.attachmentId,
-      serverId: req.params.id,
+      serverId: req.server.id,
       resourceId: req.body?.resourceId,
       url: req.body?.url,
       href: req.body?.href,
       command: req.body?.command,
       actor: req.user?.username || 'local',
-       user: req.user,
+      user: req.user,
+      principal: req.principal || req.user,
+      resource: req.server,
     });
     res.json(result);
   } catch (err) {

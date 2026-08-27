@@ -101,7 +101,7 @@ function ServerUsers() {
       setServer(serverRes.data);
       setPlayers(accessRes.data.players || []);
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Failed to load users');
+      setError(err.response?.data?.error || err.message || 'Failed to load player roles');
     } finally {
       setLoading(false);
     }
@@ -160,7 +160,7 @@ function ServerUsers() {
       <div className="flex items-center justify-center h-full">
         <div className="flex flex-col items-center gap-3">
           <Loader2 className="w-8 h-8 text-mc-accent animate-spin" />
-          <p className="text-sm text-mc-textMuted">Loading users...</p>
+          <p className="text-sm text-mc-textMuted">Loading player roles...</p>
         </div>
       </div>
     );
@@ -176,9 +176,9 @@ function ServerUsers() {
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div>
-          <h1 className="text-2xl font-bold text-white">Users</h1>
+          <h1 className="text-2xl font-bold text-white">Player Roles</h1>
           <p className="text-mc-textMuted mt-1">
-            {server?.name} — custom permissions for this server
+            {server?.name} — Minecraft player permissions for this server
           </p>
         </div>
       </div>

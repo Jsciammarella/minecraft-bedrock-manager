@@ -109,6 +109,23 @@ function emitServerStatus(io, payload, overrides) {
   }
 }
 
+function revalidateSubscriptions(io, overrides) {
+  const sockets = io?.sockets?.sockets;
+  if (!sockets) return;
+  for (const sock of sockets.values()) {
+    const rooms = sock.rooms ? [...sock.rooms] : [];
+    for (const room of rooms) {
+      const match = /^server-(\d+)$/.exec(room);
+      if (!match) continue;
+      const result = authorizeJoin(sock.principal, match[1], overrides);
+      if (!result.ok) {
+        sock.leave(room);
+        sock.emit('server-access-revoked', { serverId: Number(match[1]) });
+      }
+    }
+  }
+}
+
 function attach(io, options = {}) {
   const security = require('./index');
   const logger = require('../services/logger');
@@ -220,5 +237,6 @@ module.exports = {
   authorizeStart,
   authorizeStop,
   emitServerStatus,
+  revalidateSubscriptions,
   attach,
 };

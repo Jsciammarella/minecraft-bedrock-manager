@@ -77,6 +77,31 @@ function isPluginPermission(key) {
   return String(key || '').startsWith('plugin.');
 }
 
+function normalizeServerKind(kind) {
+  const value = String(kind || '').trim().toLowerCase();
+  if (value === 'bedrock-connect') return 'bedrock_connect';
+  if (value === 'geyser' || value === 'geyser_gateway') return 'geyser_gateway';
+  return value;
+}
+
+function isServerAssignable(key, kind) {
+  const item = permissionByKey(key);
+  if (!item) return false;
+  if (item.assignableAtServerScope !== true && !(item.resourceScopes || []).includes('server')) return false;
+  if (item.active === false && !item.deprecated) return false;
+  if (item.riskLevel === 'administrator-only' || item.administrative) return false;
+  if (item.informational) return false;
+  const kinds = item.serverKinds || [];
+  if (!kinds.length || kind == null || kind === '') return true;
+  const normalized = normalizeServerKind(kind);
+  return kinds.some((entry) => normalizeServerKind(entry) === normalized);
+}
+
+function listServerAssignablePermissions(kind) {
+  const keys = typeof listKeys === 'function' ? listKeys() : ALL_KEYS;
+  return keys.filter((key) => isServerAssignable(key, kind)).map((key) => permissionByKey(key)).filter(Boolean);
+}
+
 function startPermissionForKind(kind) {
   if (kind === 'bedrock_connect') return 'bedrock_connect.start';
   if (kind === 'remote') return 'servers.remote.start_proxy';
@@ -361,6 +386,9 @@ module.exports = {
   isDeprecatedPermission,
   isMenuPermission,
   isPluginPermission,
+  isServerAssignable,
+  listServerAssignablePermissions,
+  normalizeServerKind,
   canonicalPermission,
   replacementKeysFor,
   legacyKeysFor,
