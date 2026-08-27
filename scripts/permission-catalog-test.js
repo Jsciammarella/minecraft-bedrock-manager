@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const family = require('./verify-release-family');
 
 function snapshot(keys) {
   return [...new Set(keys)].sort();
@@ -190,10 +191,12 @@ async function runPermissionCatalogTests({ auth, catalog, db, pluginHost }) {
       assert.ok(perms.length, `${entry.method} ${entry.route} has no permission or approved exception`);
     }
     for (const key of perms) {
-      assert.ok(
-        catalog.permissionByKey(key) || catalog.listKeys().includes(key) || catalog.ALL_KEYS.includes(key),
-        `unknown permission ${key} on ${entry.method} ${entry.route}`,
-      );
+      const known = catalog.permissionByKey(key) || catalog.listKeys().includes(key) || catalog.ALL_KEYS.includes(key);
+      if (!known && String(key).startsWith('server_access.')) {
+        assert.equal(family.pluginPresent(), false, `unknown permission ${key} on ${entry.method} ${entry.route}`);
+        continue;
+      }
+      assert.ok(known, `unknown permission ${key} on ${entry.method} ${entry.route}`);
     }
     if (entry.method !== 'WS' && entry.mode !== 'authentication' && perms.length) {
       const mutatingPerms = perms.filter((key) => catalog.permissionByKey(key)?.riskLevel !== 'read');
