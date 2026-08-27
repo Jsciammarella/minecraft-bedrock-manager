@@ -15,7 +15,6 @@ function isRecognized(action) {
   const key = String(action || '');
   if (!key) return false;
   if (SPECIAL_ACTIONS.has(key)) return true;
-  if (isPluginAction(key)) return true;
   return Boolean(catalog.permissionByKey(key) || catalog.ALL_KEYS.includes(key));
 }
 

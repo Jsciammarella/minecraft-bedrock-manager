@@ -141,12 +141,21 @@ function run() {
     assert.equal(text.includes('server-access-control'), false, `${rel} must not hardcode the plugin id`);
   }
 
+  const pluginDir = path.join(__dirname, '../server/bundled-plugins/server-access-control');
+  const pluginPresent = fs.existsSync(path.join(pluginDir, 'plugin.json'));
   const db = require('../server/db/connection');
-  const schema = require('../server/bundled-plugins/server-access-control/schema');
-  const first = schema.migrate(db);
-  const second = schema.migrate(db);
-  assert.equal(second.skipped, true);
-  assert.ok(first.version === 1);
+  if (pluginPresent) {
+    const schema = require('../server/bundled-plugins/server-access-control/schema');
+    const first = schema.migrate(db);
+    const second = schema.migrate(db);
+    assert.equal(second.skipped, true);
+    assert.ok(first.version === 1);
+  } else {
+    const tables = db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'server_access%'
+    `).all();
+    assert.deepEqual(tables, [], 'core must not create server-access tables when the plugin is absent');
+  }
 
   registry.resetForTests();
   registry.register(fakePlugin(), makeProvider({
@@ -204,7 +213,143 @@ function run() {
   assert.equal(emitted[0]?.event, 'server-access-revoked');
 
   registry.resetForTests();
+  if (pluginPresent) runServiceMutationTests();
   console.log('server-access-test: ok');
+}
+
+function insertServer(db, name, port, kind = 'bedrock') {
+  return db.prepare(`
+    INSERT INTO servers (name, version, port, data_path, kind)
+    VALUES (?, 'test', ?, ?, ?)
+  `).run(name, port, path.join(os.tmpdir(), name), kind).lastInsertRowid;
+}
+
+function insertUser(db, username, { isAdmin = 0, isActive = 1 } = {}) {
+  return db.prepare(`
+    INSERT INTO users (username, full_name, password_hash, is_admin, is_active)
+    VALUES (?, ?, 'x', ?, ?)
+  `).run(username, username, isAdmin ? 1 : 0, isActive ? 1 : 0).lastInsertRowid;
+}
+
+function countUserPerms(db, serverId, userId) {
+  return db.prepare(`
+    SELECT COUNT(*) AS n FROM server_access_user_permissions WHERE server_id = ? AND user_id = ?
+  `).get(Number(serverId), Number(userId)).n;
+}
+
+function countGroupMembers(db, groupId) {
+  return db.prepare('SELECT COUNT(*) AS n FROM server_access_group_members WHERE group_id = ?')
+    .get(Number(groupId)).n;
+}
+
+function runServiceMutationTests() {
+  const security = require('../server/security');
+  const previous = security.getRuntime && security.getRuntime();
+  try {
+  security.createRuntime({
+    env: { NODE_ENV: 'test', MBM_SECURITY_PROFILE: 'local-rbac' },
+    version: '0.5.9',
+  });
+  const db = require('../server/db/connection');
+  const schema = require('../server/bundled-plugins/server-access-control/schema');
+  const service = require('../server/bundled-plugins/server-access-control/service');
+  schema.migrate(db);
+
+  const serverA = Number(insertServer(db, `access-a-${Date.now()}`, 20000 + Math.floor(Math.random() * 20000)));
+  const serverB = Number(insertServer(db, `access-b-${Date.now()}`, 40000 + Math.floor(Math.random() * 20000)));
+  const userId = Number(insertUser(db, `sac-user-${Date.now()}`));
+  const otherUser = Number(insertUser(db, `sac-other-${Date.now()}`));
+  const inactiveGlobal = Number(insertUser(db, `sac-inactive-${Date.now()}`, { isActive: 0 }));
+  const adminActor = userPrincipal(1, { isAdmin: true, username: 'admin' });
+
+  service.addUser(serverA, userId, adminActor);
+  service.applyUserPermissions(serverA, userId, { 'servers.start': 'allow' }, adminActor);
+  let sources = service.collectSources(userPrincipal(userId), 'servers.start', { type: 'server', id: serverA, kind: 'bedrock' });
+  assert.ok(sources.some((item) => item.origin === 'server-user' && item.value === 'allow'), 'active direct allow');
+
+  service.applyUserPermissions(serverA, userId, { 'servers.start': 'deny' }, adminActor);
+  sources = service.collectSources(userPrincipal(userId), 'servers.start', { type: 'server', id: serverA, kind: 'bedrock' });
+  assert.ok(sources.some((item) => item.origin === 'server-user' && item.value === 'deny'), 'active direct deny');
+
+  service.updateUser(serverA, userId, { isActive: false }, adminActor);
+  sources = service.collectSources(userPrincipal(userId), 'servers.start', { type: 'server', id: serverA, kind: 'bedrock' });
+  assert.equal(sources.some((item) => item.origin === 'server-user'), false, 'inactive direct deny contributes nothing');
+  assert.equal(countUserPerms(db, serverA, userId) >= 1, true, 'inactive assignment preserves stored permissions');
+  const membership = service.inspectMembership(userPrincipal(userId), { type: 'server', id: serverA });
+  assert.equal(membership.assigned, false, 'inactive explicit assignment does not satisfy membership');
+
+  const group = service.createGroup(serverA, { name: `ops-${Date.now()}` }, adminActor);
+  service.applyGroupMembers(serverA, group.id, [userId], adminActor);
+  service.applyGroupPermissions(serverA, group.id, { 'servers.console.view': 'allow' }, adminActor);
+  const grouped = service.inspectMembership(userPrincipal(userId), { type: 'server', id: serverA });
+  assert.equal(grouped.assigned, true, 'active server-group membership satisfies restricted membership independently');
+  const groupSources = service.collectSources(userPrincipal(userId), 'servers.console.view', { type: 'server', id: serverA, kind: 'bedrock' });
+  assert.ok(groupSources.some((item) => item.origin === 'server-group' && item.value === 'allow'));
+  const inactiveDirect = service.collectSources(userPrincipal(userId), 'servers.start', { type: 'server', id: serverA, kind: 'bedrock' });
+  assert.equal(inactiveDirect.some((item) => item.origin === 'server-user'), false);
+
+  service.updateUser(serverA, userId, { isActive: true }, adminActor);
+  const restored = service.collectSources(userPrincipal(userId), 'servers.start', { type: 'server', id: serverA, kind: 'bedrock' });
+  assert.ok(restored.some((item) => item.origin === 'server-user' && item.value === 'deny'), 'reactivation restores stored direct permissions');
+
+  service.addUser(serverB, userId, adminActor);
+  service.applyUserPermissions(serverB, userId, { 'servers.stop': 'allow' }, adminActor);
+  const fromA = service.collectSources(userPrincipal(userId), 'servers.stop', { type: 'server', id: serverA, kind: 'bedrock' });
+  const fromB = service.collectSources(userPrincipal(userId), 'servers.stop', { type: 'server', id: serverB, kind: 'bedrock' });
+  assert.equal(fromA.some((item) => item.origin === 'server-user'), false, 'server A assignment must not affect server B');
+  assert.ok(fromB.some((item) => item.origin === 'server-user' && item.value === 'allow'));
+
+  const inactivePrincipal = userPrincipal(inactiveGlobal, { isActive: false, permissions: ['servers.start'] });
+  const globalInactive = evaluate.decide(inactivePrincipal, 'servers.start', { type: 'server', id: serverA, kind: 'bedrock' });
+  assert.equal(globalInactive.decision, 'deny');
+
+  const beforePerms = countUserPerms(db, serverA, userId);
+  assert.throws(() => service.applyUserPermissions(serverA, userId, { 'not.a.permission': 'allow' }, adminActor), /Unknown permission/);
+  assert.equal(countUserPerms(db, serverA, userId), beforePerms);
+
+  assert.throws(() => service.applyUserPermissions(serverA, userId, { 'users.create': 'allow' }, adminActor), /cannot be assigned at server scope/);
+  assert.equal(countUserPerms(db, serverA, userId), beforePerms);
+
+  assert.throws(() => service.applyUserPermissions(serverA, userId, { 'servers.start': 'maybe' }, adminActor), /Invalid assignment/);
+  assert.equal(countUserPerms(db, serverA, userId), beforePerms);
+
+  assert.throws(() => service.applyUserPermissions(serverA, userId, { 'servers.remote.start_proxy': 'allow' }, adminActor), /not compatible|cannot be assigned/);
+  assert.equal(countUserPerms(db, serverA, userId), beforePerms);
+
+  const beforeMembers = countGroupMembers(db, group.id);
+  assert.throws(() => service.applyGroupMembers(serverA, group.id, [999999], adminActor), /Unknown user/);
+  assert.equal(countGroupMembers(db, group.id), beforeMembers);
+
+  const origPrepare = db.prepare.bind(db);
+  db.prepare = (sql) => {
+    if (/INSERT INTO server_access_user_permissions/.test(String(sql))) {
+      return { run: () => { throw new Error('simulated insertion failure'); } };
+    }
+    return origPrepare(sql);
+  };
+  try {
+    assert.throws(
+      () => service.applyUserPermissions(serverA, userId, { 'servers.console.view': 'allow' }, adminActor),
+      /simulated insertion failure/,
+    );
+    assert.equal(countUserPerms(db, serverA, userId), beforePerms, 'failed insert must roll back existing permission rows');
+  } finally {
+    db.prepare = origPrepare;
+  }
+
+  const operator = userPrincipal(otherUser, { isAdmin: false, permissions: [] });
+  assert.throws(
+    () => service.applyUserPermissions(serverA, userId, { 'servers.start': 'allow' }, operator),
+    (err) => err && err.status === 403,
+  );
+
+  service.removeUser(serverA, userId, adminActor);
+  assert.equal(countUserPerms(db, serverA, userId), 0, 'removing the assignment deletes direct permission rows');
+  assert.equal(service.getAssignedUser(serverA, userId).assignmentActive, false);
+  } finally {
+    if (previous) security.setRuntime(previous);
+    else security.resetRuntime();
+  }
 }
 
 function runServerAccessTests() {

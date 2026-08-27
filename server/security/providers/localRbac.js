@@ -1,7 +1,7 @@
 const catalog = require('../../services/permissionCatalog');
 const { publicPrincipal, isSystemPrincipal } = require('../principal');
 const { PROFILE_LOCAL_RBAC } = require('../profiles');
-const { isRecognized, denyUnknown, isPluginAction } = require('../recognized');
+const { isRecognized, denyUnknown } = require('../recognized');
 const { supportsCore, supportsRbac } = require('../features');
 const audit = require('../audit');
 
@@ -52,7 +52,7 @@ LocalRbacProvider.prototype.decide = function decide(principal, action, resource
   if (!principal || principal.authenticated === false || principal.isActive === false) {
     return decision.defaultDeny(key, resource);
   }
-  if (!isRecognized(key) && !isPluginAction(key)) {
+  if (!isRecognized(key)) {
     denyUnknown(key, this.id);
     return decision.defaultDeny(key, resource);
   }

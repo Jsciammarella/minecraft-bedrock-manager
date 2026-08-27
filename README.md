@@ -3,7 +3,7 @@
 A one-stop self-hosted console for Minecraft Bedrock. One Linux host can run multiple dedicated servers, **forward play to a Bedrock server on another host** (LAN, Tailscale, or similar), keep add-ons and worlds in a library, let consoles join through [Bedrock Connect](https://github.com/Pugmatt/BedrockConnect), optionally rewrite featured-server DNS, and list games on the LAN — without a cloud panel.
 
 > [!IMPORTANT]
-> Authentication depends on the product edition. Open-source (`.3`) builds use a no-auth profile with a local system principal and **must not** be exposed directly to an untrusted network. Pro (`.6`) and Enterprise (`.9`) builds require login and enforce permissions on the backend. See [docs/security.md](docs/security.md).
+> Authentication depends on the product edition. The shared `.0` baseline and open-source (`.3`) builds use a no-auth profile with a local system principal and **must not** be exposed directly to an untrusted network. Pro (`.6`) and Enterprise (`.9`) builds require login through Local RBAC. Enterprise also includes Server Access Control. See [docs/security.md](docs/security.md) and [docs/release-model.md](docs/release-model.md).
 
 Release development uses separate baseline, open-source, Pro, and Enterprise branches. See [docs/release-model.md](docs/release-model.md).
 
@@ -64,9 +64,11 @@ sudo /opt/mc-manager/scripts/upgrade.sh --yes
 To test another branch or an exact release without recloning, pass `--branch` or `--tag`. The script fetches that ref, switches to it, then rebuilds. It will not force-reset a local branch that has diverged from origin. Backup and server shutdown happen before the checkout.
 
 ```bash
-sudo ./scripts/upgrade.sh --branch release/0.2.1 --yes --mode docker
-sudo ./scripts/upgrade.sh --tag v0.2.0 --yes --mode docker
+sudo ./scripts/upgrade.sh --branch release/0.5.3 --yes --mode docker
+sudo ./scripts/upgrade.sh --tag v0.5.3 --yes --mode docker
 ```
+
+Stay on the same edition: `0.4.3` → `0.5.3`, `0.4.6` → `0.5.6`, `0.4.9` → `0.5.9`. Cross-edition upgrades such as `.3` to `.6` are not supported. See [docs/edition-verification.md](docs/edition-verification.md).
 
 If you re-run `install-docker.sh` or `install-native.sh` in that same checkout, they detect `.env` and hand off to `upgrade.sh` instead of treating it as a new install.
 

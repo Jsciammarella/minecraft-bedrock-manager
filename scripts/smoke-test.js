@@ -5,6 +5,9 @@ const os = require('os');
 const path = require('path');
 const dgram = require('dgram');
 const zlib = require('zlib');
+if (!process.env.CONNECT_HOST && !process.env.PUBLIC_HOST) {
+  process.env.CONNECT_HOST = '192.0.2.10';
+}
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-manager-smoke-'));
 process.env.MC_MANAGER_DB_PATH = path.join(testRoot, 'mc_manager.db');
 process.env.MC_MANAGER_USER_PLUGINS_DIR = path.join(testRoot, 'plugins');

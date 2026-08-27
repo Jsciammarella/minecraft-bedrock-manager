@@ -77,3 +77,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # Start the application
 CMD ["node", "server/index.js"]
+
+# ---- Stage 3: CI tests ----
+# Production omits development dependencies. Live WebSocket authorization tests
+# require socket.io-client, so CI builds this target instead of the runtime image.
+FROM production AS ci-test
+RUN npm ci --include=dev && npm cache clean --force

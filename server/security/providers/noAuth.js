@@ -1,7 +1,7 @@
 const catalog = require('../../services/permissionCatalog');
 const { localSystemPrincipal, publicPrincipal } = require('../principal');
 const { PROFILE_NO_AUTH } = require('../profiles');
-const { isRecognized, denyUnknown, isPluginAction } = require('../recognized');
+const { isRecognized, denyUnknown } = require('../recognized');
 const { supportsCore } = require('../features');
 
 function NoAuthProvider() {
@@ -29,7 +29,7 @@ NoAuthProvider.prototype.getCurrentPrincipal = function getCurrentPrincipal() {
 NoAuthProvider.prototype.authorize = function authorize(principal, action) {
   const key = String(action || '');
   if (!principal || principal.authenticated === false) return false;
-  if (!isRecognized(key) && !isPluginAction(key)) {
+  if (!isRecognized(key)) {
     return denyUnknown(key, this.id);
   }
   return true;

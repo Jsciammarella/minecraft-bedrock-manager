@@ -10,7 +10,7 @@ Core application
     |
     +-- Security runtime
           |
-          +-- NoAuthProvider        (open-source .3)
+          +-- NoAuthProvider        (baseline .0 and open-source .3)
           +-- LocalRbacProvider     (Pro .6 and Enterprise .9)
           +-- Future identity providers (OIDC, LDAP, SSO) — not implemented
 ```
@@ -27,17 +27,22 @@ back to no-auth.
 
 ## Profiles
 
-| Edition | Version patch | Profile | Login | User management |
-| --- | --- | --- | --- | --- |
-| Open-source | `.3` | `no-auth` | No | Hidden / unavailable |
-| Pro | `.6` | `local-rbac` | Yes | Yes |
-| Enterprise | `.9` | `local-rbac` | Yes | Yes |
+| Edition | Version patch | Profile | Login | User management | Server Access Control |
+| --- | --- | --- | --- | --- | --- |
+| Shared baseline | `.0` | `no-auth` | No | Hidden / unavailable | Absent |
+| Open-source | `.3` | `no-auth` | No | Hidden / unavailable | Absent |
+| Pro | `.6` | `local-rbac` | Yes | Yes | Absent |
+| Enterprise | `.9` | `local-rbac` | Yes | Yes | Bundled and enabled by default |
 
 The profile is selected from trusted product identity (package version and
-`server/security/productConfig.js`), not from a database setting. Production
-`.6` and `.9` installations ignore `MBM_SECURITY_PROFILE`. A missing or
-invalid provider on those editions refuses to start the web service and never
-falls back to no-auth.
+`server/security/productConfig.js`), not from a database setting. Supported
+patch suffixes are only `.0`, `.3`, `.6`, and `.9`. Any other suffix refuses
+to start with a trusted-product-identity error.
+
+Production `.6` and `.9` installations ignore `MBM_SECURITY_PROFILE` and cannot
+be downgraded to no-auth. A missing or invalid Local RBAC provider on those
+editions refuses to start the web service and never falls back to no-auth.
+Missing Local RBAC does not affect `.0` or `.3`.
 
 Development and tests may set `MBM_SECURITY_PROFILE=no-auth` or `local-rbac`
 when `NODE_ENV` is not `production`.
@@ -50,8 +55,9 @@ unknown feature names are denied. Plugin sandbox, filesystem, process,
 network, and path restrictions remain fully enforced.
 
 No-auth does not seed users, groups, permission assignments, sessions, or
-passwords. Shared schema migrations may retain RBAC tables, but a clean
-no-auth database has zero user and session rows.
+passwords. Shared schema migrations may retain dormant RBAC tables, but a
+clean no-auth database has zero user, group-assignment, session, and password
+history rows. Local RBAC is a trusted provider, not an installable plugin.
 
 Login, password, session, and user-management APIs return `404`.
 
@@ -118,7 +124,29 @@ or treat hidden buttons as authorization. Trusted background work uses
 
 Bundled first-party plugins may register a resource-authorization provider
 through the privileged capability `provider:resource-authorization`.
-Third-party plugins cannot register or intercept authorization. See
-[server-access.md](server-access.md) for the optional server-scoped manager
-access plugin, inherited vs restricted modes, and fail-closed behavior.
+Third-party plugins cannot register or intercept authorization. The generic
+registry, server resource resolution, and capability hooks belong to the
+shared `.0` baseline and do not hardcode a plugin id.
+
+Server Access Control is an Enterprise-only bundled plugin. It is present
+only on `.9`. Core starts normally when the plugin folder is absent; server
+authorization then uses the global security provider. See
+[server-access.md](server-access.md).
+
+## Release gates
+
+Security tests and release-family validation are mandatory before tagging:
+
+```text
+npm test
+npm run test:security
+node scripts/server-access-test.js
+node scripts/permission-catalog-test.js
+npm run test:release-family
+npm --prefix frontend run build
+```
+
+CI must run live WebSocket authorization tests. A missing `socket.io-client`
+fails the security job instead of skipping those checks.
+
 

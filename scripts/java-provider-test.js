@@ -45,6 +45,10 @@ function zipStore(files) {
   return Buffer.concat([localBuf, centralBuf, end]);
 }
 
+if (!process.env.CONNECT_HOST && !process.env.PUBLIC_HOST) {
+  process.env.CONNECT_HOST = '192.0.2.10';
+}
+
 async function runJavaProviderTests({ pluginHost, testRoot }) {
   const pluginCapabilities = require('../server/services/pluginCapabilities');
   const javaLoaderRegistry = require('../server/services/javaLoaderRegistry');

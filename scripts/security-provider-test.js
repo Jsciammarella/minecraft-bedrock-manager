@@ -138,9 +138,7 @@ function runChild(code, extraEnv = {}) {
 }
 
 function runNoAuthIndependenceTests() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-noauth-indep-'));
-  const dbPath = path.join(dir, 'mc_manager.db');
-  const code = `
+  const isolationCode = (version) => `
     const assert = require('assert');
     const Module = require('module');
     const orig = Module._resolveFilename;
@@ -156,7 +154,7 @@ function runNoAuthIndependenceTests() {
     };
     const runtime = require('./server/security/runtime');
     const created = runtime.createRuntime({
-      version: '0.4.3',
+      version: '${version}',
       env: process.env,
     });
     assert.equal(created.profile, 'no-auth');
@@ -167,22 +165,47 @@ function runNoAuthIndependenceTests() {
     const db = require('./server/db/connection');
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM users').get().n, 0);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM groups').get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user_groups').get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM group_permissions').get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user_permissions').get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM password_history').get().n, 0);
     const principal = created.authenticate({ headers: {} }).principal;
+    assert.equal(principal.id, 'local-system');
+    assert.equal(principal.type, 'system');
     assert.equal(created.authorize(principal, 'servers.console'), true);
+    assert.equal(created.authorize(principal, 'servers.view_details'), true);
     assert.equal(created.authorize(principal, 'not.a.permission'), false);
+    assert.equal(created.authorize(principal, 'plugin.unknown.action'), false);
     assert.equal(created.supports('plugins'), true);
     assert.equal(created.supports('authentication'), false);
+    assert.equal(created.supports('sessions'), false);
+    assert.equal(created.supports('passwordManagement'), false);
+    assert.equal(created.supports('userManagement'), false);
     assert.equal(created.supports('unknown-feature'), false);
+    const pluginHost = require('./server/services/pluginHost');
+    assert.equal(typeof pluginHost.loadPlugins, 'function');
     console.log('ok');
   `;
-  runChild(code, {
-    NODE_ENV: 'test',
-    MBM_SECURITY_PROFILE: 'no-auth',
-    MC_MANAGER_DB_PATH: dbPath,
-    MC_MANAGER_USER_PLUGINS_DIR: path.join(dir, 'plugins'),
-    MC_MANAGER_PLUGIN_DATA_DIR: path.join(dir, 'plugin-data'),
-    MC_MANAGER_PLUGIN_STATE_PATH: path.join(dir, 'plugin-state.json'),
-  });
+  for (const [version, env] of [
+    ['0.4.3', { NODE_ENV: 'test', MBM_SECURITY_PROFILE: 'no-auth' }],
+    ['0.5.0', { NODE_ENV: 'production' }],
+    ['0.5.3', { NODE_ENV: 'production' }],
+  ]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-noauth-indep-'));
+    runChild(isolationCode(version), {
+      ...env,
+      MC_MANAGER_DB_PATH: path.join(dir, 'mc_manager.db'),
+      MC_MANAGER_USER_PLUGINS_DIR: path.join(dir, 'plugins'),
+      MC_MANAGER_PLUGIN_DATA_DIR: path.join(dir, 'plugin-data'),
+      MC_MANAGER_PLUGIN_STATE_PATH: path.join(dir, 'plugin-state.json'),
+    });
+  }
+
+  const layout = fs.readFileSync(path.join(__dirname, '../frontend/src/components/Layout.jsx'), 'utf8');
+  assert.ok(layout.includes('features.userManagement'), 'User Management must be hidden unless the capability is present');
+  const app = fs.readFileSync(path.join(__dirname, '../frontend/src/App.jsx'), 'utf8');
+  assert.ok(app.includes('RequireUserManagement'), 'User Management routes must be gated');
 }
 
 function runMissingRbacFailsClosed() {
@@ -221,6 +244,30 @@ function runMissingRbacFailsClosed() {
       env: { NODE_ENV: 'production' },
     });
     assert.equal(open.profile, 'no-auth');
+    const baseline = runtime.createRuntime({
+      version: '0.5.0',
+      env: { NODE_ENV: 'production' },
+    });
+    assert.equal(baseline.profile, 'no-auth');
+    const openFive = runtime.createRuntime({
+      version: '0.5.3',
+      env: { NODE_ENV: 'production' },
+    });
+    assert.equal(openFive.profile, 'no-auth');
+    assert.throws(
+      () => runtime.createRuntime({
+        version: '0.5.6',
+        env: { NODE_ENV: 'production' },
+      }),
+      /missing or invalid|cannot start|No-auth will not be selected/i,
+    );
+    assert.throws(
+      () => runtime.createRuntime({
+        version: '0.5.9',
+        env: { NODE_ENV: 'production' },
+      }),
+      /missing or invalid|cannot start|No-auth will not be selected/i,
+    );
     console.log('ok');
   `;
   runChild(code, {
@@ -274,6 +321,16 @@ function runBootstrapAndUpgradeTests() {
     const survived = again.provider.login('admin', 'operator-secret-1');
     assert.equal(survived.user.isAdmin, true);
     assert.ok(survived.user.permissions.includes('servers.start'));
+    assert.equal(auth.needsAdministratorBootstrap(), false);
+    assert.ok(db.prepare('SELECT COUNT(*) AS n FROM groups').get().n >= 1);
+    assert.ok(db.prepare('SELECT COUNT(*) AS n FROM user_groups').get().n >= 1);
+    const six = security.createRuntime({
+      version: '0.5.6',
+      env: { NODE_ENV: 'test', MBM_SECURITY_PROFILE: 'local-rbac' },
+    });
+    assert.equal(six.profile, 'local-rbac');
+    const sixLogin = six.provider.login('admin', 'operator-secret-1');
+    assert.equal(sixLogin.user.isAdmin, true);
     console.log('ok');
   `;
   runChild(code, {
@@ -334,6 +391,46 @@ function runSecurityProviderTests() {
       env: { NODE_ENV: 'production' },
     });
     assert.equal(openSource.profile, 'no-auth');
+
+    const family = [
+      ['0.5.0', 'no-auth'],
+      ['0.5.3', 'no-auth'],
+      ['0.5.6', 'local-rbac'],
+      ['0.5.9', 'local-rbac'],
+    ];
+    for (const [version, profile] of family) {
+      const override = profile === 'local-rbac' ? 'no-auth' : 'local-rbac';
+      const selected = security.profiles.resolveProfile({
+        version,
+        env: { NODE_ENV: 'production', MBM_SECURITY_PROFILE: override },
+      });
+      assert.equal(selected.profile, profile, `${version} must select ${profile} in production`);
+      assert.equal(selected.source, 'trusted');
+    }
+    for (const version of ['0.5.1', '0.5.7', '0.5.2']) {
+      assert.throws(
+        () => security.profiles.resolveProfile({ version, env: { NODE_ENV: 'production' } }),
+        (err) => err && (err.code === 'SECURITY_PROFILE_INVALID' || /Unsupported product version/i.test(err.message)),
+      );
+    }
+    const devOverride = security.profiles.resolveProfile({
+      version: '0.5.1',
+      env: { NODE_ENV: 'test', MBM_SECURITY_PROFILE: 'no-auth' },
+    });
+    assert.equal(devOverride.profile, 'no-auth');
+    assert.equal(devOverride.source, 'development-override');
+
+    const familyScript = require('./verify-release-family');
+    assert.equal(familyScript.inventoryFor('0.5.0').securityProfile, 'no-auth');
+    assert.equal(familyScript.inventoryFor('0.5.3').githubMirror, true);
+    assert.equal(familyScript.inventoryFor('0.5.6').serverAccessPlugin, false);
+    assert.equal(familyScript.inventoryFor('0.5.9').serverAccessPlugin, true);
+    assert.throws(() => familyScript.inventoryFor('0.5.1'), /Unsupported/);
+    familyScript.validate(require('../package.json').version);
+    if (familyScript.pluginPresent()) {
+      familyScript.validate('0.5.9', { versionOverridden: true });
+      assert.throws(() => familyScript.validate('0.5.6', { versionOverridden: true }), /must not include/);
+    }
 
     assert.throws(
       () => security.createRuntime({
@@ -671,6 +768,10 @@ function runSocketAuthorizationTests() {
   assert.equal(stopHidden.error, socketAuth.GENERIC_STOP);
 }
 
+function liveSocketTestsRequired() {
+  return process.env.CI === 'true' || process.env.MBM_REQUIRE_LIVE_SOCKET_TESTS === '1';
+}
+
 function loadSocketClient() {
   try {
     return require('socket.io-client');
@@ -685,8 +786,21 @@ function loadSocketClient() {
   }
 }
 
-async function connectClient(origin, extra = {}) {
+function requireSocketClient() {
   const clientLib = loadSocketClient();
+  if (clientLib) return clientLib;
+  if (liveSocketTestsRequired()) {
+    throw new Error('socket.io-client is required for live WebSocket authorization tests in CI');
+  }
+  if (process.env.MBM_SKIP_LIVE_SOCKET_TESTS === '1') {
+    console.warn('security-provider-test: skipping live socket tests (MBM_SKIP_LIVE_SOCKET_TESTS=1)');
+    return null;
+  }
+  throw new Error('socket.io-client is not installed. Install it with npm i -D socket.io-client, or set MBM_SKIP_LIVE_SOCKET_TESTS=1 to opt out locally.');
+}
+
+async function connectClient(origin, extra = {}) {
+  const clientLib = requireSocketClient();
   if (!clientLib) return null;
   const ioClient = clientLib.io || clientLib;
   const socket = ioClient(origin, {
@@ -716,12 +830,34 @@ function once(socket, event) {
   });
 }
 
+async function expectConnectError(origin, extra = {}) {
+  const clientLib = requireSocketClient();
+  const ioClient = clientLib.io || clientLib;
+  const socket = ioClient(origin, {
+    transports: ['websocket'],
+    forceNew: true,
+    reconnection: false,
+    withCredentials: true,
+    ...extra,
+  });
+  const err = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('expected connect_error')), 5000);
+    socket.on('connect', () => {
+      clearTimeout(timer);
+      socket.close();
+      reject(new Error('unauthenticated RBAC socket connected'));
+    });
+    socket.on('connect_error', (error) => {
+      clearTimeout(timer);
+      resolve(error);
+    });
+  });
+  socket.close();
+  return err;
+}
+
 async function runSocketIntegrationTests() {
-  const clientLib = loadSocketClient();
-  if (!clientLib) {
-    console.warn('security-provider-test: socket.io-client not installed; skipping live socket tests');
-    return;
-  }
+  if (!requireSocketClient()) return;
   const previous = security.getRuntime();
   const serverRow = { id: 7, kind: 'bedrock', name: 'alpha', status: 'stopped' };
   const options = {
@@ -741,7 +877,7 @@ async function runSocketIntegrationTests() {
   try {
     security.setRuntime(security.createRuntime({
       env: { NODE_ENV: 'test', MBM_SECURITY_PROFILE: 'no-auth' },
-      version: '0.4.3',
+      version: '0.5.3',
     }));
     const app = express();
     const httpServer = http.createServer(app);
@@ -750,21 +886,24 @@ async function runSocketIntegrationTests() {
     await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
     const origin = `http://127.0.0.1:${httpServer.address().port}`;
     const local = await connectClient(origin);
-    const joined = once(local, 'join-error');
-    local.emit('join-server', 7);
-    await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(local.connected, true);
-    local.emit('join-server', 'bad-id');
-    const bad = await Promise.race([joined, new Promise((resolve) => setTimeout(() => resolve('timeout'), 500))]);
-    if (bad !== 'timeout') {
-      assert.match(String(bad.error || ''), /subscribe|permission/i);
-    }
+    const noAuthJoinErrP = once(local, 'join-error');
+    local.emit('join-server', 7);
+    const noAuthJoinErr = await Promise.race([
+      noAuthJoinErrP,
+      new Promise((resolve) => setTimeout(() => resolve(null), 200)),
+    ]);
+    assert.equal(noAuthJoinErr, null);
+    const sentP = once(local, 'command-sent');
+    local.emit('send-command', { serverId: 7, command: 'list' });
+    const sent = await sentP;
+    assert.equal(sent.success, true);
     local.close();
     await new Promise((resolve) => httpServer.close(resolve));
 
     security.setRuntime(security.createRuntime({
       env: { NODE_ENV: 'test', MBM_SECURITY_PROFILE: 'local-rbac' },
-      version: '0.4.9',
+      version: '0.5.9',
     }));
     ensureAdmin();
     const adminLogin = require('../server/services/authService').login('admin', 'mcadmin');
@@ -777,20 +916,45 @@ async function runSocketIntegrationTests() {
     socketAuth.attach(io2, liveOptions);
     await new Promise((resolve) => httpServer2.listen(0, '127.0.0.1', resolve));
     const origin2 = `http://127.0.0.1:${httpServer2.address().port}`;
+
+    const unauthErr = await expectConnectError(origin2);
+    assert.match(String(unauthErr.message || unauthErr), /auth/i);
+
     const adminSock = await connectClient(origin2, {
       auth: { token: adminLogin.session.token },
     });
-    const joinErr = once(adminSock, 'join-error');
+    assert.equal(adminSock.connected, true);
+    const adminJoinErrP = once(adminSock, 'join-error');
     adminSock.emit('join-server', 7);
     const maybeErr = await Promise.race([
-      joinErr,
+      adminJoinErrP,
       new Promise((resolve) => setTimeout(() => resolve(null), 200)),
     ]);
     assert.equal(maybeErr, null);
+    const hiddenJoinP = once(adminSock, 'join-error');
     adminSock.emit('join-server', 404);
-    const hiddenJoin = await once(adminSock, 'join-error');
+    const hiddenJoin = await hiddenJoinP;
     assert.equal(hiddenJoin.error, socketAuth.GENERIC_JOIN);
-    adminSock.close();
+
+    const adminCmdP = once(adminSock, 'command-sent');
+    adminSock.emit('send-command', { serverId: 7, command: 'list' });
+    const adminCmd = await adminCmdP;
+    assert.equal(adminCmd.success, true);
+    const startedP = Promise.race([
+      once(adminSock, 'server-status'),
+      once(adminSock, 'server-error').then((payload) => { throw new Error(payload.error); }),
+    ]);
+    adminSock.emit('start-server', 7);
+    const started = await startedP;
+    assert.equal(started.serverId, 7);
+    assert.equal(started.status, 'running');
+    const stoppedP = Promise.race([
+      once(adminSock, 'server-status'),
+      once(adminSock, 'server-error').then((payload) => { throw new Error(payload.error); }),
+    ]);
+    adminSock.emit('stop-server', 7);
+    const stopped = await stoppedP;
+    assert.equal(stopped.status, 'stopped');
 
     const groups = require('../server/services/authService').listGroups();
     const readOnly = groups.find((group) => group.name === 'Read-only');
@@ -808,13 +972,59 @@ async function runSocketIntegrationTests() {
     const viewerSock = await connectClient(origin2, {
       auth: { token: viewerLogin.session.token },
     });
+    const viewerJoinP = once(viewerSock, 'join-error');
     viewerSock.emit('join-server', 7);
-    const viewerJoin = await once(viewerSock, 'join-error');
+    const viewerJoin = await viewerJoinP;
     assert.equal(viewerJoin.error, socketAuth.CONSOLE_DENIED);
+    const startErrP = once(viewerSock, 'server-error');
     viewerSock.emit('start-server', 7);
-    const startErr = await once(viewerSock, 'server-error');
+    const startErr = await startErrP;
     assert.match(String(startErr.error || ''), /permission|Unable to start/i);
+    const cmdErrP = once(viewerSock, 'command-error');
+    viewerSock.emit('send-command', { serverId: 7, command: 'list' });
+    const cmdErr = await cmdErrP;
+    assert.match(String(cmdErr.error || ''), /permission|Unable to send/i);
+
+    const statuses = [];
+    viewerSock.on('server-status', (payload) => statuses.push(payload));
+    socketAuth.emitServerStatus(io2, { serverId: 7, status: 'running' }, liveOptions);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(statuses.some((item) => item.serverId === 7), 'users who can view a server must receive server-status');
+
+    const hidden = require('../server/services/authService').createUser({
+      username: `ws-hidden-${Date.now()}`,
+      fullName: 'WS Hidden',
+      password: 'hiddenuser1',
+      skipDefaultGroup: true,
+    }, adminUser);
+    const hiddenLogin = require('../server/services/authService').login(hidden.username, 'hiddenuser1');
+    const hiddenSock = await connectClient(origin2, {
+      auth: { token: hiddenLogin.session.token },
+    });
+    const hiddenStatuses = [];
+    hiddenSock.on('server-status', (payload) => hiddenStatuses.push(payload));
+    socketAuth.emitServerStatus(io2, { serverId: 7, status: 'running' }, liveOptions);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(hiddenStatuses.length, 0, 'users who cannot view a server must not receive server-status');
+
+    const registry = require('../server/services/resourceAuthorizationRegistry');
+    registry.resetForTests();
+    const revokedP = once(adminSock, 'server-access-revoked');
+    const closedOptions = {
+      ...liveOptions,
+      authorize: () => false,
+    };
+    socketAuth.revalidateSubscriptions(io2, closedOptions);
+    const revokedPayload = await Promise.race([
+      revokedP,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('socket was not removed after permission revocation')), 1000)),
+    ]);
+    assert.equal(revokedPayload.serverId, 7);
+    registry.resetForTests();
+
+    adminSock.close();
     viewerSock.close();
+    hiddenSock.close();
     await new Promise((resolve) => httpServer2.close(resolve));
   } finally {
     restoreSingleton(previous);

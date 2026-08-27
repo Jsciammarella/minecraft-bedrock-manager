@@ -664,6 +664,7 @@ function loadBackend(plugin) {
 }
 
 function loadPlugins(dirs = defaultPluginDirs()) {
+  unloadPlugins();
   fs.mkdirSync(USER_PLUGINS_DIR, { recursive: true });
   fs.mkdirSync(PLUGIN_DATA_DIR, { recursive: true });
   const next = [];
@@ -752,6 +753,9 @@ function resetForTests() {
   try { require('./javaHostingPolicy').resetForTests(); } catch { /* ignore */ }
   try { require('./bedrockConnectPolicy').resetForTests(); } catch { /* ignore */ }
   try { require('./serverEditionRegistry').clear(); } catch { /* ignore */ }
+  try { require('./gatewayRegistry').clear(); } catch { /* ignore */ }
+  try { require('./javaLoaderRegistry').clear(); } catch { /* ignore */ }
+  try { require('./resourceAuthorizationRegistry').resetForTests(); } catch { /* ignore */ }
 }
 
 function reloadPlugins() {

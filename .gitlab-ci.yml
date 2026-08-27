@@ -10,15 +10,20 @@ variables:
 verify:
   stage: verify
   variables:
+    CI_PROD_IMAGE: "minecraft-bedrock-manager:$CI_COMMIT_SHA"
     CI_TEST_IMAGE: "minecraft-bedrock-manager-ci:$CI_COMMIT_SHA"
   script:
     - bash -n scripts/*.sh
-    - docker build --tag "$CI_TEST_IMAGE" .
+    - docker build --target production --tag "$CI_PROD_IMAGE" .
+    - docker build --target ci-test --tag "$CI_TEST_IMAGE" .
     - docker build --tag "$CI_TEST_IMAGE-cf-fetch" -f Dockerfile.curseforge-fetch .
-    - docker run --rm --entrypoint node -e CONNECT_HOST=192.168.1.50 --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" --volume "$CI_PROJECT_DIR/frontend:/app/frontend:ro" "$CI_TEST_IMAGE" scripts/smoke-test.js
-    - docker run --rm --entrypoint node -e NODE_ENV=test --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" --volume "$CI_PROJECT_DIR/frontend:/app/frontend:ro" "$CI_TEST_IMAGE" scripts/security-provider-test.js
-    - docker run --rm --entrypoint node -e NODE_ENV=test -e MBM_SECURITY_PROFILE=no-auth --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" --volume "$CI_PROJECT_DIR/frontend:/app/frontend:ro" "$CI_TEST_IMAGE" scripts/security-provider-test.js
-    - cid=$(docker run -d --name "mbm-health-$CI_COMMIT_SHA" "$CI_TEST_IMAGE")
+    - docker run --rm --entrypoint node -e CONNECT_HOST=192.168.1.50 --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" --volume "$CI_PROJECT_DIR/frontend:/app/frontend:ro" --volume "$CI_PROJECT_DIR/examples:/app/examples:ro" "$CI_TEST_IMAGE" scripts/verify-release-family.js
+    - docker run --rm --entrypoint node -e CONNECT_HOST=192.168.1.50 --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" --volume "$CI_PROJECT_DIR/frontend:/app/frontend:ro" --volume "$CI_PROJECT_DIR/examples:/app/examples:ro" "$CI_TEST_IMAGE" scripts/smoke-test.js
+    - docker run --rm --entrypoint node -e NODE_ENV=test -e CI=true -e MBM_REQUIRE_LIVE_SOCKET_TESTS=1 --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" --volume "$CI_PROJECT_DIR/frontend:/app/frontend:ro" --volume "$CI_PROJECT_DIR/examples:/app/examples:ro" "$CI_TEST_IMAGE" scripts/security-provider-test.js
+    - docker run --rm --entrypoint node -e NODE_ENV=test -e CI=true -e MBM_REQUIRE_LIVE_SOCKET_TESTS=1 -e MBM_SECURITY_PROFILE=no-auth --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" --volume "$CI_PROJECT_DIR/frontend:/app/frontend:ro" --volume "$CI_PROJECT_DIR/examples:/app/examples:ro" "$CI_TEST_IMAGE" scripts/security-provider-test.js
+    - docker run --rm --entrypoint node -e NODE_ENV=test -e CI=true --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" --volume "$CI_PROJECT_DIR/frontend:/app/frontend:ro" --volume "$CI_PROJECT_DIR/examples:/app/examples:ro" "$CI_TEST_IMAGE" scripts/server-access-test.js
+    - docker run --rm --entrypoint node -e NODE_ENV=test --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" --volume "$CI_PROJECT_DIR/frontend:/app/frontend:ro" --volume "$CI_PROJECT_DIR/examples:/app/examples:ro" "$CI_TEST_IMAGE" scripts/permission-catalog-test.js
+    - cid=$(docker run -d --name "mbm-health-$CI_COMMIT_SHA" --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" "$CI_PROD_IMAGE")
     - |
       ok=0
       for i in $(seq 1 30); do
@@ -29,13 +34,24 @@ verify:
         sleep 2
       done
       test "$ok" = 1
-      grep -q '"status":"ok"' /tmp/mbm-health.json
-      grep -q '"securityProfile":"local-rbac"' /tmp/mbm-health.json
-      docker exec "$cid" curl -fsS http://127.0.0.1:3000/api/auth/security | grep -q '"securityProfile":"local-rbac"'
+      docker exec "$cid" node scripts/ci-edition-health.js
     - docker rm -f "$cid"
+    - |
+      cid=$(docker run -d --name "mbm-profile-lock-$CI_COMMIT_SHA" -e MBM_SECURITY_PROFILE=no-auth --volume "$CI_PROJECT_DIR/scripts:/app/scripts:ro" "$CI_PROD_IMAGE")
+      ok=0
+      for i in $(seq 1 30); do
+        if docker exec "$cid" curl -fsS http://127.0.0.1:3000/api/health > /tmp/mbm-health-lock.json; then
+          ok=1
+          break
+        fi
+        sleep 2
+      done
+      test "$ok" = 1
+      docker exec "$cid" node scripts/ci-edition-health.js
+      docker rm -f "$cid"
   after_script:
-    - docker rm -f "mbm-health-$CI_COMMIT_SHA" >/dev/null 2>&1 || true
-    - docker image rm --force "$CI_TEST_IMAGE" "$CI_TEST_IMAGE-cf-fetch" >/dev/null 2>&1 || true
+    - docker rm -f "mbm-health-$CI_COMMIT_SHA" "mbm-profile-lock-$CI_COMMIT_SHA" >/dev/null 2>&1 || true
+    - docker image rm --force "$CI_PROD_IMAGE" "$CI_TEST_IMAGE" "$CI_TEST_IMAGE-cf-fetch" >/dev/null 2>&1 || true
 
 mirror-github-opensource:
   stage: release

@@ -175,14 +175,21 @@ function updateGroup(serverId, groupId, input, actor) {
   const slug = nextName !== current.name ? uniqueSlug(serverId, nextName, groupId) : current.slug;
   const description = input.description != null ? String(input.description) : current.description;
   const isActive = input.isActive == null ? current.isActive : Boolean(input.isActive);
+  const wantedIds = input.userIds ? normalizeUserIds(input.userIds) : null;
+  if (wantedIds) assertKnownUsers(wantedIds);
+  if (input.permissions) assertAssignableMap(serverId, input.permissions, actor);
+  const memberBefore = wantedIds
+    ? db.prepare('SELECT user_id AS id FROM server_access_group_members WHERE group_id = ?').all(Number(groupId)).map((row) => row.id)
+    : null;
+  const permBefore = input.permissions ? groupPermissionMap(groupId) : null;
   const run = db.transaction(() => {
     db.prepare(`
       UPDATE server_access_groups
       SET name = ?, slug = ?, description = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ? AND server_id = ?
     `).run(nextName, slug, description, isActive ? 1 : 0, Number(groupId), Number(serverId));
-    if (input.userIds) applyGroupMembers(serverId, groupId, input.userIds, actor, { skipNotify: true });
-    if (input.permissions) applyGroupPermissions(serverId, groupId, input.permissions, actor, { skipNotify: true });
+    if (wantedIds) replaceGroupMembers(groupId, wantedIds);
+    if (input.permissions) replaceGroupPermissions(groupId, input.permissions);
   });
   run();
   audit('server_access.groups.edit', actor, serverId, {
@@ -190,6 +197,19 @@ function updateGroup(serverId, groupId, input, actor) {
     before: { name: current.name, isActive: current.isActive },
     after: { name: nextName, isActive },
   });
+  if (wantedIds) {
+    const added = wantedIds.filter((id) => !memberBefore.includes(id));
+    const removed = memberBefore.filter((id) => !wantedIds.includes(id));
+    if (added.length) audit('server_access.groups.add_members', actor, serverId, { groupId, userIds: added });
+    if (removed.length) audit('server_access.groups.remove_members', actor, serverId, { groupId, userIds: removed });
+  }
+  if (input.permissions) {
+    audit('server_access.groups.assign_permissions', actor, serverId, {
+      groupId,
+      before: permBefore,
+      after: input.permissions,
+    });
+  }
   notifyChanged(serverId);
   return getGroup(serverId, groupId);
 }
@@ -197,42 +217,46 @@ function updateGroup(serverId, groupId, input, actor) {
 function deleteGroup(serverId, groupId, actor) {
   const current = getGroup(serverId, groupId);
   if (!current) throw Object.assign(new Error('Group not found'), { status: 404 });
-  database().prepare('DELETE FROM server_access_groups WHERE id = ? AND server_id = ?')
-    .run(Number(groupId), Number(serverId));
+  const run = database().transaction(() => {
+    database().prepare('DELETE FROM server_access_groups WHERE id = ? AND server_id = ?')
+      .run(Number(groupId), Number(serverId));
+  });
+  run();
   audit('server_access.groups.delete', actor, serverId, { groupId, name: current.name });
   notifyChanged(serverId);
   return { ok: true };
 }
 
-function applyGroupMembers(serverId, groupId, userIds, actor, { skipNotify } = {}) {
+function normalizeUserIds(userIds) {
+  return [...new Set((userIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+}
+
+function assertKnownUsers(userIds) {
   const db = database();
-  const wanted = [...new Set((userIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))];
-  for (const userId of wanted) {
+  for (const userId of userIds) {
     if (!db.prepare('SELECT id FROM users WHERE id = ?').get(userId)) {
       throw Object.assign(new Error('Unknown user'), { status: 400 });
     }
   }
-  const current = db.prepare('SELECT user_id AS id FROM server_access_group_members WHERE group_id = ?')
-    .all(Number(groupId)).map((row) => row.id);
-  const currentSet = new Set(current);
-  const wantedSet = new Set(wanted);
-  const added = wanted.filter((id) => !currentSet.has(id));
-  const removed = current.filter((id) => !wantedSet.has(id));
+}
+
+function replaceGroupMembers(groupId, wanted) {
+  const db = database();
   db.prepare('DELETE FROM server_access_group_members WHERE group_id = ?').run(Number(groupId));
   const insert = db.prepare('INSERT INTO server_access_group_members (group_id, user_id, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
   for (const userId of wanted) insert.run(Number(groupId), userId);
-  if (added.length) audit('server_access.groups.add_members', actor, serverId, { groupId, userIds: added });
-  if (removed.length) audit('server_access.groups.remove_members', actor, serverId, { groupId, userIds: removed });
-  if (!skipNotify) notifyChanged(serverId);
 }
 
-function applyGroupPermissions(serverId, groupId, permissions, actor, { skipNotify } = {}) {
-  assertAssignableMap(serverId, permissions, actor);
-  const db = database();
+function groupPermissionMap(groupId) {
   const before = {};
-  for (const item of db.prepare('SELECT permission_key, value FROM server_access_group_permissions WHERE group_id = ?').all(Number(groupId))) {
+  for (const item of database().prepare('SELECT permission_key, value FROM server_access_group_permissions WHERE group_id = ?').all(Number(groupId))) {
     before[item.permission_key] = item.value;
   }
+  return before;
+}
+
+function replaceGroupPermissions(groupId, permissions) {
+  const db = database();
   db.prepare('DELETE FROM server_access_group_permissions WHERE group_id = ?').run(Number(groupId));
   const insert = db.prepare(`
     INSERT INTO server_access_group_permissions (group_id, permission_key, value, assignment_origin, created_at, updated_at)
@@ -242,6 +266,30 @@ function applyGroupPermissions(serverId, groupId, permissions, actor, { skipNoti
     if (value !== 'allow' && value !== 'deny') continue;
     insert.run(Number(groupId), catalog().canonicalPermission(key), value);
   }
+}
+
+function applyGroupMembers(serverId, groupId, userIds, actor, { skipNotify } = {}) {
+  const wanted = normalizeUserIds(userIds);
+  assertKnownUsers(wanted);
+  const db = database();
+  const current = db.prepare('SELECT user_id AS id FROM server_access_group_members WHERE group_id = ?')
+    .all(Number(groupId)).map((row) => row.id);
+  const run = db.transaction(() => replaceGroupMembers(groupId, wanted));
+  run();
+  const currentSet = new Set(current);
+  const wantedSet = new Set(wanted);
+  const added = wanted.filter((id) => !currentSet.has(id));
+  const removed = current.filter((id) => !wantedSet.has(id));
+  if (added.length) audit('server_access.groups.add_members', actor, serverId, { groupId, userIds: added });
+  if (removed.length) audit('server_access.groups.remove_members', actor, serverId, { groupId, userIds: removed });
+  if (!skipNotify) notifyChanged(serverId);
+}
+
+function applyGroupPermissions(serverId, groupId, permissions, actor, { skipNotify } = {}) {
+  assertAssignableMap(serverId, permissions, actor);
+  const before = groupPermissionMap(groupId);
+  const run = database().transaction(() => replaceGroupPermissions(groupId, permissions));
+  run();
   audit('server_access.groups.assign_permissions', actor, serverId, { groupId, before, after: permissions || {} });
   if (!skipNotify) notifyChanged(serverId);
 }
@@ -305,11 +353,14 @@ function addUser(serverId, userId, actor) {
   const db = database();
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(Number(userId));
   if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
-  db.prepare(`
-    INSERT INTO server_access_users (server_id, user_id, is_active, created_at, updated_at)
-    VALUES (?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    ON CONFLICT(server_id, user_id) DO UPDATE SET is_active = 1, updated_at = CURRENT_TIMESTAMP
-  `).run(Number(serverId), Number(userId));
+  const run = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO server_access_users (server_id, user_id, is_active, created_at, updated_at)
+      VALUES (?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(server_id, user_id) DO UPDATE SET is_active = 1, updated_at = CURRENT_TIMESTAMP
+    `).run(Number(serverId), Number(userId));
+  });
+  run();
   audit('server_access.users.add', actor, serverId, { userId: Number(userId) });
   notifyChanged(serverId);
   return getAssignedUser(serverId, userId);
@@ -319,38 +370,65 @@ function updateUser(serverId, userId, input, actor) {
   const current = getAssignedUser(serverId, userId);
   if (!current) throw Object.assign(new Error('User not found'), { status: 404 });
   const db = database();
-  if (input.isActive != null || input.explicit) {
-    addUser(serverId, userId, actor);
-    if (input.isActive != null) {
-      db.prepare('UPDATE server_access_users SET is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE server_id = ? AND user_id = ?')
-        .run(input.isActive ? 1 : 0, Number(serverId), Number(userId));
+  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(Number(userId));
+  if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
+  if (input.permissions) assertAssignableMap(serverId, input.permissions, actor);
+  const permBefore = input.permissions ? userPermissionMap(serverId, userId) : null;
+  const run = db.transaction(() => {
+    if (input.isActive != null || input.explicit) {
+      db.prepare(`
+        INSERT INTO server_access_users (server_id, user_id, is_active, created_at, updated_at)
+        VALUES (?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(server_id, user_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+      `).run(Number(serverId), Number(userId));
+      if (input.isActive != null) {
+        db.prepare('UPDATE server_access_users SET is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE server_id = ? AND user_id = ?')
+          .run(input.isActive ? 1 : 0, Number(serverId), Number(userId));
+      }
     }
+    if (input.permissions) replaceUserPermissions(serverId, userId, input.permissions);
+  });
+  run();
+  if (input.isActive != null || input.explicit) {
+    audit('server_access.users.add', actor, serverId, { userId: Number(userId), isActive: input.isActive });
   }
-  if (input.permissions) applyUserPermissions(serverId, userId, input.permissions, actor, { skipNotify: true });
+  if (input.permissions) {
+    audit('server_access.users.assign_permissions', actor, serverId, {
+      userId,
+      before: permBefore,
+      after: input.permissions,
+    });
+  }
   notifyChanged(serverId);
   return getAssignedUser(serverId, userId);
 }
 
 function removeUser(serverId, userId, actor) {
   const db = database();
-  db.prepare('DELETE FROM server_access_users WHERE server_id = ? AND user_id = ?')
-    .run(Number(serverId), Number(userId));
-  db.prepare('DELETE FROM server_access_user_permissions WHERE server_id = ? AND user_id = ?')
-    .run(Number(serverId), Number(userId));
+  const run = db.transaction(() => {
+    db.prepare('DELETE FROM server_access_users WHERE server_id = ? AND user_id = ?')
+      .run(Number(serverId), Number(userId));
+    db.prepare('DELETE FROM server_access_user_permissions WHERE server_id = ? AND user_id = ?')
+      .run(Number(serverId), Number(userId));
+  });
+  run();
   audit('server_access.users.remove', actor, serverId, { userId: Number(userId) });
   notifyChanged(serverId);
   return { ok: true };
 }
 
-function applyUserPermissions(serverId, userId, permissions, actor, { skipNotify } = {}) {
-  assertAssignableMap(serverId, permissions, actor);
-  const db = database();
+function userPermissionMap(serverId, userId) {
   const before = {};
-  for (const item of db.prepare(`
+  for (const item of database().prepare(`
     SELECT permission_key, value FROM server_access_user_permissions WHERE server_id = ? AND user_id = ?
   `).all(Number(serverId), Number(userId))) {
     before[item.permission_key] = item.value;
   }
+  return before;
+}
+
+function replaceUserPermissions(serverId, userId, permissions) {
+  const db = database();
   db.prepare('DELETE FROM server_access_user_permissions WHERE server_id = ? AND user_id = ?')
     .run(Number(serverId), Number(userId));
   const insert = db.prepare(`
@@ -361,6 +439,13 @@ function applyUserPermissions(serverId, userId, permissions, actor, { skipNotify
     if (value !== 'allow' && value !== 'deny') continue;
     insert.run(Number(serverId), Number(userId), catalog().canonicalPermission(key), value);
   }
+}
+
+function applyUserPermissions(serverId, userId, permissions, actor, { skipNotify } = {}) {
+  assertAssignableMap(serverId, permissions, actor);
+  const before = userPermissionMap(serverId, userId);
+  const run = database().transaction(() => replaceUserPermissions(serverId, userId, permissions));
+  run();
   audit('server_access.users.assign_permissions', actor, serverId, { userId, before, after: permissions || {} });
   if (!skipNotify) notifyChanged(serverId);
 }
@@ -380,7 +465,18 @@ function assertAssignableMap(serverId, permissions, actor) {
     }
     if (value !== 'allow' && value !== 'deny') continue;
     const canonical = cat.canonicalPermission(key);
+    const def = cat.permissionByKey(canonical);
+    if (!def) {
+      throw Object.assign(new Error(`Unknown permission ${key}`), { status: 400 });
+    }
+    if (def.active === false && !def.deprecated) {
+      throw Object.assign(new Error(`${canonical} is inactive and cannot be assigned`), { status: 400 });
+    }
     if (!cat.isServerAssignable(canonical, kind)) {
+      const kinds = def.serverKinds || [];
+      if (kinds.length && kind) {
+        throw Object.assign(new Error(`${canonical} is not compatible with ${kind} servers`), { status: 400 });
+      }
       throw Object.assign(new Error(`${canonical} cannot be assigned at server scope`), { status: 400 });
     }
     if (actor && !security.isAdministrator(actor) && value === 'allow') {
@@ -449,8 +545,11 @@ function collectSources(principal, permission, resource) {
     }));
   }
   const userRows = db.prepare(`
-    SELECT permission_key, value FROM server_access_user_permissions
-    WHERE server_id = ? AND user_id = ?
+    SELECT up.permission_key, up.value
+    FROM server_access_user_permissions up
+    JOIN server_access_users a
+      ON a.server_id = up.server_id AND a.user_id = up.user_id
+    WHERE up.server_id = ? AND up.user_id = ? AND a.is_active = 1
   `).all(serverId, Number(principal.id));
   for (const item of userRows) {
     if (!aliases.has(item.permission_key) && item.permission_key !== canonical) continue;
@@ -575,5 +674,8 @@ module.exports = {
   getDisableImpact,
   snapshot,
   listDirectoryUsers,
-  isAssigned,
+  applyUserPermissions,
+  applyGroupMembers,
+  applyGroupPermissions,
 };
+

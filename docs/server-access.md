@@ -1,8 +1,15 @@
 # Server-specific manager access
 
-Server Access Control is an optional bundled plugin. It applies to
-**management-console users**, not Minecraft players. Player roles, allow
-lists, and ban lists stay on **Player Roles**.
+Server Access Control is an optional bundled **Enterprise (.9)** plugin. It is
+not present in the shared `.0` baseline, open-source `.3`, or Pro `.6`
+packages. It applies to **management-console users**, not Minecraft players.
+Player roles, allow lists, and ban lists stay on **Player Roles**.
+
+The generic resource-authorization interfaces live in core and remain in every
+edition. Core does not hardcode the `server-access-control` plugin id. When the
+plugin folder is absent, the manager starts normally, the Users button is
+hidden, `/api/server-access` reports unavailable, and authorization uses the
+global security provider.
 
 ## Global vs server-specific
 
@@ -48,7 +55,16 @@ are denied access to servers (fail closed). Administrators can repair or
 disable the plugin.
 
 Releases that omit the plugin folder keep a working core. The generic
-`resourceAuthorizationRegistry` has no hardcoded plugin id.
+`resourceAuthorizationRegistry` has no hardcoded plugin id. Server-access
+permission definitions and plugin tables are created only by the plugin, not
+by core.
+
+Inactive explicit server-user assignments contribute no direct allows or
+denies and do not satisfy restricted-mode membership. Active server-group
+membership can still satisfy membership independently. Reactivating an
+assignment restores its stored direct permissions; removing the assignment
+deletes those rows. Multi-step mutations run in a database transaction and
+emit audit or live socket refresh only after a successful commit.
 
 ## Declaring server applicability
 
