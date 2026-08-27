@@ -115,7 +115,8 @@ class FileCatalogClient {
       .filter((mod) => gitCatalog.matchesQuery(mod, query))
       .filter((mod) => gitCatalog.matchesCategory(mod, category))
       .filter((mod) => gitCatalog.matchesEdition(mod, options.edition))
-      .filter((mod) => gitCatalog.matchesMinecraftVersions(mod, options.minecraftVersions, options.gameVersions));
+      .filter((mod) => gitCatalog.matchesMinecraftVersions(mod, options.minecraftVersions, options.gameVersions))
+      .filter((mod) => gitCatalog.matchesCompatibilityTargets(mod, options.compatibilityTargets));
     const sorted = gitCatalog.sortMods(all, sortBy, query);
     const start = Math.max(0, (page - 1) * pageSize);
     return {

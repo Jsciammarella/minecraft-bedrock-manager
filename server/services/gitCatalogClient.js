@@ -149,7 +149,8 @@ class GitCatalogClient {
         .filter(mod => this.matchesQuery(mod, query))
         .filter(mod => this.matchesCategory(mod, category))
         .filter(mod => this.matchesEdition(mod, options.edition))
-        .filter(mod => this.matchesMinecraftVersions(mod, options.minecraftVersions, options.gameVersions));
+        .filter(mod => this.matchesMinecraftVersions(mod, options.minecraftVersions, options.gameVersions))
+        .filter(mod => this.matchesCompatibilityTargets(mod, options.compatibilityTargets));
     } catch (err) {
       logger.warn(`Git catalog search skipped while the repository is incomplete: ${err.message}`);
       return { results: [], total: 0, page };
@@ -628,6 +629,8 @@ class GitCatalogClient {
       minecraftVersions: Array.isArray(item.minecraftVersions)
         ? item.minecraftVersions
         : (Array.isArray(item.gameVersions) ? item.gameVersions : []),
+      environment: String(item.environment || '').toLowerCase() || undefined,
+      files: Array.isArray(item.files) ? item.files : undefined,
     });
   }
 
@@ -704,6 +707,8 @@ class GitCatalogClient {
       edition: entry.edition || (String(entry.filePath || '').toLowerCase().endsWith('.jar') ? 'java' : 'bedrock'),
       loader: entry.loader || ((entry.edition === 'java' || String(entry.filePath || '').toLowerCase().endsWith('.jar')) ? 'unknown' : 'any'),
       minecraftVersions: Array.isArray(entry.minecraftVersions) ? entry.minecraftVersions : [],
+      environment: entry.environment || ((entry.edition === 'java' || String(entry.filePath || '').toLowerCase().endsWith('.jar')) ? 'unknown' : ''),
+      files: Array.isArray(entry.files) ? entry.files : undefined,
     };
   }
 
@@ -734,6 +739,11 @@ class GitCatalogClient {
 
   matchesMinecraftVersions(mod, versions, requested) {
     return minecraftVersions.matchesCatalogGameVersions(mod, versions, requested);
+  }
+
+  matchesCompatibilityTargets(mod, targets) {
+    if (!targets || !targets.length) return true;
+    return require('./catalogCompatibility').projectMatchesAnyTarget(mod, targets);
   }
 
   sortMods(mods, sortBy, query) {
