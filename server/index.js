@@ -1,9 +1,14 @@
+const path = require('path');
+require('dotenv').config({
+  path: path.join(process.cwd(), '.env'),
+  override: false,
+});
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const helmet = require('helmet');
-const path = require('path');
 const { version: managerVersion } = require('../package.json');
 const logger = require('./services/logger');
 const connectHost = require('./services/connectHost');

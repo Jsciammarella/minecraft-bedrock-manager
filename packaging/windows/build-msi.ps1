@@ -4,14 +4,16 @@
   Stage the manager and build a 64-bit Windows installer.
 
   Output is dist\windows\MinecraftBedrockManager-<version>_<build>.exe
-  (for example MinecraftBedrockManager-0.3.6_0001.exe). The product version
-  stays 0.3.6 until you pass -Version; the build number increments automatically.
+  (for example MinecraftBedrockManager-0.6.0_0001.exe). When -Version is omitted,
+  the product version is read from the repository package.json. The optional
+  _NNNN suffix is the Burn bundle build number.
 
 .DESCRIPTION
   Linux Docker and native installers are not used here. Run this on Windows 10/11 x64
   with Node 20 (the script bundles it and uses it to compile native modules), WiX 5+ (`dotnet tool install -g wix`), and Visual Studio Build Tools
   (for node-pty / better-sqlite3). Minecraft Bedrock Dedicated Server is downloaded
-  later by the manager, not packed into the MSI.
+  later by the manager, not packed into the MSI. The standard installer bundles a
+  Temurin JDK 21 so Geyser ViaProxy/Floodgate can compile its join helper.
 #>
 [CmdletBinding()]
 param(
@@ -20,7 +22,6 @@ param(
   [int]$Build = 0,
   [switch]$SkipOptionalRuntimes,
   [switch]$SkipGit,
-  [switch]$SkipNpm,
   [switch]$SkipFrontend
 )
 
@@ -31,6 +32,8 @@ if (-not $RepoRoot) {
   $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 }
 
+. (Join-Path $PSScriptRoot 'InstallerVersion.ps1')
+
 $NodeVersion = '20.19.0'
 $WinSwVersion = '2.12.0'
 $PythonVersion = '3.12.10'
@@ -38,19 +41,10 @@ $GitLfsVersion = '3.6.1'
 $MinGitVersion = '2.47.1'
 $MinGitTag = 'v2.47.1.windows.1'
 $MinGitZipName = 'MinGit-2.47.1-64-bit.zip'
-
-function Get-ProductVersion {
-  param([string]$Requested)
-  if ($Requested -match '^(\d+\.\d+\.\d+)(?:_(\d+))?$') { return $Matches[1] }
-  return '0.3.6'
-}
-
-function Get-RequestedBuild {
-  param([string]$Requested, [int]$Build)
-  if ($Build -gt 0) { return $Build }
-  if ($Requested -match '^(\d+\.\d+\.\d+)_(\d+)$') { return [int]$Matches[2] }
-  return 0
-}
+$JdkFeatureVersion = '21'
+$JdkReleaseTag = 'jdk-21.0.12+8'
+$JdkZipName = 'OpenJDK21U-jdk_x64_windows_hotspot_21.0.12_8.zip'
+$JdkUrl = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12%2B8/$JdkZipName"
 
 function Read-BuildNumberFile {
   param([string]$Path, [string]$ProductVersion)
@@ -121,14 +115,14 @@ function Copy-Tree {
   Copy-Item -Path (Join-Path $Source '*') -Destination $Dest -Recurse -Force
 }
 
-$ProductVersion = Get-ProductVersion $Version
+$ProductVersion = Get-ProductVersion -Requested $Version -RepoRoot $RepoRoot
 $OutDir = Join-Path $RepoRoot 'dist\windows'
 $Stage = Join-Path $OutDir 'stage'
 $CacheDir = Join-Path $PSScriptRoot 'cache'
 $BuildStamp = Join-Path $PSScriptRoot 'installer-build-number.txt'
-$BuildNumber = Get-NextBuildNumber $ProductVersion (Get-RequestedBuild $Version $Build) $BuildStamp $OutDir
+$BuildNumber = Get-NextBuildNumber $ProductVersion (Get-RequestedBuild -Requested $Version -Build $Build) $BuildStamp $OutDir
 $DisplayVersion = '{0}_{1:D4}' -f $ProductVersion, $BuildNumber
-# MSI ProductVersion is only x.y.z. Burn can use a fourth field so 0.3.6_0002 replaces 0.3.6_0001.
+# MSI ProductVersion is only x.y.z. Burn can use a fourth field so 0.6.0_0002 replaces 0.6.0_0001.
 $BundleVersion = '{0}.{1}' -f $ProductVersion, $BuildNumber
 $MsiOut = Join-Path $OutDir ("MinecraftBedrockManager-$DisplayVersion.msi")
 $ExeOut = Join-Path $OutDir ("MinecraftBedrockManager-$DisplayVersion.exe")
@@ -152,7 +146,7 @@ if (-not $SkipFrontend) {
 }
 
 if (-not (Test-Path (Join-Path $RepoRoot 'public\index.html'))) {
-  throw 'public/index.html is missing. Run without -SkipNpm so the frontend is built.'
+  throw 'public/index.html is missing. Run without -SkipFrontend so the frontend is built.'
 }
 
 Copy-Tree (Join-Path $RepoRoot 'server') (Join-Path $Stage 'server')
@@ -201,11 +195,16 @@ Copy-Item (Join-Path $PSScriptRoot 'copy-env.cmd') $Stage
 Copy-Item (Join-Path $PSScriptRoot 'Open Manager.url') $Stage
 
 if (-not $SkipOptionalRuntimes) {
-  Write-Host 'Bundling Temurin JRE 21 and Python embeddable'
-  $jreZip = Get-CachedFile 'https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jre/hotspot/normal/eclipse?project=jdk' 'temurin-21-jre-windows-x64.zip'
-  Copy-FlattenedZip -ZipPath $jreZip -DestDir (Join-Path $Stage 'runtime\jre') -SkipTop 1
-  if (-not (Test-Path (Join-Path $Stage 'runtime\jre\bin\java.exe'))) {
-    throw 'Temurin JRE did not extract to runtime\jre\bin\java.exe'
+  Write-Host "Bundling Temurin JDK $JdkFeatureVersion ($JdkReleaseTag) and Python embeddable"
+  $jdkZip = Get-CachedFile $JdkUrl $JdkZipName
+  Copy-FlattenedZip -ZipPath $jdkZip -DestDir (Join-Path $Stage 'runtime\jdk') -SkipTop 1
+  $javaExe = Join-Path $Stage 'runtime\jdk\bin\java.exe'
+  $javacExe = Join-Path $Stage 'runtime\jdk\bin\javac.exe'
+  if (-not (Test-Path $javaExe)) {
+    throw 'Temurin JDK did not extract to runtime\jdk\bin\java.exe'
+  }
+  if (-not (Test-Path $javacExe)) {
+    throw 'Temurin JDK did not extract to runtime\jdk\bin\javac.exe. ViaProxy with Floodgate needs a JDK, not a JRE.'
   }
 
   $pyZip = Get-CachedFile "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-embed-amd64.zip" "python-$PythonVersion-embed-amd64.zip"

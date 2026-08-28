@@ -75,27 +75,7 @@ function zipStore(files) {
 }
 
 function findJavac() {
-  const fs = require('fs');
-  const path = require('path');
-  const javaRuntime = require('../../services/javaRuntime');
-  const exe = process.platform === 'win32' ? 'javac.exe' : 'javac';
-  const homes = [];
-  if (process.env.JAVA_HOME) homes.push(process.env.JAVA_HOME);
-  const runtimes = javaRuntime.RUNTIMES_DIR;
-  if (fs.existsSync(runtimes)) {
-    for (const name of fs.readdirSync(runtimes)) {
-      const nested = path.join(runtimes, name);
-      homes.push(nested);
-      try {
-        for (const inner of fs.readdirSync(nested)) homes.push(path.join(nested, inner));
-      } catch { /* ignore */ }
-    }
-  }
-  for (const home of homes) {
-    const candidate = path.join(home, 'bin', exe);
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return null;
+  return require('../../services/javaRuntime').findJavac() || null;
 }
 
 function ensureFloodgateJoinPlugin(record) {
@@ -116,7 +96,7 @@ function ensureFloodgateJoinPlugin(record) {
   const javac = findJavac();
   if (!javac) {
     throw Object.assign(
-      new Error('Floodgate with ViaProxy needs javac to build the join helper. The managed Java runtime should include it; start the gateway again after Java is installed.'),
+      new Error('ViaProxy with Floodgate requires a JDK (javac) to compile the join helper. The standard Windows installer bundles a JDK 21. A JRE is not enough. Install JDK 21, set JAVA_HOME or MC_MANAGER_JAVAC, then start the gateway again.'),
       { status: 500, code: 'FLOODGATE_JOIN_PLUGIN' }
     );
   }

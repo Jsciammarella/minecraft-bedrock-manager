@@ -5,8 +5,12 @@ const fs = require('fs');
 const LOG_DIR = path.join(__dirname, '../../data/logs');
 fs.mkdirSync(LOG_DIR, { recursive: true });
 
+const LOG_LEVELS = new Set(['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly']);
+const configuredLevel = String(process.env.LOG_LEVEL || 'info').toLowerCase();
+const logLevel = LOG_LEVELS.has(configuredLevel) ? configuredLevel : 'info';
+
 const logger = winston.createLogger({
-  level: 'info',
+  level: logLevel,
   format: winston.format.combine(
     winston.format.timestamp(),
     winston.format.json()

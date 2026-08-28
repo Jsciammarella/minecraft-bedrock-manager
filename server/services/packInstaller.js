@@ -93,7 +93,7 @@ function isIncompleteArchiveError(text) {
   if (isFilenameEncodingWarning(value) && !/bad CRC|bad zipfile offset|unexpected end of (?:file|archive)/i.test(value)) {
     return false;
   }
-  return /bad CRC|bad zipfile offset|unexpected end of (?:file|archive)|missing \d+ bytes|end[- ]of[- ]central[- ]directory|not a zip|zipfile is empty|incorrect headers|failed CRC|cannot find (?:either )?zipfile|zipfile directory|file (?:is )?too short|invalid zip|lseek|extra bytes at beginning|Command failed: unzip/i.test(value);
+  return /bad CRC|bad CRC-32|bad zipfile offset|unexpected end of (?:file|archive)|truncated(?: input file| zip)|damaged tar archive|missing \d+ bytes|end[- ]of[- ]central[- ]directory|central[- ]directory|not a zip|file is not a zip file|zipfile is empty|incorrect headers|failed CRC|cannot find (?:either )?zipfile|zipfile directory|file (?:is )?too short|invalid zip|lseek|extra bytes at beginning|Command failed: unzip|BadZipFile|zipfile\.BadZipFile/i.test(value);
 }
 
 function isUnzipIntegrityFailure(code, detail) {
@@ -158,8 +158,12 @@ function runUnzip(args, extra = {}) {
 async function verifyArchive(archivePath) {
   if (!packFiles.isArchiveExt(path.extname(archivePath))) return;
   if (process.platform === 'win32') {
-    await platform.listZipEntries(archivePath);
-    return;
+    try {
+      await platform.listZipEntries(archivePath);
+      return;
+    } catch (err) {
+      throw new Error(friendlyExtractError(archivePath, err));
+    }
   }
   const result = await runUnzip(['-t', '-q', archivePath]);
   if (result.code === 0) return;
@@ -194,7 +198,11 @@ function parseUnzipList(stdout) {
 
 async function listArchiveEntries(archivePath) {
   if (process.platform === 'win32') {
-    return platform.listZipEntries(archivePath);
+    try {
+      return await platform.listZipEntries(archivePath);
+    } catch (err) {
+      throw new Error(friendlyExtractError(archivePath, err));
+    }
   }
   try {
     const { stdout } = await execFileAsync('unzip', ['-Z1', archivePath], {
@@ -241,10 +249,14 @@ function pickPackIconPath(entries) {
 
 async function extractOneToFile(archivePath, entry, destPath) {
   if (process.platform === 'win32') {
-    const data = await platform.extractZipEntryToBuffer(archivePath, entry);
-    fs.mkdirSync(path.dirname(destPath), { recursive: true });
-    fs.writeFileSync(destPath, data);
-    return;
+    try {
+      const data = await platform.extractZipEntryToBuffer(archivePath, entry);
+      fs.mkdirSync(path.dirname(destPath), { recursive: true });
+      fs.writeFileSync(destPath, data);
+      return;
+    } catch (err) {
+      throw new Error(friendlyExtractError(archivePath, err));
+    }
   }
   const { stdout } = await execFileAsync('unzip', ['-p', archivePath, entry], {
     encoding: null,
@@ -339,7 +351,11 @@ async function extractWithPython(archivePath, destDir) {
 async function extractArchive(archivePath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
   if (process.platform === 'win32') {
-    await platform.unzipArchive(archivePath, destDir);
+    try {
+      await platform.unzipArchive(archivePath, destDir);
+    } catch (err) {
+      throw new Error(friendlyExtractError(archivePath, err));
+    }
     if (!extractionLooksComplete(destDir)) {
       throw new Error(friendlyExtractError(archivePath, { message: 'Windows zip extract produced no files' }));
     }

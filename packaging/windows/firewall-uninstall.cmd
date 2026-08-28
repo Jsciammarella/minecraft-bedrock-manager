@@ -11,4 +11,7 @@ netsh advfirewall firewall delete rule name="%RULE% Bedrock UDP 24565-24665" >nu
 netsh advfirewall firewall delete rule name="%RULE% Bedrock UDP 25565-25665" >nul 2>&1
 netsh advfirewall firewall delete rule name="%RULE% Bedrock UDP 29000-29100" >nul 2>&1
 netsh advfirewall firewall delete rule name="%RULE% Bedrock UDP 30000-30100" >nul 2>&1
+netsh advfirewall firewall delete rule name="%RULE% Java TCP 19132-19199" >nul 2>&1
+netsh advfirewall firewall delete rule name="%RULE% Java TCP 25565-25665" >nul 2>&1
+netsh advfirewall firewall delete rule name="%RULE% Java TCP 30000-30100" >nul 2>&1
 exit /b 0

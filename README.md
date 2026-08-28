@@ -308,7 +308,7 @@ Production image: `docker compose up -d --build` (Linux host networking). The im
 
 Native package set if you are not using `install-native.sh`: `python3`, `make`, `g++`, `git`, `git-lfs`, `wget`, `tar`, `unzip`, `default-jre-headless`, Node.js 20.
 
-Windows MSI packaging (optional, Windows packager only): [docs/windows-msi.md](docs/windows-msi.md).
+Windows MSI packaging (optional, Windows packager only): [docs/windows-msi.md](docs/windows-msi.md). The installer version comes from `package.json`; the standard package bundles Temurin JDK 21 (including `javac`) and opens Java TCP firewall ranges.
 
 Keep runtime data, worlds, add-on packages, logs, and `.env` out of commits. See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues using [SECURITY.md](SECURITY.md), not a public issue.
 

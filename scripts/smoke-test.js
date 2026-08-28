@@ -1223,6 +1223,17 @@ async function run() {
     }),
     /incomplete or corrupted/i
   );
+  assert(packInstaller.isIncompleteArchiveError('tar.exe: Truncated input file'));
+  assert(packInstaller.isIncompleteArchiveError('tar.exe: Truncated ZIP file header'));
+  assert(packInstaller.isIncompleteArchiveError('tar.exe: Unexpected end of archive'));
+  assert.equal(packInstaller.isIncompleteArchiveError('tar.exe: Path contains ..'), false);
+  assert.match(
+    packInstaller.friendlyExtractError('truncated.mcaddon', {
+      message: 'Command failed: tar.exe -tf truncated.mcaddon',
+      stderr: 'tar.exe: Truncated ZIP file header',
+    }),
+    /incomplete or corrupted/i
+  );
 
   const tinyPng = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -1459,6 +1470,11 @@ async function run() {
   assert.equal(javaRuntime.componentForMajor(25), 'java-runtime-epsilon');
   assert.equal(javaRuntime.componentForMajor(21), 'java-runtime-delta');
   assert.equal(javaRuntime.componentForMajor(17), 'java-runtime-gamma');
+  assert.equal(javaRuntime.isSafeCompilerPath('/usr/bin/javac'), true);
+  assert.equal(javaRuntime.isSafeCompilerPath('C:\\Program Files\\Java\\jdk-21\\bin\\javac.exe'), process.platform === 'win32');
+  assert.equal(javaRuntime.isSafeCompilerPath('javac'), false);
+  assert.equal(javaRuntime.isSafeCompilerPath('javac && calc'), false);
+  assert.equal(javaRuntime.validateJavac('javac & notepad'), '');
   if (process.platform === 'win32' && process.arch === 'x64') {
     assert.equal(javaRuntime.mojangPlatformKey(), 'windows-x64');
   }
