@@ -10,11 +10,12 @@
   <resetfailure>1 hour</resetfailure>
   <env name="NODE_ENV" value="production" />
   <env name="PORT" value="3000" />
-  <env name="MC_MANAGER_JAVA" value="%BASE%\runtime\jre\bin\java.exe" />
-  <env name="JAVA_HOME" value="%BASE%\runtime\jre" />
+  <env name="MC_MANAGER_JAVA" value="%BASE%\runtime\jdk\bin\java.exe" />
+  <env name="MC_MANAGER_JAVAC" value="%BASE%\runtime\jdk\bin\javac.exe" />
+  <env name="JAVA_HOME" value="%BASE%\runtime\jdk" />
   <env name="MC_MANAGER_PYTHON" value="%BASE%\runtime\python\python.exe" />
   <env name="MC_MANAGER_GIT" value="%BASE%\runtime\git\cmd\git.exe" />
-  <env name="PATH" value="%BASE%\runtime\node;%BASE%\runtime\jre\bin;%BASE%\runtime\python;%BASE%\runtime\git\cmd;%BASE%\runtime\git\mingw64\bin;%PATH%" />
+  <env name="PATH" value="%BASE%\runtime\node;%BASE%\runtime\jdk\bin;%BASE%\runtime\python;%BASE%\runtime\git\cmd;%BASE%\runtime\git\mingw64\bin;%PATH%" />
   <logpath>%BASE%\data\logs\service</logpath>
   <logmode>roll</logmode>
 </service>

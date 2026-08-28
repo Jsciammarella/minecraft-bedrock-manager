@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const { promisify } = require('util');
 const axios = require('axios');
 const logger = require('./logger');
@@ -14,6 +14,8 @@ const PRODUCTS_URL = 'https://piston-meta.mojang.com/v1/products/java-runtime/2e
 const RUNTIMES_DIR = path.join(__dirname, '../../data/java-runtimes');
 const DOWNLOAD_CONCURRENCY = 8;
 const JAVA_EXE = platform.isWindows ? 'java.exe' : 'java';
+const JAVAC_EXE = platform.isWindows ? 'javac.exe' : 'javac';
+const BUNDLED_JDK_BIN = path.join(__dirname, '../../runtime/jdk/bin');
 
 const inflight = new Map();
 
@@ -412,12 +414,120 @@ async function ensureJava({ major, component } = {}) {
   return work;
 }
 
+function isSafeCompilerPath(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  if (/[\r\n|&;<>`$]/.test(text)) return false;
+  const base = path.basename(text).toLowerCase();
+  if (base !== 'javac' && base !== 'javac.exe') return false;
+  if (text === base) return false;
+  return true;
+}
+
+function javacVersionText(errOrOutput) {
+  if (typeof errOrOutput === 'string') return errOrOutput;
+  return [errOrOutput?.stderr, errOrOutput?.stdout, errOrOutput?.message]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function javacLooksValid(errOrOutput) {
+  return /javac\s+\d|java(c)? version/i.test(javacVersionText(errOrOutput));
+}
+
+function validateJavac(candidate) {
+  if (!isSafeCompilerPath(candidate)) return '';
+  try {
+    if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) return '';
+  } catch {
+    return '';
+  }
+  try {
+    execFileSync(candidate, ['-version'], {
+      timeout: 8000,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return candidate;
+  } catch (err) {
+    if (err && javacLooksValid(err)) return candidate;
+    return '';
+  }
+}
+
+function findJavacBinary(root) {
+  if (!root || !fs.existsSync(root)) return '';
+  const preferred = [
+    path.join(root, 'bin', JAVAC_EXE),
+    path.join(root, 'jre.bundle', 'Contents', 'Home', 'bin', JAVAC_EXE),
+  ];
+  for (const candidate of preferred) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return '';
+}
+
+function collectManagedJavacHomes() {
+  const homes = [];
+  if (!fs.existsSync(RUNTIMES_DIR)) return homes;
+  let names;
+  try {
+    names = fs.readdirSync(RUNTIMES_DIR);
+  } catch {
+    return homes;
+  }
+  for (const name of names) {
+    const nested = path.join(RUNTIMES_DIR, name);
+    homes.push(nested);
+    try {
+      for (const inner of fs.readdirSync(nested)) homes.push(path.join(nested, inner));
+    } catch { /* ignore unreadable managed runtime dirs */ }
+  }
+  return homes;
+}
+
+function findJavac() {
+  const candidates = [];
+  const seen = new Set();
+  const add = (value) => {
+    if (!value) return;
+    const resolved = path.resolve(String(value));
+    const key = resolved.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(resolved);
+  };
+
+  add(process.env.MC_MANAGER_JAVAC);
+  if (process.env.JAVA_HOME) add(path.join(process.env.JAVA_HOME, 'bin', JAVAC_EXE));
+  add(path.join(process.cwd(), 'runtime', 'jdk', 'bin', JAVAC_EXE));
+  add(path.join(BUNDLED_JDK_BIN, JAVAC_EXE));
+  for (const home of collectManagedJavacHomes()) {
+    const found = findJavacBinary(home);
+    if (found) add(found);
+    else add(path.join(home, 'bin', JAVAC_EXE));
+  }
+  for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    add(path.join(dir, JAVAC_EXE));
+  }
+
+  for (const candidate of candidates) {
+    const ok = validateJavac(candidate);
+    if (ok) return ok;
+  }
+  return '';
+}
+
 module.exports = {
   RUNTIMES_DIR,
   componentForMajor,
   ensureJava,
+  findJavac,
+  isSafeCompilerPath,
   javaHomeFromBin,
   mojangPlatformKey,
   parseJavaMajor,
   readJavaMajor,
+  validateJavac,
 };

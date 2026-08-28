@@ -11,6 +11,9 @@ netsh advfirewall firewall delete rule name="%RULE% Bedrock UDP 24565-24665" >nu
 netsh advfirewall firewall delete rule name="%RULE% Bedrock UDP 25565-25665" >nul 2>&1
 netsh advfirewall firewall delete rule name="%RULE% Bedrock UDP 29000-29100" >nul 2>&1
 netsh advfirewall firewall delete rule name="%RULE% Bedrock UDP 30000-30100" >nul 2>&1
+netsh advfirewall firewall delete rule name="%RULE% Java TCP 19132-19199" >nul 2>&1
+netsh advfirewall firewall delete rule name="%RULE% Java TCP 25565-25665" >nul 2>&1
+netsh advfirewall firewall delete rule name="%RULE% Java TCP 30000-30100" >nul 2>&1
 
 netsh advfirewall firewall add rule name="%RULE% Web" dir=in action=allow protocol=TCP localport=3000 profile=any
 netsh advfirewall firewall add rule name="%RULE% DNS UDP" dir=in action=allow protocol=UDP localport=53 profile=any
@@ -22,4 +25,7 @@ netsh advfirewall firewall add rule name="%RULE% Bedrock UDP 24565-24665" dir=in
 netsh advfirewall firewall add rule name="%RULE% Bedrock UDP 25565-25665" dir=in action=allow protocol=UDP localport=25565-25665 profile=any
 netsh advfirewall firewall add rule name="%RULE% Bedrock UDP 29000-29100" dir=in action=allow protocol=UDP localport=29000-29100 profile=any
 netsh advfirewall firewall add rule name="%RULE% Bedrock UDP 30000-30100" dir=in action=allow protocol=UDP localport=30000-30100 profile=any
+netsh advfirewall firewall add rule name="%RULE% Java TCP 19132-19199" dir=in action=allow protocol=TCP localport=19132-19199 profile=any
+netsh advfirewall firewall add rule name="%RULE% Java TCP 25565-25665" dir=in action=allow protocol=TCP localport=25565-25665 profile=any
+netsh advfirewall firewall add rule name="%RULE% Java TCP 30000-30100" dir=in action=allow protocol=TCP localport=30000-30100 profile=any
 exit /b 0

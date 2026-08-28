@@ -1,5 +1,5 @@
 <?ifndef Version ?>
-  <?define Version = "0.3.6" ?>
+  <?error Version must be passed by packaging/windows/build-msi.ps1 as -d Version=x.y.z ?>
 <?endif ?>
 <?ifndef DisplayVersion ?>
   <?define DisplayVersion = $(var.Version) ?>
@@ -13,7 +13,7 @@
     UpgradeCode="A3F8C2E1-9B47-4D6A-8E21-5C70F1A92B44"
     Scope="perMachine"
     Compressed="yes">
-    <SummaryInformation Description="Native Windows installer for Minecraft Bedrock Manager. Linux Docker and native installs are unchanged." />
+    <SummaryInformation Description="Native Windows installer for Minecraft Bedrock Manager, including a bundled JDK 21. Linux Docker and native installs are unchanged." />
 
     <MajorUpgrade
       AllowSameVersionUpgrades="yes"
@@ -135,7 +135,7 @@
 
     <CustomAction Id="InstallFirewall" Directory="System64Folder" ExeCommand="cmd.exe /c &quot;[#FwInstall]&quot;" Execute="deferred" Impersonate="no" Return="ignore" />
     <CustomAction Id="UninstallFirewall" Directory="System64Folder" ExeCommand="cmd.exe /c &quot;[#FwUninstall]&quot;" Execute="deferred" Impersonate="no" Return="ignore" />
-    <CustomAction Id="CopyEnv" Directory="System64Folder" ExeCommand="cmd.exe /c &quot;[#CopyEnvCmd]&quot;" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="CopyEnv" Directory="System64Folder" ExeCommand="cmd.exe /c &quot;[#CopyEnvCmd]&quot;" Execute="deferred" Impersonate="no" Return="check" />
 
     <InstallExecuteSequence>
       <Custom Action="InstallFirewall" After="InstallFiles" Condition="NOT REMOVE" />

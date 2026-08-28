@@ -108,12 +108,39 @@ async function unzipArchive(zipPath, destDir) {
       'dest = os.path.abspath(dest)',
       'os.makedirs(dest, exist_ok=True)',
       'archive = zipfile.ZipFile(src)',
-      'archive.extractall(dest)',
+      'for info in archive.infolist():',
+      '    name = info.filename.replace("\\\\", "/")',
+      '    parts = [part for part in name.split("/") if part and part != "."]',
+      '    if any(part == ".." for part in parts):',
+      '        continue',
+      '    target = os.path.abspath(os.path.join(dest, *parts)) if parts else dest',
+      '    if target != dest and not target.startswith(dest + os.sep):',
+      '        continue',
+      '    if name.endswith("/"):',
+      '        os.makedirs(target, exist_ok=True)',
+      '        continue',
+      '    parent = os.path.dirname(target)',
+      '    if parent:',
+      '        os.makedirs(parent, exist_ok=True)',
+      '    with archive.open(info) as source, open(target, "wb") as out:',
+      '        while True:',
+      '            chunk = source.read(1024 * 1024)',
+      '            if not chunk:',
+      '                break',
+      '            out.write(chunk)',
     ].join('\n');
-    await execFileAsync(python, ['-c', script, zipPath, destDir], {
-      timeout: 180000,
-      windowsHide: true,
-    });
+    try {
+      await execFileAsync(python, ['-c', script, zipPath, destDir], {
+        timeout: 180000,
+        windowsHide: true,
+      });
+    } catch (pyErr) {
+      const combined = new Error([tarErr.message, pyErr.message].filter(Boolean).join('\n'));
+      combined.stderr = [tarErr.stderr, pyErr.stderr].filter(Boolean).join('\n');
+      combined.stdout = [tarErr.stdout, pyErr.stdout].filter(Boolean).join('\n');
+      combined.code = pyErr.code || tarErr.code;
+      throw combined;
+    }
   }
 }
 
