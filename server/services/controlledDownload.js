@@ -191,6 +191,7 @@ async function downloadIntoRoot(root, item, options = {}) {
 module.exports = {
   USER_AGENT,
   assertHttpsUrl,
+  assertRedirectAllowed,
   downloadIntoRoot,
   downloadToFile,
   getJson,

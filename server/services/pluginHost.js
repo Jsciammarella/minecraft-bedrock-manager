@@ -542,32 +542,115 @@ function publicPlugin(plugin) {
   };
 }
 
+const OFFICIAL_DOWNLOAD_CAPABILITY = 'download:official-sources';
+const HTTP_OPTION_KEYS = ['timeoutMs'];
+const DOWNLOAD_OPTION_KEYS = [
+  'url',
+  'destination',
+  'sha256',
+  'sha1',
+  'sha512',
+  'maximumBytes',
+  'timeoutMs',
+  'project',
+  'version',
+];
+
+function copyDownloadHosts(plugin) {
+  return Object.freeze(
+    [...(plugin.downloadHosts || [])].map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+  );
+}
+
+function pickAllowedOptions(opts, allowedKeys) {
+  const src = opts && typeof opts === 'object' && !Array.isArray(opts) ? opts : {};
+  const out = {};
+  for (const key of allowedKeys) {
+    if (Object.prototype.hasOwnProperty.call(src, key) && src[key] !== undefined) {
+      out[key] = src[key];
+    }
+  }
+  return out;
+}
+
+function boundedTimeoutMs(value, fallback, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.floor(n), max);
+}
+
+function officialDownloadDenied(plugin, action) {
+  const err = new Error(
+    `Plugin ${plugin.id} cannot ${action} without the ${OFFICIAL_DOWNLOAD_CAPABILITY} capability`
+  );
+  err.status = 403;
+  err.code = 'PLUGIN_DOWNLOAD_DENIED';
+  return err;
+}
+
+function canUseOfficialDownloads(plugin) {
+  return plugin.source === 'bundled'
+    && (plugin.capabilities || []).includes(OFFICIAL_DOWNLOAD_CAPABILITY);
+}
+
+function scopedHttpOptions(plugin, opts) {
+  const picked = pickAllowedOptions(opts, HTTP_OPTION_KEYS);
+  return {
+    timeoutMs: boundedTimeoutMs(picked.timeoutMs, 20000, 120000),
+    allowHosts: copyDownloadHosts(plugin),
+    allowHttp: false,
+  };
+}
+
+function scopedDownloadOptions(plugin, opts) {
+  const picked = pickAllowedOptions(opts, DOWNLOAD_OPTION_KEYS);
+  return {
+    ...picked,
+    timeoutMs: boundedTimeoutMs(picked.timeoutMs, 180000, 180000),
+    allowHosts: copyDownloadHosts(plugin),
+    allowHttp: false,
+  };
+}
+
+function createDeniedDownloadServices(plugin) {
+  const deny = (action) => async () => {
+    throw officialDownloadDenied(plugin, action);
+  };
+  return {
+    http: {
+      getJson: deny('use outbound HTTP'),
+      getText: deny('use outbound HTTP'),
+    },
+    download: deny('download files'),
+  };
+}
+
+function createOfficialDownloadServices(plugin) {
+  const controlledDownload = require('./controlledDownload');
+  return {
+    http: {
+      getJson: (url, opts = {}) => controlledDownload.getJson(url, scopedHttpOptions(plugin, opts)),
+      getText: (url, opts = {}) => controlledDownload.getText(url, scopedHttpOptions(plugin, opts)),
+    },
+    download: (opts = {}) => controlledDownload.downloadToFile(scopedDownloadOptions(plugin, opts)),
+  };
+}
+
 function createProviderServices(plugin) {
   const dataDir = path.join(PLUGIN_DATA_DIR, plugin.id);
   fs.mkdirSync(dataDir, { recursive: true });
-  const controlledDownload = require('./controlledDownload');
   const controlledFs = require('./controlledFs');
   const javaRuntime = require('./javaRuntime');
   const gateways = (plugin.capabilities || []).includes('provider:gateway')
     ? require('./pluginGatewayService').scopedGatewayService(plugin)
     : undefined;
+  const downloadServices = canUseOfficialDownloads(plugin)
+    ? createOfficialDownloadServices(plugin)
+    : createDeniedDownloadServices(plugin);
   return {
     dataDir,
-    allowedHosts: plugin.downloadHosts || [],
-    http: {
-      getJson: (url, opts = {}) => controlledDownload.getJson(url, {
-        allowedHosts: plugin.downloadHosts || [],
-        ...opts,
-      }),
-      getText: (url, opts = {}) => controlledDownload.getText(url, {
-        allowedHosts: plugin.downloadHosts || [],
-        ...opts,
-      }),
-    },
-    download: (opts) => controlledDownload.downloadToFile({
-      allowedHosts: plugin.downloadHosts || [],
-      ...opts,
-    }),
+    allowedHosts: copyDownloadHosts(plugin),
+    ...downloadServices,
     fs: {
       pluginData: controlledFs.scoped(dataDir),
       scoped: (root) => controlledFs.scoped(root),
@@ -1356,6 +1439,7 @@ module.exports = {
   isAllowedPluginNavigatePath,
   loadPlugins,
   parseManifest,
+  createProviderServices,
   publicPlugin,
   readPluginState,
   reloadPlugins,
