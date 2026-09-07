@@ -60,16 +60,44 @@ function sha1(buf) {
   return crypto.createHash('sha1').update(buf).digest('hex');
 }
 
-function fabricJar({ id = 'floodgate', minecraft = '26.2', loader = '>=0.16.0', fabricApi = true } = {}) {
+function fabricJar({
+  id = 'floodgate',
+  version = 'test',
+  minecraft = '26.2',
+  loader = '>=0.16.0',
+  fabricApi = true,
+  fabricApiId = 'fabric-api',
+} = {}) {
   const depends = { minecraft, fabricloader: loader };
-  if (fabricApi) depends.fabric = '*';
+  if (fabricApi) depends[fabricApiId] = '*';
   return zipStore({
     'fabric.mod.json': JSON.stringify({
       id,
-      version: 'test',
+      version,
       environment: '*',
       depends,
     }),
+  });
+}
+
+function floodgateFabric226b67() {
+  return fabricJar({
+    id: 'floodgate',
+    version: '2.2.6-b67',
+    minecraft: '26.2',
+    loader: '>=0.16.0',
+    fabricApi: true,
+    fabricApiId: 'fabric-api',
+  });
+}
+
+function fabricApi01600262() {
+  return fabricJar({
+    id: 'fabric-api',
+    version: '0.160.0+26.2',
+    minecraft: '~26.2',
+    loader: '>=0.17.3',
+    fabricApi: false,
   });
 }
 
@@ -145,6 +173,15 @@ async function runGeyserFloodgateTests() {
   assert.equal(floodgateVersions.satisfiesConstraint('>=0.16.0', '0.19.5', 'loader'), true);
   assert.equal(floodgateVersions.isGeyserNativeJavaVersion('26.2', ['1.26.2']), true);
   assert.equal(floodgateVersions.isGeyserNativeJavaVersion('1.20.2', ['1.26.2']), false);
+  assert.equal(floodgateVersions.isVersionAlias('latest'), true);
+  assert.equal(floodgateVersions.isVersionAlias('latest-compatible'), true);
+  assert.equal(floodgateVersions.isVersionAlias('26.2'), false);
+  assert.equal(floodgateVersions.isFabricApiModId('fabric-api'), true);
+  assert.equal(floodgateVersions.isFabricApiModId('fabric'), true);
+  assert.equal(floodgateVersions.isFabricApiModId('fabricloader'), false);
+  assert.deepEqual(floodgateVersions.fabricApiDependIds({ 'fabric-api': '*', fabricloader: '>=0.16.0' }), ['fabric-api']);
+  assert.equal(floodgateVersions.preferredFabricApiDependId({ 'fabric-api': '*', fabric: '*' }), 'fabric-api');
+  assert.equal(floodgateVersions.preferredFabricApiDependId({ fabric: '*' }), 'fabric');
 
   const allowHosts = ['api.modrinth.com', 'cdn.modrinth.com'];
   const release = catalogVersion({
@@ -220,6 +257,7 @@ async function runGeyserFloodgateTests() {
     }, { gameVersions: ['26.2'] });
     assert.equal(inspected.modId, 'floodgate');
     assert.equal(inspected.requiresFabricApi, true);
+    assert.equal(inspected.fabricApiDependId, 'fabric-api');
 
     const b38 = writeJar(tmp, 'fg-b38.jar', fabricJar({ minecraft: '>=1.21 <=1.21.3' }));
     assert.throws(
@@ -267,12 +305,20 @@ async function runGeyserFloodgateTests() {
     }, { gameVersions: ['1.20.2'] });
     assert.equal(neoOk.modId, 'floodgate');
 
-    const apiJar = writeJar(tmp, 'fabric-api.jar', fabricJar({ id: 'fabric', minecraft: '26.2', fabricApi: false }));
-    floodgateJar.validateFabricApiJar(apiJar, {
+    const apiJar = writeJar(tmp, 'fabric-api.jar', fabricJar({ id: 'fabric-api', minecraft: '26.2', fabricApi: false }));
+    const apiInspected = floodgateJar.validateFabricApiJar(apiJar, {
       loader: 'fabric',
       minecraftVersion: '26.2',
       loaderVersion: '0.19.5',
     }, { gameVersions: ['26.2'] });
+    assert.equal(apiInspected.modId, 'fabric-api');
+
+    const legacyApiJar = writeJar(tmp, 'fabric-api-legacy.jar', fabricJar({ id: 'fabric', minecraft: '26.2', fabricApi: false }));
+    assert.equal(floodgateJar.validateFabricApiJar(legacyApiJar, {
+      loader: 'fabric',
+      minecraftVersion: '26.2',
+      loaderVersion: '0.19.5',
+    }, { gameVersions: ['26.2'] }).modId, 'fabric');
 
     const loaderJar = writeJar(tmp, 'fabric-loader.jar', fabricJar({ id: 'fabricloader', minecraft: '26.2', fabricApi: false }));
     assert.throws(
@@ -301,13 +347,13 @@ async function runGeyserFloodgateTests() {
       data_path: path.join(tmp, 'fabric-server'),
     };
     fs.mkdirSync(path.join(fabricServer.data_path, 'mods'), { recursive: true });
-    const fgBuf = fabricJar({ minecraft: '26.2' });
-    const apiBuf = fabricJar({ id: 'fabric', minecraft: '26.2', fabricApi: false });
+    const fgBuf = floodgateFabric226b67();
+    const apiBuf = fabricApi01600262();
     const catalogs = {
       'https://api.modrinth.com/v2/project/bWrNNfkb/version': [
         catalogVersion({
           id: 'fg26',
-          versionNumber: '2.2.5',
+          versionNumber: '2.2.6-b67',
           gameVersions: ['26.2'],
           loaders: ['fabric'],
           filename: 'Floodgate-Fabric-2.2.5.jar',
@@ -320,10 +366,10 @@ async function runGeyserFloodgateTests() {
       'https://api.modrinth.com/v2/project/P7dR8mSH/version': [
         catalogVersion({
           id: 'api26',
-          versionNumber: '0.129.0+26.2',
+          versionNumber: '0.160.0+26.2',
           gameVersions: ['26.2'],
           loaders: ['fabric'],
-          filename: 'fabric-api-0.129.0+26.2.jar',
+          filename: 'fabric-api-0.160.0+26.2.jar',
           url: 'https://cdn.modrinth.com/data/P7dR8mSH/api26.jar',
           hashes: { sha1: sha1(apiBuf) },
         }),
@@ -339,7 +385,7 @@ async function runGeyserFloodgateTests() {
     const plan = await floodgateInstall.planModInstall(fabricServer, { requestJson, allowHosts });
     assert.equal(plan.installMode, 'atomic');
     assert.equal(plan.artifacts.length, 2);
-    assert.equal(plan.artifacts[0].versionNumber, '2.2.5');
+    assert.equal(plan.artifacts[0].versionNumber, '2.2.6-b67');
     assert.doesNotMatch(plan.artifacts[0].url, /2\.2\.4-b38/);
     assert.equal(plan.artifacts[1].projectId, 'P7dR8mSH');
 
@@ -367,11 +413,11 @@ async function runGeyserFloodgateTests() {
     assert.equal(result.installed, true);
     const installed = floodgateJar.inspectInstalledMods(fabricServer.data_path);
     assert.ok(installed.some((item) => item.modId === 'floodgate'));
-    assert.ok(installed.some((item) => item.modId === 'fabric'));
+    assert.ok(installed.some((item) => item.modId === 'fabric-api'));
     assert.equal(floodgateStatus.inspectReadiness(fabricServer).ready, true);
     const recorded = provenance.read(fabricServer.data_path).artifacts;
     assert.ok(recorded.some((item) => item.modId === 'floodgate' && item.installedBy === 'gateway-geyser'));
-    assert.ok(recorded.some((item) => item.modId === 'fabric' && item.dependency === true));
+    assert.ok(recorded.some((item) => item.modId === 'fabric-api' && item.dependency === true));
 
     const again = await floodgateInstall.planModInstall(fabricServer, { requestJson, allowHosts });
     const skip = await floodgateInstall.executeAtomicPlan(again, {

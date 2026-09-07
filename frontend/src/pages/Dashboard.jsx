@@ -16,6 +16,7 @@ import {
   PluginIndicators,
   PluginPrimaryActions,
   PluginTags,
+  pluginCompatibilityWarnings,
   pluginContributionsOf,
   primarySplitActions,
   runPluginAction,
@@ -647,10 +648,12 @@ function Dashboard() {
             const canStart = serverCapability(server, 'start', can(startPermissionForKind(server.kind)));
             const canStop = serverCapability(server, 'stop', can(stopPermissionForKind(server.kind)));
             const hasMissingMods = isJava(server) && (missingModDependenciesOf(server)?.required || []).length > 0;
+            const compatibilityWarnings = pluginCompatibilityWarnings(server);
             const hasLanError = Boolean(lan.error && !/Stop or remove Bedrock Connect/i.test(lan.error));
             const hasNotification = Boolean(
               isBuilding
               || hasMissingMods
+              || compatibilityWarnings.length
               || (canRuntime && server.pending_restart === 1)
               || (canConnection && server.pending_port)
               || (canConnection && server.pending_ipv6_port)
@@ -760,6 +763,12 @@ function Dashboard() {
                   There are missing dependencies.
                 </div>
               )}
+              {compatibilityWarnings.map((item) => (
+                <div key={`${item.attachmentId}-compat`} className="mb-4 p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-200 text-xs flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{item.value}</span>
+                </div>
+              ))}
               {canRuntime && server.pending_restart === 1 && (
                 <div className="mb-4 p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />

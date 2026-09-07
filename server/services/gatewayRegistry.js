@@ -46,8 +46,28 @@ function sanitizePageId(value) {
   return /^[a-z][a-z0-9-]{0,62}$/.test(page) ? page : 'home';
 }
 
+function sanitizeCreateWizard(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const text = (raw, max) => String(raw || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/[\u0000-\u001f]/g, '')
+    .trim()
+    .slice(0, max);
+  const label = text(value.label, 80);
+  if (!label) return null;
+  return {
+    label,
+    description: text(value.description, 400),
+    recommendedOptionLabel: text(value.recommendedOptionLabel, 80),
+    skipOptionLabel: text(value.skipOptionLabel, 80),
+    laterOptionLabel: text(value.laterOptionLabel, 80),
+  };
+}
+
 function publicMetadata(entry) {
   const meta = entry.provider.getMetadata ? entry.provider.getMetadata() : {};
+  const supportsRecommend = Boolean(meta.supportsProspectiveTargetRecommendation)
+    && typeof entry.provider.recommendProspectiveTarget === 'function';
   return {
     id: entry.id,
     type: 'gateway',
@@ -57,6 +77,8 @@ function publicMetadata(entry) {
     managementPage: sanitizePageId(meta.managementPage),
     targetKinds: sanitizeTargetKinds(meta.targetKinds),
     supportsCreateForTarget: Boolean(meta.supportsCreateForTarget),
+    supportsProspectiveTargetRecommendation: supportsRecommend,
+    createWizard: sanitizeCreateWizard(meta.createWizard),
     notices: sanitizeNotices(meta.notices),
     downloadHosts: Array.isArray(meta.downloadHosts) ? meta.downloadHosts.map(String) : [],
     recommended: Boolean(meta.recommended),

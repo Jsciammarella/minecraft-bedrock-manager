@@ -9,6 +9,7 @@ const ACTION_ICONS = new Set(['none', 'play', 'stop']);
 const CONTROL_POLICIES = new Set(['normal', 'remote-plugin-lifecycle', 'plugin-disabled']);
 const SUMMARY_KEYS = new Set([
   'mode', 'status', 'bedrockAddress', 'bedrockPort', 'viaProxyStatus', 'floodgateStatus', 'lastError',
+  'compatibilityWarning',
 ]);
 const MAX_TAGS = 6;
 const MAX_INDICATORS = 4;
@@ -116,17 +117,20 @@ function sanitizeSummary(raw) {
   for (const [key, value] of Object.entries(raw)) {
     if (out.length >= MAX_SUMMARY_FIELDS) break;
     if (!SUMMARY_KEYS.has(key)) continue;
+    const valueText = stripText(value, key === 'lastError' || key === 'compatibilityWarning' ? 400 : 120);
+    if (!valueText) continue;
     const label = key === 'mode' ? 'Mode'
       : key === 'status' ? 'Status'
         : key === 'bedrockAddress' ? 'Bedrock address'
           : key === 'bedrockPort' ? 'Bedrock UDP port'
             : key === 'viaProxyStatus' ? 'ViaProxy'
               : key === 'floodgateStatus' ? 'Floodgate'
-                : 'Last error';
+                : key === 'compatibilityWarning' ? 'Compatibility'
+                  : 'Last error';
     out.push({
       id: key,
       label,
-      value: stripText(value, key === 'lastError' ? 300 : 120),
+      value: valueText,
     });
   }
   return out;

@@ -67,7 +67,8 @@ const ACTION_MATRIX = [
 
   { method: 'POST', route: '/api/java/providers/:providerId/validate', action: 'validate java loader', mode: 'static', permission: 'servers.create_java', risk: 'elevated' },
 
-  { method: 'POST', route: '/api/gateways', action: 'create geyser gateway', mode: 'static', permission: 'servers.create_java', risk: 'elevated' },
+  { method: 'POST', route: '/api/gateways/providers/:providerId/recommend', action: 'recommend gateway configuration', mode: 'static', permission: 'servers.create_java', risk: 'elevated' },
+  { method: 'POST', route: '/api/gateways', action: 'create geyser gateway', mode: 'static', permission: 'gateways.create', risk: 'elevated' },
   { method: 'PATCH', route: '/api/gateways/:id', action: 'update geyser gateway', mode: 'static', permission: 'plugins.configure', risk: 'elevated' },
   { method: 'POST', route: '/api/gateways/:id/apply-settings', action: 'apply geyser settings', mode: 'static', permission: 'plugins.configure', risk: 'elevated' },
   { method: 'DELETE', route: '/api/gateways/:id', action: 'delete geyser gateway', mode: 'static', permission: 'servers.delete', risk: 'destructive' },

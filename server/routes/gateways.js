@@ -7,11 +7,26 @@ router.get('/providers', requirePermission('servers.view_details'), (req, res) =
   res.json({ providers: gatewayRegistry.list() });
 });
 
+router.post('/providers/:providerId/recommend', requirePermission('servers.create_java'), async (req, res) => {
+  try {
+    const gatewayRecommendation = require('../services/gatewayRecommendation');
+    const rateKey = req.ip || req.principal?.id || 'anon';
+    const result = await gatewayRecommendation.recommend(req.params.providerId, req.body?.target || {}, { rateKey });
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 400).json({
+      error: err.message,
+      message: err.message,
+      code: err.code || 'GATEWAY_PROVIDER_UNAVAILABLE',
+    });
+  }
+});
+
 router.get('/', requirePermission('servers.view_details'), (req, res) => {
   res.json({ gateways: gatewayManager.list() });
 });
 
-router.post('/', requirePermission('servers.create_java'), async (req, res) => {
+router.post('/', requirePermission('gateways.create'), async (req, res) => {
   try {
     const gateway = await gatewayManager.create(req.body || {});
     res.status(201).json(gateway);

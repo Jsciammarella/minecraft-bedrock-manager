@@ -1152,7 +1152,33 @@ class ServerManager {
     this.provisionJobs.set(Number(serverId), job);
 
     logger.info(`Queued Java server create: ${name} on TCP ${port}`);
-    return { id: serverId, name, port, kind: 'java', status: 'creating', dataPath: serverPath };
+    const automatic = require('./gatewayIntegration').hasAutomatic(config.integrations);
+    if (!automatic) {
+      return { id: serverId, name, port, kind: 'java', status: 'creating', dataPath: serverPath };
+    }
+    const finished = await job;
+    if (!finished?.ok) {
+      const err = finished?.error || new Error('Java server creation failed');
+      throw err;
+    }
+    const server = this.getServer(serverId);
+    const integration = await require('./gatewayIntegration').applyAll({
+      server,
+      integrations: config.integrations,
+    });
+    return {
+      id: serverId,
+      serverId,
+      name,
+      port,
+      kind: 'java',
+      status: server?.status || 'stopped',
+      dataPath: serverPath,
+      serverCreated: true,
+      gatewayCreated: Boolean(integration.gatewayCreated),
+      gateway: integration.gateway || null,
+      integrationError: integration.integrationError || null,
+    };
   }
 
   async finishCreateJavaServer(serverId, config) {
@@ -1171,7 +1197,7 @@ class ServerManager {
     };
     if (provisioningCancelled()) {
       markCancelled();
-      return;
+      return { ok: false, cancelled: true };
     }
     try {
       let minecraftVersion = version;
@@ -1237,7 +1263,7 @@ class ServerManager {
       );
       if (!this.getServer(serverId) || provisioningCancelled()) {
         if (provisioningCancelled()) markCancelled();
-        return;
+        return { ok: false, cancelled: true };
       }
 
       const server = this.getServer(serverId);
@@ -1262,7 +1288,7 @@ class ServerManager {
 
       if (provisioningCancelled()) {
         markCancelled();
-        return;
+        return { ok: false, cancelled: true };
       }
 
       db.prepare('UPDATE servers SET status = ?, pending_restart_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
@@ -1270,13 +1296,15 @@ class ServerManager {
       this.invalidateServerCache(serverId);
       this.broadcastServerStatus(serverId);
       logger.info(`Created Java server: ${name} on TCP ${port}`);
+      return { ok: true, serverId };
     } catch (err) {
       logger.error(`Failed to finish creating Java server ${name}: ${err.message}`);
-      if (!this.getServer(serverId)) return;
+      if (!this.getServer(serverId)) return { ok: false, error: err };
       db.prepare('UPDATE servers SET status = ?, pending_restart = 0, pending_restart_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run('stopped', `Create failed: ${err.message}`, serverId);
       this.invalidateServerCache(serverId);
       this.broadcastServerStatus(serverId);
+      return { ok: false, error: err };
     }
   }
 

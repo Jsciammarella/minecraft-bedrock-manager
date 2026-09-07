@@ -9,6 +9,7 @@ const javaLoaderHost = require('../../services/javaLoaderHost');
 const {
   FABRIC_API_MOD_ID,
   FLOODGATE_MOD_ID,
+  isFabricApiModId,
 } = require('./floodgateVersions');
 const {
   resolveFabricApiArtifact,
@@ -48,7 +49,12 @@ function uniqueDestination(serverDir, preferredRel, filename) {
 }
 
 function findInstalled(serverDir, modId) {
-  return inspectInstalledMods(serverDir).find((item) => item.modId === modId && !item.unreadable);
+  const installed = inspectInstalledMods(serverDir).filter((item) => !item.unreadable);
+  if (typeof modId === 'function') return installed.find(modId) || null;
+  if (isFabricApiModId(modId) || modId === FABRIC_API_MOD_ID) {
+    return installed.find((item) => isFabricApiModId(item.modId)) || null;
+  }
+  return installed.find((item) => item.modId === modId) || null;
 }
 
 function existingState(serverDir, modId, validate, target, artifact) {

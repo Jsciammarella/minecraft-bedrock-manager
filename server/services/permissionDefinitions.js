@@ -96,6 +96,7 @@ const CORE_PERMISSIONS = [
   perm('servers.view_properties', 'View server properties', 'View effective server properties without changing them.', { cat: 'servers', sub: 'general', risk: 'read' }),
   perm('servers.create_bedrock', 'Create Bedrock server', 'Create local Bedrock servers.', { cat: 'servers', sub: 'general', risk: 'elevated' }),
   perm('servers.create_remote', 'Create remote server', 'Create remote-server entries or proxies.', { cat: 'servers', sub: 'general', risk: 'elevated' }),
+  perm('gateways.create', 'Create gateways', 'Create Bedrock-to-Java gateways and apply automatic gateway configuration during Java server creation.', { cat: 'servers', sub: 'java', risk: 'elevated' }),
   perm('servers.edit_display_name', 'Edit server display name', 'Change the manager-facing display name.', { cat: 'servers', sub: 'general' }),
   perm('servers.edit_description', 'Edit server description', 'Change manager-facing server notes or descriptions.', { cat: 'servers', sub: 'general' }),
 

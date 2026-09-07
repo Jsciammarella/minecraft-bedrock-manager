@@ -249,7 +249,7 @@ function gatewayPermissionsFor(req) {
   if (/\/start$/.test(routePath)) return ['servers.start_java'];
   if (/\/stop$/.test(routePath)) return ['servers.stop_java'];
   if (/\/restart$/.test(routePath)) return ['servers.restart'];
-  if (req.method === 'POST' && /^\/gateways\/?$/.test(routePath)) return ['servers.create_java'];
+  if (req.method === 'POST' && /^\/gateways\/?$/.test(routePath)) return ['gateways.create'];
   return ['plugins.configure'];
 }
 router.use('/:pluginId', (req, res, next) => {

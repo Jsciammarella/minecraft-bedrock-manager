@@ -5,10 +5,12 @@ const path = require('path');
 const javaModMetadata = require('../../services/javaModMetadata');
 const zipGuard = require('../../services/zipGuard');
 const {
-  FABRIC_API_MOD_ID,
   FABRIC_LOADER_MOD_ID,
   FLOODGATE_MOD_ID,
+  fabricApiDependIds,
+  isFabricApiModId,
   neoForgeMajor,
+  preferredFabricApiDependId,
   satisfiesConstraint,
 } = require('./floodgateVersions');
 
@@ -71,7 +73,8 @@ function inspectFabric(filePath, names) {
     environment: String(json.environment || '*'),
     minecraftConstraint: depends.minecraft || '',
     loaderConstraint: depends[FABRIC_LOADER_MOD_ID] || depends.fabricloader || '',
-    requiresFabricApi: Object.prototype.hasOwnProperty.call(depends, FABRIC_API_MOD_ID),
+    requiresFabricApi: fabricApiDependIds(depends).length > 0,
+    fabricApiDependId: preferredFabricApiDependId(depends),
     depends,
   };
   } catch {
@@ -179,8 +182,8 @@ function validateFabricApiJar(filePath, target, artifact) {
   if (inspected.modId === FABRIC_LOADER_MOD_ID) {
     reject('FABRIC_LOADER_NOT_API', 'That file is Fabric Loader, not Fabric API. Floodgate requires the Fabric API mod.');
   }
-  if (inspected.modId !== FABRIC_API_MOD_ID) {
-    reject('FABRIC_API_JAR_INVALID', `Expected Fabric API JAR (id fabric), found "${inspected.modId || 'unknown'}".`);
+  if (!isFabricApiModId(inspected.modId)) {
+    reject('FABRIC_API_JAR_INVALID', `Expected Fabric API JAR (id fabric-api), found "${inspected.modId || 'unknown'}".`);
   }
   return validateAgainstTarget(inspected, { ...target, loader: 'fabric' }, artifact);
 }

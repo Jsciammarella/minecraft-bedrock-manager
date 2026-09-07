@@ -4,8 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const {
-  FABRIC_API_MOD_ID,
   FLOODGATE_MOD_ID,
+  isFabricApiModId,
   isGeyserNativeJavaVersion,
   loaderLabel,
   paperLikeLoader,
@@ -82,7 +82,7 @@ function inspectModReadiness(server) {
   const target = targetFrom(server);
   const installed = inspectInstalledMods(server.data_path || '');
   const floodgate = installed.find((item) => item.modId === FLOODGATE_MOD_ID);
-  const fabricApi = installed.find((item) => item.modId === FABRIC_API_MOD_ID);
+  const fabricApi = installed.find((item) => isFabricApiModId(item.modId));
   let floodgateError = null;
   let fabricError = null;
   if (floodgate) {

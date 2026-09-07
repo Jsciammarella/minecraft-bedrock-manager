@@ -43,15 +43,36 @@ export function pluginContributionsOf(server) {
   return Array.isArray(server?.pluginContributions) ? server.pluginContributions : [];
 }
 
-export function primarySplitActions(server) {
+function contributionActions(server, placement) {
   return pluginContributionsOf(server).flatMap((item) => (
     (item.actions || [])
-      .filter((action) => action.placement === 'primary-split')
+      .filter((action) => action.placement === placement)
       .map((action) => ({
         ...action,
         pluginId: item.pluginId,
         attachmentId: item.attachmentId,
         serverId: item.serverId,
+      }))
+  ));
+}
+
+export function primarySplitActions(server) {
+  return contributionActions(server, 'primary-split');
+}
+
+export function secondaryPluginActions(server) {
+  return contributionActions(server, 'secondary');
+}
+
+export function pluginCompatibilityWarnings(server) {
+  return pluginContributionsOf(server).flatMap((item) => (
+    (item.summary || [])
+      .filter((field) => field.id === 'compatibilityWarning' && field.value)
+      .map((field) => ({
+        attachmentId: item.attachmentId,
+        pluginId: item.pluginId,
+        label: field.label || 'Compatibility',
+        value: field.value,
       }))
   ));
 }
@@ -102,8 +123,7 @@ export async function runPluginAction({ server, action }) {
   return serverApi.runPluginActionForServer(server.id, payload);
 }
 
-export function PluginPrimaryActions({ server, pending = {}, onAction }) {
-  const actions = primarySplitActions(server);
+function PluginActionButtons({ server, actions, pending = {}, onAction, flex }) {
   if (!actions.length) return null;
   return (
     <>
@@ -111,12 +131,12 @@ export function PluginPrimaryActions({ server, pending = {}, onAction }) {
         const key = `${server.id}-${action.pluginId}-${action.id}`;
         const busy = Boolean(pending[key]);
         const disabled = action.state !== 'enabled' || busy;
-        const Icon = action.icon === 'stop' ? Square : Play;
+        const Icon = action.icon === 'stop' ? Square : action.icon === 'play' ? Play : null;
         return (
           <button
             key={`${action.pluginId}-${action.id}`}
             type="button"
-            className={`${BUTTON_CLASSES[action.variant] || BUTTON_CLASSES.secondary} flex-1 text-sm`}
+            className={`${BUTTON_CLASSES[action.variant] || BUTTON_CLASSES.secondary} ${flex ? 'flex-1' : ''} text-sm`}
             disabled={disabled}
             title={action.state !== 'enabled' ? (action.disabledReason || CONTROL_DISABLED_REASONS['plugin-disabled']) : action.label}
             aria-label={action.label}
@@ -126,12 +146,35 @@ export function PluginPrimaryActions({ server, pending = {}, onAction }) {
               onAction(action);
             }}
           >
-            {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Icon className="w-3.5 h-3.5" />}
+            {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : (Icon ? <Icon className="w-3.5 h-3.5" /> : null)}
             {busy ? 'Working...' : action.label}
           </button>
         );
       })}
     </>
+  );
+}
+
+export function PluginPrimaryActions({ server, pending = {}, onAction }) {
+  return (
+    <PluginActionButtons
+      server={server}
+      actions={primarySplitActions(server)}
+      pending={pending}
+      onAction={onAction}
+      flex
+    />
+  );
+}
+
+export function PluginSecondaryActions({ server, pending = {}, onAction }) {
+  return (
+    <PluginActionButtons
+      server={server}
+      actions={secondaryPluginActions(server)}
+      pending={pending}
+      onAction={onAction}
+    />
   );
 }
 
@@ -153,14 +196,19 @@ export function PluginDetailSummary({ server, pending, onAction, onManage }) {
           </div>
           <dl className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm mb-3">
             {(item.summary || []).map((field) => (
-              <div key={field.id}>
+              <div key={field.id} className={field.id === 'compatibilityWarning' ? 'md:col-span-2 p-2 rounded-lg border border-amber-500/30 bg-amber-500/10' : ''}>
                 <dt className="text-xs text-mc-textMuted">{field.label}</dt>
-                <dd className="text-white break-all">{field.value || '—'}</dd>
+                <dd className={`${field.id === 'compatibilityWarning' ? 'text-amber-200' : 'text-white'} break-all`}>{field.value || '—'}</dd>
               </div>
             ))}
           </dl>
           <div className="flex flex-wrap gap-2">
             <PluginPrimaryActions
+              server={{ ...server, pluginContributions: [item] }}
+              pending={pending}
+              onAction={onAction}
+            />
+            <PluginSecondaryActions
               server={{ ...server, pluginContributions: [item] }}
               pending={pending}
               onAction={onAction}

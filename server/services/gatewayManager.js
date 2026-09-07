@@ -199,6 +199,14 @@ function allocateUdpPort(preferred) {
   throw new Error('No free UDP port is available for this gateway');
 }
 
+function suggestUdpPort(preferred) {
+  try {
+    return allocateUdpPort(preferred);
+  } catch (err) {
+    throw Object.assign(err, { code: err.code || 'GATEWAY_PORT_UNAVAILABLE' });
+  }
+}
+
 function registerGatewayPort(gatewayId, port) {
   db.prepare(`
     INSERT OR REPLACE INTO port_usage (port, server_id, gateway_id, protocol, family, in_use)
@@ -714,7 +722,7 @@ async function installFloodgate(id, opts) {
   return withLifecycle(id, () => installFloodgateUnlocked(id, opts));
 }
 
-async function installFloodgateUnlocked(id, { confirm = false } = {}) {
+async function installFloodgateUnlocked(id, { confirm = false, restartJava = true } = {}) {
   require('./javaHostingPolicy').assertServerEditionAvailable('java', 'install-floodgate');
   if (!confirm) {
     throw Object.assign(new Error('Floodgate is not installed onto the Java server unless you confirm that choice'), { status: 400 });
@@ -724,7 +732,7 @@ async function installFloodgateUnlocked(id, { confirm = false } = {}) {
   if (row.authentication !== 'floodgate') {
     throw Object.assign(new Error('Switch this gateway to Floodgate authentication before installing Floodgate on the Java server'), { status: 400 });
   }
-  const result = await ensureFloodgateOnLocalServer(row, { restartJava: true });
+  const result = await ensureFloodgateOnLocalServer(row, { restartJava });
   return { ...publicRecord(get(id)), floodgateInstall: result };
 }
 
@@ -810,6 +818,7 @@ async function create(config) {
   } catch (err) {
     unregisterGatewayPort(id);
     db.prepare('DELETE FROM gateways WHERE id = ?').run(id);
+    try { fs.rmSync(dataPath, { recursive: true, force: true }); } catch { /* ignore */ }
     throw err;
   }
 }
@@ -1346,6 +1355,7 @@ function remove(id) {
   } catch { /* ignore */ }
   db.prepare('DELETE FROM gateways WHERE id = ?').run(id);
   db.prepare('DELETE FROM plugin_dashboard_snapshots WHERE entity_id = ?').run(`gateway:${id}`);
+  try { fs.rmSync(row.data_path, { recursive: true, force: true }); } catch { /* ignore */ }
   pluginAudit.record('gateway.delete', { targetType: 'gateway', targetId: String(id), detail: { name: row.name } });
   pluginEvents.emit('gateway.deleted', { gatewayId: id });
   return { success: true };
@@ -1487,6 +1497,7 @@ async function restoreRunning() {
 
 module.exports = {
   allocateUdpPort,
+  suggestUdpPort,
   checkCompatibility,
   copyFloodgateKeyToLocalServer,
   create,

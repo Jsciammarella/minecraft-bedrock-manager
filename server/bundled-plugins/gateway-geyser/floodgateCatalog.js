@@ -14,6 +14,8 @@ const MAX_VERSIONS = 200;
 const MAX_FILES = 20;
 const MAX_DEPS = 40;
 const MAX_FILE_BYTES = 80 * 1024 * 1024;
+const CATALOG_TTL_MS = 120000;
+const catalogCache = new Map();
 const VERSION_TYPES = new Set(['release', 'beta', 'alpha']);
 const SERVER_ENVIRONMENTS = new Set([
   'server',
@@ -257,6 +259,28 @@ function toArtifact(version, {
   };
 }
 
+function cacheKey(url) {
+  return String(url || '');
+}
+
+function readCatalogCache(url) {
+  const hit = catalogCache.get(cacheKey(url));
+  if (!hit) return null;
+  if (Date.now() - hit.at > CATALOG_TTL_MS) {
+    catalogCache.delete(cacheKey(url));
+    return null;
+  }
+  return hit.data;
+}
+
+function writeCatalogCache(url, data) {
+  catalogCache.set(cacheKey(url), { at: Date.now(), data });
+}
+
+function clearCatalogCache() {
+  catalogCache.clear();
+}
+
 async function resolveProjectVersion({
   projectId,
   minecraftVersion,
@@ -266,10 +290,15 @@ async function resolveProjectVersion({
   allowHosts,
   role,
   destination,
+  cache = true,
 }) {
   const hosts = allowHosts || [MODRINTH_API_HOST, MODRINTH_CDN_HOST];
   const url = catalogUrl(projectId, { minecraftVersion, loader });
-  const data = await requestJson(url, { allowHosts: hosts });
+  let data = cache === false ? null : readCatalogCache(url);
+  if (data == null) {
+    data = await requestJson(url, { allowHosts: hosts });
+    if (cache !== false) writeCatalogCache(url, data);
+  }
   const versions = parseVersionList(data, hosts);
   const selected = selectCompatibleVersion(versions, { minecraftVersion, loader });
   if (!selected) return null;
@@ -298,9 +327,13 @@ async function resolveFloodgateArtifact(target, deps = {}) {
 }
 
 function floodgateRequiresFabricApi(artifact) {
-  return (artifact.dependencies || []).some((item) => (
-    item.dependencyType === 'required' && item.projectId === FABRIC_API_PROJECT_ID
-  ));
+  if (!artifact) return false;
+  const deps = artifact.dependencies || [];
+  if (deps.some((item) => item.dependencyType === 'required' && item.projectId === FABRIC_API_PROJECT_ID)) {
+    return true;
+  }
+  const names = deps.map((item) => String(item.projectId || item.modId || item.id || '').toLowerCase());
+  return names.includes('fabric-api') || names.includes(FABRIC_API_PROJECT_ID.toLowerCase());
 }
 
 async function resolveFabricApiArtifact(target, deps = {}) {
@@ -333,6 +366,7 @@ module.exports = {
   MODRINTH_API_HOST,
   MODRINTH_CDN_HOST,
   catalogUrl,
+  clearCatalogCache,
   compatibleWithTarget,
   floodgateRequiresFabricApi,
   minecraftVersionsEqual,
