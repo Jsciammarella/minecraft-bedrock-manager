@@ -34,7 +34,8 @@
     "objects.githubusercontent.com",
     "github-releases.githubusercontent.com",
     "release-assets.githubusercontent.com",
-    "cdn.modrinth.com"
+    "cdn.modrinth.com",
+    "api.modrinth.com"
   ],
   "providers": [
     {

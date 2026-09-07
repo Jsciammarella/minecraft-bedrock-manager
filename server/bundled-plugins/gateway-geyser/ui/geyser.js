@@ -102,6 +102,21 @@
     el.classList.remove('hidden');
   }
 
+  function formatApiError(err) {
+    var data = (err && err.data) || {};
+    var message = data.error || err.message || 'Request failed';
+    if (data.code === 'FLOODGATE_UNSUPPORTED_TARGET') return message;
+    return message;
+  }
+
+  function startBlocked(gateway) {
+    return gateway
+      && gateway.authentication === 'floodgate'
+      && gateway.target_type === 'local-server'
+      && gateway.floodgateCanStart === false
+      && !isRunning(gateway);
+  }
+
   function showError(message, kind) {
     if (selectedId && $('detailOverlay') && !$('detailOverlay').classList.contains('hidden')) {
       detailNotice = { message: message || '', kind: kind || '' };
@@ -273,7 +288,10 @@
     var startStop = running
       ? makeButton(busy === String(gateway.id) ? 'Stopping...' : 'Stop', 'danger' + (growStart ? ' grow' : ''), function () { confirmAct(gateway, 'stop'); }, 'stop')
       : makeButton(busy === String(gateway.id) ? 'Starting...' : 'Start', (growStart ? 'grow' : ''), function () { confirmAct(gateway, 'start'); }, 'play');
-    startStop.disabled = disabled;
+    startStop.disabled = disabled || startBlocked(gateway);
+    if (startBlocked(gateway) && gateway.floodgateStartReason) {
+      startStop.title = gateway.floodgateStartReason;
+    }
     var restart = makeButton('Restart', 'outlined', function () { confirmAct(gateway, 'restart'); }, 'restart');
     restart.disabled = disabled;
     var remove = makeButton('Delete', 'secondary danger', function () { removeGateway(gateway); }, 'trash');
@@ -518,6 +536,14 @@
       viaNotice.className = 'notice';
       viaNotice.textContent = 'This Java server needs ViaProxy compatibility mode.';
       root.appendChild(viaNotice);
+    }
+    if (gateway.target_type === 'local-server') {
+      var compat = document.createElement('pre');
+      compat.className = 'compat-summary';
+      compat.id = 'floodgateCompat';
+      compat.textContent = 'Checking Floodgate compatibility…';
+      root.appendChild(compat);
+      loadFloodgateStatus(gateway.id, compat);
     }
 
     var fields = document.createElement('div');
@@ -776,7 +802,7 @@
         await MBM.post(API + '/gateways/' + encodeURIComponent(id) + '/' + action);
       }
     } catch (err) {
-      showError(err.message || 'Request failed');
+      showError(formatApiError(err) || 'Request failed');
     } finally {
       busy = '';
       await loadGateways();
@@ -787,6 +813,19 @@
           showLogs(id);
         }, 1500);
       }
+    }
+  }
+
+  async function loadFloodgateStatus(id, node) {
+    try {
+      var status = await MBM.get(API + '/gateways/' + encodeURIComponent(id) + '/floodgate/status');
+      if (!node || !node.isConnected) return;
+      node.textContent = (status.summary || []).join('\n');
+      node.classList.toggle('compat-unsupported', Boolean(status.unsupported) || status.canStart === false);
+    } catch (err) {
+      if (!node || !node.isConnected) return;
+      node.textContent = formatApiError(err);
+      node.classList.add('compat-unsupported');
     }
   }
 
@@ -824,7 +863,7 @@
       await MBM.post(API + '/gateways/' + encodeURIComponent(id) + '/floodgate/install', { confirm: true });
       showError('Floodgate was installed on the Java server.', 'info');
     } catch (err) {
-      showError(err.message || 'Floodgate install failed');
+      showError(formatApiError(err) || 'Floodgate install failed');
     } finally {
       busy = '';
       await loadGateways();
@@ -959,9 +998,9 @@
     } catch (err) {
       if (err.data && err.data.code === 'CONFIRMATION_REQUIRED') {
         detailDraft.preview = err.data.preview || {};
-        showError(err.message || 'This change needs confirmation');
+        showError(formatApiError(err) || 'This change needs confirmation');
       } else {
-        showError(err.message || 'Could not save changes');
+        showError(formatApiError(err) || 'Could not save changes');
       }
     } finally {
       busy = '';

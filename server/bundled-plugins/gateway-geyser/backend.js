@@ -6,8 +6,6 @@ const VIAPROXY_VERSION = '3.4.12';
 const VIAPROXY_DOWNLOAD = `https://github.com/ViaVersion/ViaProxy/releases/download/v${VIAPROXY_VERSION}/ViaProxy-${VIAPROXY_VERSION}.jar`;
 const GEYSER_NATIVE_JAVA_VERSIONS = ['1.26.2'];
 const FLOODGATE_SPIGOT_DOWNLOAD = 'https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot';
-const FLOODGATE_NEOFORGE_DOWNLOAD = 'https://cdn.modrinth.com/data/bWrNNfkb/versions/YapRHgnZ/Floodgate-Neoforge-2.2.4-b38.jar';
-const FLOODGATE_FABRIC_DOWNLOAD = 'https://cdn.modrinth.com/data/bWrNNfkb/versions/Mf2wV7re/Floodgate-Fabric-2.2.4-b38.jar';
 const DOWNLOAD_HOSTS = [
   'download.geysermc.org',
   'repo.opencollab.dev',
@@ -17,7 +15,11 @@ const DOWNLOAD_HOSTS = [
   'github-releases.githubusercontent.com',
   'release-assets.githubusercontent.com',
   'cdn.modrinth.com',
+  'api.modrinth.com',
 ];
+const floodgateVersions = require('./floodgateVersions');
+const floodgateInstall = require('./floodgateInstall');
+const floodgateStatus = require('./floodgateStatus');
 
 function yamlEscape(value) {
   return String(value ?? '').replace(/"/g, '\\"');
@@ -79,6 +81,7 @@ function findJavac() {
 }
 
 function ensureFloodgateJoinPlugin(record) {
+  // FloodgateJoin is not a replacement for the backend Floodgate Fabric/NeoForge/Paper artifact.
   if (record.authentication !== 'floodgate') return;
   if (String(record.compatibility_mode || 'direct') !== 'viaproxy') return;
   const fs = require('fs');
@@ -123,10 +126,28 @@ function sendError(res, err) {
     error: err.message,
     code: err.code,
     preview: err.preview,
+    loader: err.loader,
+    minecraftVersion: err.minecraftVersion,
+    loaderVersion: err.loaderVersion,
   });
 }
 
-function createProvider() {
+function createProvider(services = {}) {
+  function catalogDeps(extra = {}) {
+    const allowHosts = extra.allowHosts || DOWNLOAD_HOSTS;
+    return {
+      allowHosts,
+      requestJson: extra.requestJson || (async (url, opts = {}) => {
+        const hosts = opts.allowHosts || allowHosts;
+        if (services.http && typeof services.http.getJson === 'function') {
+          return services.http.getJson(url, { allowHosts: hosts });
+        }
+        return require('../../services/controlledDownload').getJson(url, { allowHosts: hosts });
+      }),
+      downloadToFile: extra.downloadToFile,
+    };
+  }
+
   return {
     getMetadata() {
       return {
@@ -144,8 +165,10 @@ function createProvider() {
           'ViaProxy compatibility is optional and is never installed unless you choose it.',
           'Offline authentication is insecure and must not be used on a public network.',
           'Floodgate requires the same raw 16-byte key.pem on Geyser and the Java Floodgate plugin.',
-          'For a local Java server, Start installs Floodgate into mods/ or plugins/ if it is missing, copies the key, and restarts that Java server.',
-          'ViaProxy CLI still refuses online-mode Java without a join helper. Start compiles FloodgateJoin.jar against ViaProxy so Floodgate can authenticate Bedrock players.',
+          'Floodgate is resolved for the Java server\'s exact Minecraft version and loader. Unsupported combinations are blocked before any files change.',
+          'On Fabric, a compatible Fabric API build is installed with Floodgate. Fabric Loader is not a substitute for Fabric API.',
+          'ViaProxy translates Geyser\'s Java protocol to older servers. It does not replace backend Floodgate. FloodgateJoin is only a ViaProxy handshake helper.',
+          'Install a compatible Floodgate backend before starting Geyser when Floodgate authentication is selected. Start is blocked if Floodgate or a required dependency is missing or incompatible.',
           'Geyser Standalone and ViaProxy join as a vanilla Java client. NeoForge/Fabric packs that require client mods (Create, and most content mods) will kick Bedrock players. Xbox cannot install NeoForge.',
           'ViaProxy is GPL-3.0; Geyser is MIT. Binaries are downloaded at runtime and are not bundled.',
         ],
@@ -229,7 +252,7 @@ function createProvider() {
             : 'Could not determine the Java protocol. Direct Geyser works only if the server matches Geyser\'s native version.',
         };
       }
-      const protocolOk = GEYSER_NATIVE_JAVA_VERSIONS.some((native) => version === native || version.startsWith(`${native}.`) || native.startsWith(version));
+      const protocolOk = floodgateVersions.isGeyserNativeJavaVersion(version, GEYSER_NATIVE_JAVA_VERSIONS);
       if (modded) {
         return {
           compatible: false,
@@ -265,8 +288,8 @@ function createProvider() {
         action: viaEnabled ? undefined : 'Use ViaProxy Compatibility Mode',
       };
     },
-    planFloodgateInstallation(server) {
-      const loader = String(server?.loader_provider_id || server?.loader || '').toLowerCase();
+    async planFloodgateInstallation(server, extra = {}) {
+      const loader = floodgateVersions.modLoaderId(server?.loader_provider_id || server?.loader);
       const download = (url, destination, project, version) => ({
         downloads: [{
           url,
@@ -278,19 +301,44 @@ function createProvider() {
         }],
         result: { loader, floodgateVersion: version, destinationKind: destination.split('/')[0] },
       });
-      if (loader === 'neoforge') {
-        return download(FLOODGATE_NEOFORGE_DOWNLOAD, 'mods/Floodgate.jar', 'Floodgate NeoForge', '2.2.4-b38');
+      if (loader === 'fabric' || loader === 'neoforge') {
+        return floodgateInstall.planModInstall(server, catalogDeps(extra));
       }
-      if (loader === 'fabric') {
-        return download(FLOODGATE_FABRIC_DOWNLOAD, 'mods/Floodgate.jar', 'Floodgate Fabric', '2.2.4-b38');
-      }
-      if (['paper', 'spigot', 'purpur', 'bukkit'].includes(loader)) {
+      if (floodgateVersions.paperLikeLoader(loader)) {
         return download(FLOODGATE_SPIGOT_DOWNLOAD, 'plugins/floodgate-spigot.jar', 'Floodgate Spigot', 'latest');
       }
       throw Object.assign(
         new Error(`Floodgate is not available for the ${loader || 'unknown'} Java loader. Use Fabric, NeoForge, or Paper, then copy the same key.pem.`),
         { status: 400, code: 'FLOODGATE_UNSUPPORTED_LOADER' }
       );
+    },
+    inspectFloodgateReadiness(server) {
+      return floodgateStatus.inspectReadiness(server || {});
+    },
+    preflightFloodgateStart(opts = {}) {
+      return floodgateStatus.preflightStart({
+        ...opts,
+        nativeVersions: GEYSER_NATIVE_JAVA_VERSIONS,
+      });
+    },
+    floodgateStatus(opts = {}) {
+      return floodgateStatus.statusFor({
+        ...opts,
+        nativeVersions: GEYSER_NATIVE_JAVA_VERSIONS,
+        deps: catalogDeps(opts),
+      });
+    },
+    explainLastError(message) {
+      return floodgateStatus.explainLastError(message);
+    },
+    async executeFloodgatePlan(plan, extra = {}) {
+      if (plan?.installMode !== 'atomic') return { deferred: true, plan };
+      return floodgateInstall.executeAtomicPlan(plan, {
+        serverDir: extra.serverDir,
+        allowHosts: extra.allowHosts || DOWNLOAD_HOSTS,
+        downloadToFile: extra.downloadToFile,
+        copyKey: extra.copyKey,
+      });
     },
     async planCompatibilityInstallation(request) {
       if (!request?.confirmViaProxy) {
@@ -408,7 +456,13 @@ function createProvider() {
       else if (['failed', 'auth_misconfigured', 'protocol_incompatible', 'target_unreachable', 'port_conflict'].includes(health)) {
         indicator = { id: 'geyser-status', label: 'Geyser Failed', state: 'failed' };
       }
-      const startDisabled = !running && javaOffline;
+      const floodgateBlocked = floodgate && !running && javaServer && !floodgateStatus.inspectReadiness(javaServer).ready;
+      const startDisabled = (!running && javaOffline) || Boolean(floodgateBlocked);
+      const startReason = javaOffline
+        ? 'Start the Java server before starting Geyser.'
+        : (floodgateBlocked
+          ? 'Install a compatible Floodgate backend before starting Geyser. ViaProxy cannot replace backend Floodgate.'
+          : '');
       const tags = [
         via
           ? { id: 'geyser-mode', label: 'Geyser · ViaProxy', style: 'info' }
@@ -431,7 +485,7 @@ function createProvider() {
           state: startDisabled || health === 'starting' ? 'disabled' : 'enabled',
           icon: running ? 'stop' : 'play',
           confirmation: false,
-          disabledReason: startDisabled ? 'Start the Java server before starting Geyser.' : '',
+          disabledReason: startDisabled ? startReason : '',
         }],
         summary: {
           mode: via ? 'ViaProxy' : 'Direct Geyser',
@@ -481,6 +535,7 @@ function createProvider() {
       const { floodgate_key_path, floodgate_key_file, ...rest } = record || {};
       return {
         ...rest,
+        last_error: floodgateStatus.explainLastError(record?.last_error),
         floodgateConfigured: Boolean(floodgate_key_path),
         floodgate_key_path: undefined,
         floodgate_key_file: undefined,
@@ -609,6 +664,14 @@ function registerRoutes(router, gateways) {
     }
   });
 
+  router.get('/gateways/:id/floodgate/status', async (req, res) => {
+    try {
+      res.json(await gateways.floodgateStatusOwn(req.params.id));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
   router.post('/gateways/:id/floodgate/install', async (req, res) => {
     try {
       res.json(await gateways.installFloodgateOwn(req.params.id, req.body || {}));
@@ -668,14 +731,12 @@ module.exports = {
   GEYSER_NATIVE_JAVA_VERSIONS,
   VIAPROXY_DOWNLOAD,
   VIAPROXY_VERSION,
-  FLOODGATE_NEOFORGE_DOWNLOAD,
-  FLOODGATE_FABRIC_DOWNLOAD,
   FLOODGATE_SPIGOT_DOWNLOAD,
   DOWNLOAD_HOSTS,
   createProvider,
   registerRoutes,
   register({ registerGateway, registerPluginAction, router, services }) {
-    registerGateway(createProvider());
+    registerGateway(createProvider(services || {}));
     registerRoutes(router, services && services.gateways);
     if (typeof registerPluginAction === 'function' && services?.gateways) {
       registerPluginAction({

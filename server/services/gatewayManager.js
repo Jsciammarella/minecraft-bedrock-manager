@@ -122,6 +122,19 @@ function publicRecord(row) {
       primary: Boolean(att.primary_attachment),
     } : null;
   } catch { /* ignore */ }
+  let floodgateCanStart = true;
+  let floodgateStartReason = '';
+  if (row.authentication === 'floodgate' && row.target_type === 'local-server'
+    && typeof entry?.provider.inspectFloodgateReadiness === 'function') {
+    const server = row.target_server_id
+      ? db.prepare('SELECT * FROM servers WHERE id = ? AND kind = ?').get(row.target_server_id, 'java')
+      : null;
+    const readiness = entry.provider.inspectFloodgateReadiness(server || {});
+    floodgateCanStart = Boolean(readiness.ready);
+    if (!floodgateCanStart) {
+      floodgateStartReason = 'Install a compatible Floodgate backend before starting Geyser. ViaProxy cannot replace backend Floodgate.';
+    }
+  }
   return {
     ...sanitized,
     compatibilityMode: row.compatibility_mode === 'viaproxy' ? 'viaproxy' : 'direct',
@@ -131,7 +144,9 @@ function publicRecord(row) {
     geyserViaProxyVersion: row.geyser_viaproxy_version || null,
     targetMinecraftVersion: row.target_minecraft_version || null,
     lastCompatibilityResult: row.last_compatibility_result || null,
-    lastError: row.last_error || null,
+    lastError: entry?.provider.explainLastError
+      ? entry.provider.explainLastError(row.last_error)
+      : (row.last_error || null),
     dashboardId: `gateway:${row.id}`,
     typeLabel: row.target_type === 'local-server' && row.target_server_id && Number(row.unresolved_target) !== 1
       ? 'Geyser'
@@ -140,6 +155,8 @@ function publicRecord(row) {
     unresolvedReason: row.unresolved_reason || null,
     dashboardAttachment,
     notices: entry ? (gatewayRegistry.publicMetadata(entry).notices || []) : [],
+    floodgateCanStart,
+    floodgateStartReason,
   };
 }
 
@@ -494,7 +511,12 @@ function planSettingsChange(row, config = {}) {
       throw Object.assign(new Error('The associated Java server no longer exists. Choose a new target before using Floodgate.'), { status: 400 });
     }
     keySyncRequired = true;
-    floodgateInstallRequired = !floodgatePresentOnServer(server.data_path);
+    const entry = gatewayRegistry.get(row.provider_id);
+    if (typeof entry?.provider.inspectFloodgateReadiness === 'function') {
+      floodgateInstallRequired = !entry.provider.inspectFloodgateReadiness(server).ready;
+    } else {
+      floodgateInstallRequired = !floodgatePresentOnServer(server.data_path);
+    }
     javaRestartRequired = server.status === 'running' || server.status === 'starting';
   }
   if (enteringFloodgate && row.target_type === 'remote-address') {
@@ -645,22 +667,33 @@ async function ensureFloodgateOnLocalServer(row, { restartJava = true } = {}) {
   if (!server?.data_path) {
     throw Object.assign(new Error('The associated Java server no longer exists. Choose a new target before using Floodgate.'), { status: 400 });
   }
-  const already = floodgatePresentOnServer(server.data_path);
-  if (already) {
+  const entry = gatewayRegistry.requireGateway(row.provider_id);
+  const alreadyReady = typeof entry.provider.inspectFloodgateReadiness === 'function'
+    ? entry.provider.inspectFloodgateReadiness(server).ready
+    : floodgatePresentOnServer(server.data_path);
+  if (alreadyReady) {
     copyFloodgateKeyToLocalServer(ensureFloodgateKey(row.data_path), server);
     return { installed: false, restarted: false, alreadyPresent: true };
   }
-  const entry = gatewayRegistry.requireGateway(row.provider_id);
   if (typeof entry.provider.planFloodgateInstallation !== 'function') {
     throw Object.assign(new Error('This gateway provider cannot install Floodgate onto the Java server'), { status: 400 });
   }
-  const plan = entry.provider.planFloodgateInstallation(server);
-  await javaLoaderHost.executeInstallPlan(plan, {
-    serverDir: server.data_path,
-    allowHosts: entry.downloadHosts,
-    ownerId: server.id,
-  });
-  copyFloodgateKeyToLocalServer(ensureFloodgateKey(row.data_path), server);
+  const plan = await entry.provider.planFloodgateInstallation(server);
+  const copyKey = () => copyFloodgateKeyToLocalServer(ensureFloodgateKey(row.data_path), server);
+  if (plan.installMode === 'atomic' && typeof entry.provider.executeFloodgatePlan === 'function') {
+    await entry.provider.executeFloodgatePlan(plan, {
+      serverDir: server.data_path,
+      allowHosts: entry.downloadHosts,
+      copyKey,
+    });
+  } else {
+    await javaLoaderHost.executeInstallPlan(plan, {
+      serverDir: server.data_path,
+      allowHosts: entry.downloadHosts,
+      ownerId: server.id,
+    });
+    copyKey();
+  }
   const running = server.status === 'running' || server.status === 'starting';
   let restarted = false;
   if (restartJava && running) {
@@ -1143,11 +1176,28 @@ async function startNow(id) {
   try {
     if (row.authentication === 'floodgate') {
       if (row.target_type === 'local-server') {
-        await ensureFloodgateOnLocalServer(get(id), { restartJava: true });
+        const server = db.prepare('SELECT * FROM servers WHERE id = ? AND kind = ?').get(row.target_server_id, 'java');
+        if (typeof entry.provider.preflightFloodgateStart === 'function') {
+          const blocked = entry.provider.preflightFloodgateStart({
+            server,
+            gateway: get(id),
+            skipKeys: true,
+          });
+          if (blocked) throw blocked;
+        }
       }
       row.floodgate_key_path = syncFloodgateKey(get(id));
       db.prepare(`UPDATE gateways SET floodgate_key_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
         .run(row.floodgate_key_path, id);
+      if (row.target_type === 'local-server' && typeof entry.provider.preflightFloodgateStart === 'function') {
+        const server = db.prepare('SELECT * FROM servers WHERE id = ? AND kind = ?').get(row.target_server_id, 'java');
+        const blocked = entry.provider.preflightFloodgateStart({
+          server,
+          gateway: get(id),
+          keysOnly: true,
+        });
+        if (blocked) throw blocked;
+      }
     }
     if (typeof entry.provider.validateLaunch === 'function') {
       entry.provider.validateLaunch(get(id));
@@ -1396,6 +1446,19 @@ function integrationsForServer(server) {
   return items;
 }
 
+async function floodgateStatus(id) {
+  const row = get(id);
+  if (!row) throw Object.assign(new Error('Gateway not found'), { status: 404 });
+  const entry = gatewayRegistry.requireGateway(row.provider_id);
+  const server = row.target_type === 'local-server' && row.target_server_id
+    ? db.prepare('SELECT * FROM servers WHERE id = ? AND kind = ?').get(row.target_server_id, 'java')
+    : null;
+  if (typeof entry.provider.floodgateStatus !== 'function') {
+    return { canStart: true, summary: [], target: {} };
+  }
+  return entry.provider.floodgateStatus({ gateway: row, server });
+}
+
 function stopAll() {
   for (const id of [...ptySessions.keys()]) {
     try { stop(id); } catch { /* ignore */ }
@@ -1429,6 +1492,7 @@ module.exports = {
   create,
   detachServer,
   ensureFloodgateKey,
+  floodgateStatus,
   forServer,
   get,
   installCompatibility,

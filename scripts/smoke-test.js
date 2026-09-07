@@ -33,6 +33,7 @@ const pluginHost = require('../server/services/pluginHost');
 const pluginRoutes = require('../server/routes/plugins');
 const { runJavaProviderTests } = require('./java-provider-test');
 const { runPluginDownloadServiceTests } = require('./plugin-download-service-test');
+const { runGeyserFloodgateTests } = require('./geyser-floodgate-test');
 const { runCatalogProviderTests } = require('./catalog-provider-test');
 const { runPluginSettingsTests } = require('./plugin-settings-test');
 const { runModrinthProviderTests } = require('./modrinth-provider-test');
@@ -465,6 +466,7 @@ async function run() {
   pluginHost.resetForTests();
   pluginHost.loadPlugins();
   await runJavaProviderTests({ pluginHost, testRoot });
+  await runGeyserFloodgateTests();
   await runPluginDownloadServiceTests({ pluginHost, testRoot });
   await runCatalogProviderTests({ pluginHost, testRoot });
   await runPluginSettingsTests({ pluginHost, testRoot });

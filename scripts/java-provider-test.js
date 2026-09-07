@@ -574,6 +574,8 @@ versionRange="[13.0.8,)"
   assert.match(geyserUi, /confirmOverlay/);
   assert.match(geyserUi, /syncSaveButton/);
   assert.match(geyserUi, /The selected actions have been performed/);
+  assert.match(geyserUi, /floodgate\/status/);
+  assert.match(geyserUi, /compat-summary/);
   assert.doesNotMatch(geyserUi, /window\.confirm/);
   assert.doesNotMatch(geyserUi, /Hide from Bedrock Connect/);
   assert.doesNotThrow(() => new Function(geyserUi), 'Geyser plugin UI script must parse');
@@ -861,12 +863,37 @@ versionRange="[13.0.8,)"
   assert.equal(db.prepare('SELECT compatibility_mode FROM gateways WHERE id = ?').get(created.id).compatibility_mode, 'direct');
   assert.equal(fs.existsSync(path.join(storedDirect.data_path, 'ViaProxy.jar')), false);
 
-  const floodgatePlan = geyserProvider.planFloodgateInstallation({ loader_provider_id: 'neoforge', minecraft_version: '1.21.1' });
+  const neoFloodgateDir = path.join(testRoot, 'neo-floodgate-plan');
+  fs.mkdirSync(neoFloodgateDir, { recursive: true });
+  const floodgatePlan = await geyserProvider.planFloodgateInstallation({
+    loader_provider_id: 'neoforge',
+    minecraft_version: '1.21.1',
+    loader_version: '21.1.1',
+    data_path: neoFloodgateDir,
+  }, {
+    requestJson: async () => ([{
+      id: 'fg-1211',
+      version_number: '2.2.5',
+      version_type: 'release',
+      date_published: '2026-01-02T00:00:00Z',
+      game_versions: ['1.21.1'],
+      loaders: ['neoforge'],
+      files: [{
+        filename: 'Floodgate-Neoforge-2.2.5.jar',
+        primary: true,
+        url: 'https://cdn.modrinth.com/data/bWrNNfkb/versions/fg-1211/Floodgate-Neoforge-2.2.5.jar',
+        size: 1000,
+        hashes: { sha1: 'a'.repeat(40) },
+      }],
+      dependencies: [],
+    }]),
+  });
   javaLoaderHost.validatePlan(floodgatePlan);
-  assert.equal(floodgatePlan.downloads[0].destination, 'mods/Floodgate.jar');
+  assert.match(floodgatePlan.downloads[0].destination, /^mods\/Floodgate-Neoforge-2\.2\.5\.jar$/);
   assert.ok(geyser.DOWNLOAD_HOSTS.includes(new URL(floodgatePlan.downloads[0].url).hostname));
   assert.doesNotMatch(floodgatePlan.downloads[0].url, /^http:/);
-  assert.throws(
+  assert.doesNotMatch(floodgatePlan.downloads[0].url, /2\.2\.4-b38/);
+  await assert.rejects(
     () => geyserProvider.planFloodgateInstallation({ loader_provider_id: 'vanilla' }),
     /Fabric|NeoForge|Paper/
   );
