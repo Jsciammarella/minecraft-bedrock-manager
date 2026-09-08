@@ -9,7 +9,8 @@ const LOOKUP_TIMEOUT_MS = 10000;
 const RATE_WINDOW_MS = 60 * 1000;
 const RATE_MAX = 20;
 const CACHE_TTL_MS = 45 * 1000;
-const STATUSES = new Set(['supported', 'supported-with-warnings', 'unsupported', 'unavailable']);
+const STATUSES = new Set(['supported', 'supported-with-warnings', 'supported-with-limitations', 'unsupported', 'unavailable']);
+const SUCCESS_STATUSES = new Set(['supported', 'supported-with-warnings', 'supported-with-limitations']);
 const MODES = new Set(['direct', 'viaproxy']);
 const AUTH = new Set(['floodgate', 'online']);
 
@@ -36,22 +37,33 @@ function asStringArray(value, maxItems = 12, maxLen = 400) {
 
 function normalizeTarget(raw = {}) {
   const kind = String(raw.kind || 'java').trim().toLowerCase();
-  const minecraftVersion = String(raw.minecraftVersion || raw.minecraft_version || '').trim();
+  const policy = String(raw.policy || '').trim().toLowerCase() === 'latest-compatible'
+    ? 'latest-compatible'
+    : '';
+  const minecraftVersion = String(raw.minecraftVersion || raw.minecraft_version || '').trim()
+    || (policy === 'latest-compatible' ? 'latest' : '');
   const loaderProviderId = String(raw.loaderProviderId || raw.loader_provider_id || raw.loader || '').trim().toLowerCase();
-  const loaderVersion = String(raw.loaderVersion || raw.loader_version || '').trim();
+  const loaderVersion = String(raw.loaderVersion || raw.loader_version || '').trim()
+    || (policy === 'latest-compatible' && loaderProviderId && loaderProviderId !== 'vanilla' ? 'latest-compatible' : '');
   if (kind !== 'java') {
     throw Object.assign(new Error('Gateway recommendations are only available for Java servers.'), {
       status: 400,
       code: 'GATEWAY_CONFIGURATION_UNSUPPORTED',
     });
   }
-  if (!minecraftVersion || !loaderProviderId) {
+  if (!loaderProviderId) {
+    throw Object.assign(new Error('A Java loader is required for a gateway recommendation.'), {
+      status: 400,
+      code: 'GATEWAY_CONFIGURATION_UNSUPPORTED',
+    });
+  }
+  if (!minecraftVersion) {
     throw Object.assign(new Error('Minecraft version and loader are required for a gateway recommendation.'), {
       status: 400,
       code: 'GATEWAY_CONFIGURATION_UNSUPPORTED',
     });
   }
-  return { kind, minecraftVersion, loaderProviderId, loaderVersion };
+  return { kind, minecraftVersion, loaderProviderId, loaderVersion, policy };
 }
 
 function sanitizeArtifacts(raw) {
@@ -86,25 +98,41 @@ function sanitizeRecommendation(raw, providerId) {
   }
   const recommendedMode = MODES.has(raw?.recommendedMode) ? raw.recommendedMode : null;
   const authentication = AUTH.has(raw?.authentication) ? raw.authentication : null;
+  const target = raw?.target && typeof raw.target === 'object' ? {
+    kind: stripText(raw.target.kind, 16) || 'java',
+    minecraftVersion: stripText(raw.target.minecraftVersion, 40),
+    loaderProviderId: stripText(raw.target.loaderProviderId, 40),
+    loaderVersion: stripText(raw.target.loaderVersion, 80),
+  } : null;
+  const recommendedTarget = raw?.recommendedTarget && typeof raw.recommendedTarget === 'object' ? {
+    edition: stripText(raw.recommendedTarget.edition || 'java', 16) || 'java',
+    minecraftVersion: stripText(raw.recommendedTarget.minecraftVersion, 40),
+    loaderProviderId: stripText(raw.recommendedTarget.loaderProviderId, 40),
+    loaderVersion: stripText(raw.recommendedTarget.loaderVersion, 80),
+  } : (target ? {
+    edition: 'java',
+    minecraftVersion: target.minecraftVersion,
+    loaderProviderId: target.loaderProviderId,
+    loaderVersion: target.loaderVersion,
+  } : null);
   return {
     providerId: stripText(raw?.providerId || providerId, 64),
+    supported: SUCCESS_STATUSES.has(status),
     status,
     code: stripText(raw?.code, 80) || null,
     message: stripText(raw?.message, 500),
     recommendedMode,
     authentication,
-    target: raw?.target && typeof raw.target === 'object' ? {
-      kind: stripText(raw.target.kind, 16),
-      minecraftVersion: stripText(raw.target.minecraftVersion, 40),
-      loaderProviderId: stripText(raw.target.loaderProviderId, 40),
-      loaderVersion: stripText(raw.target.loaderVersion, 80),
-    } : null,
+    target,
+    recommendedTarget,
+    selectionAdjusted: Boolean(raw?.selectionAdjusted),
     requiredArtifacts: sanitizeArtifacts(raw?.requiredArtifacts),
     portRequirements: {
       protocol: stripText(raw?.portRequirements?.protocol || 'udp', 8) || 'udp',
       family: stripText(raw?.portRequirements?.family || 'ipv4', 8) || 'ipv4',
     },
     warnings: asStringArray(raw?.warnings, 12, 400),
+    limitations: asStringArray(raw?.limitations || raw?.warnings, 12, 400),
     alternatives: asStringArray(raw?.alternatives, 8, 240),
     summary: asStringArray(raw?.summary, 16, 240),
     viaProxyReason: stripText(raw?.viaProxyReason, 300),
@@ -113,10 +141,16 @@ function sanitizeRecommendation(raw, providerId) {
 }
 
 function tokenPayload(providerId, target, recommendation) {
+  const signedTarget = recommendation?.target || target;
   return {
     v: 1,
     providerId,
-    target,
+    target: {
+      kind: signedTarget.kind || 'java',
+      minecraftVersion: signedTarget.minecraftVersion,
+      loaderProviderId: signedTarget.loaderProviderId,
+      loaderVersion: signedTarget.loaderVersion,
+    },
     status: recommendation.status,
     recommendedMode: recommendation.recommendedMode,
     authentication: recommendation.authentication,
@@ -196,7 +230,22 @@ function enforceRateLimit(key) {
 }
 
 function cacheKey(providerId, target) {
-  return `${providerId}:${target.kind}:${target.minecraftVersion}:${target.loaderProviderId}:${target.loaderVersion}`;
+  return `${providerId}:${target.kind}:${target.policy || 'current'}:${target.minecraftVersion}:${target.loaderProviderId}:${target.loaderVersion}`;
+}
+
+function loaderCatalogFor(loaderProviderId) {
+  try {
+    const javaLoaderRegistry = require('./javaLoaderRegistry');
+    const entry = javaLoaderRegistry.get(loaderProviderId);
+    if (!entry?.provider) return null;
+    return {
+      id: entry.id,
+      listMinecraftVersions: () => entry.provider.listMinecraftVersions(),
+      listLoaderVersions: (minecraftVersion) => entry.provider.listLoaderVersions(minecraftVersion),
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function withTimeout(promise, ms) {
@@ -250,16 +299,19 @@ async function recommend(providerId, rawTarget, { rateKey = 'anon', peekPort = t
   } else {
     inner = await withTimeout(entry.provider.recommendProspectiveTarget(target, {
       allowHosts: entry.downloadHosts,
+      policy: target.policy,
+      loaderCatalog: loaderCatalogFor(target.loaderProviderId),
     }), LOOKUP_TIMEOUT_MS);
     recommendCache.set(key, { at: Date.now(), value: inner });
   }
   const sanitized = sanitizeRecommendation(inner, id);
-  if (sanitized.status === 'supported' || sanitized.status === 'supported-with-warnings') {
+  if (SUCCESS_STATUSES.has(sanitized.status)) {
     if (peekPort) {
       try {
         sanitized.suggestedPort = require('./gatewayManager').suggestUdpPort();
       } catch (err) {
         sanitized.status = 'unsupported';
+        sanitized.supported = false;
         sanitized.code = 'GATEWAY_PORT_UNAVAILABLE';
         sanitized.message = stripText(err.message, 400) || 'No free Bedrock UDP port is available.';
         sanitized.recommendedMode = null;
@@ -267,8 +319,8 @@ async function recommend(providerId, rawTarget, { rateKey = 'anon', peekPort = t
       }
     }
   }
-  if (sanitized.status === 'supported' || sanitized.status === 'supported-with-warnings') {
-    sanitized.recommendationToken = signToken(tokenPayload(id, target, sanitized));
+  if (SUCCESS_STATUSES.has(sanitized.status)) {
+    sanitized.recommendationToken = signToken(tokenPayload(id, sanitized.target || target, sanitized));
   }
   pluginAudit.record('gateway.recommend', {
     targetType: 'gateway-provider',
@@ -290,6 +342,7 @@ function clearCaches() {
 
 module.exports = {
   TOKEN_TTL_MS,
+  SUCCESS_STATUSES,
   assertToken,
   clearCaches,
   normalizeTarget,

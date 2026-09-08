@@ -849,7 +849,7 @@ function Dashboard() {
                         className="btn btn-danger flex-1 text-sm"
                       >
                         <Square className="w-3.5 h-3.5" />
-                        {actions[`${server.id}-stop`] ? 'Stopping...' : 'Stop Java Server'}
+                        {actions[`${server.id}-stop`] ? 'Stopping...' : 'Stop Java'}
                       </button>
                     )}
                     <PluginPrimaryActions

@@ -166,6 +166,8 @@ function createProvider(services = {}) {
           recommendedOptionLabel: 'Configure automatically',
           skipOptionLabel: 'Do not configure',
           laterOptionLabel: 'Configure after server creation',
+          supportsVanillaAutomatic: false,
+          vanillaNote: '(Automatic Geyser configuration for Vanilla is not currently supported by Minecraft Server Manager.)',
         },
         managementPage: 'home',
         downloadHosts: DOWNLOAD_HOSTS,
@@ -331,6 +333,8 @@ function createProvider(services = {}) {
         ...catalogDeps(extra),
         nativeVersions: GEYSER_NATIVE_JAVA_VERSIONS,
         timeoutMs: extra.timeoutMs,
+        policy: extra.policy,
+        loaderCatalog: extra.loaderCatalog,
       });
     },
     async applyCreateForTarget({ server, recommendation, suggestedPort } = {}) {

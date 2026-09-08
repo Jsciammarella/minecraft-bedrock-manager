@@ -39,6 +39,9 @@ function sampleJava(extra = {}) {
 
 async function runGatewayLanTests() {
   const dash = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/Dashboard.jsx'), 'utf8');
+  assert.match(dash, /Stop Java/);
+  assert.doesNotMatch(dash, /Stop Java Server/);
+  assert.match(fs.readFileSync(path.join(__dirname, '../server/bundled-plugins/gateway-geyser/backend.js'), 'utf8'), /Stop Geyser/);
   assert.match(dash, /aria-label="LAN"/);
   assert.match(dash, /'LAN'/);
   assert.doesNotMatch(dash, /<Radio/);

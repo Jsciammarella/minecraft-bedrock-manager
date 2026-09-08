@@ -61,6 +61,8 @@ function sanitizeCreateWizard(value) {
     recommendedOptionLabel: text(value.recommendedOptionLabel, 80),
     skipOptionLabel: text(value.skipOptionLabel, 80),
     laterOptionLabel: text(value.laterOptionLabel, 80),
+    vanillaNote: text(value.vanillaNote, 400),
+    supportsVanillaAutomatic: value.supportsVanillaAutomatic === true,
   };
 }
 

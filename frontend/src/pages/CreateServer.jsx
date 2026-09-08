@@ -46,6 +46,8 @@ function CreateServer() {
   const [recommendations, setRecommendations] = useState({});
   const [recommendError, setRecommendError] = useState('');
   const [recommendLoading, setRecommendLoading] = useState(false);
+  const [adjustmentNotice, setAdjustmentNotice] = useState('');
+  const [appliedAuto, setAppliedAuto] = useState(null);
   const recommendSeq = useRef(0);
   const [editions, setEditions] = useState([
     { id: 'bedrock', label: 'Bedrock', available: true, core: true },
@@ -163,7 +165,30 @@ function CreateServer() {
     return () => { cancelled = true; };
   }, [java, remote, loaderProvider, formData.version, javaVersions]);
 
-  const wantsAutomatic = java && !remote && gatewayProviders.some((item) => (integrationMode[item.id] || 'skip') === 'automatic');
+  const wantsAutomatic = java && !remote && loaderProvider !== 'vanilla'
+    && gatewayProviders.some((item) => (integrationMode[item.id] || 'skip') === 'automatic');
+  const wantsLatestCompatible = wantsAutomatic && (!appliedAuto || appliedAuto.loader !== loaderProvider);
+
+  useEffect(() => {
+    if (!java || remote || loaderProvider !== 'vanilla') return;
+    setIntegrationMode((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const provider of gatewayProviders) {
+        if (next[provider.id] === 'automatic') {
+          next[provider.id] = 'skip';
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setRecommendations({});
+    setResolvedJava(null);
+    setRecommendError('');
+    setAdjustmentNotice('');
+    setAppliedAuto(null);
+    recommendSeq.current += 1;
+  }, [java, remote, loaderProvider, gatewayProviders]);
 
   useEffect(() => {
     if (!java || remote || !wantsAutomatic) {
@@ -180,26 +205,39 @@ function CreateServer() {
       setRecommendLoading(true);
       setRecommendError('');
       try {
-        const validated = await serverApi.javaValidate(loaderProvider, {
-          minecraftVersion,
-          version: minecraftVersion,
-          loaderVersion: selectedLoader,
-        });
-        if (cancelled || seq !== recommendSeq.current) return;
-        const resolved = validated.data?.resolved || {};
-        const concrete = {
+        let concrete = {
           kind: 'java',
-          minecraftVersion: resolved.minecraftVersion || minecraftVersion,
-          loaderProviderId: resolved.loader || loaderProvider,
-          loaderVersion: resolved.loaderVersion || selectedLoader,
+          minecraftVersion,
+          loaderProviderId: loaderProvider,
+          loaderVersion: selectedLoader,
         };
-        if (!concrete.minecraftVersion || concrete.minecraftVersion === 'latest'
-          || (concrete.loaderProviderId !== 'vanilla' && (!concrete.loaderVersion || concrete.loaderVersion === 'latest-compatible'))) {
-          setResolvedJava(null);
-          setRecommendations({});
-          setRecommendError('Waiting for concrete Minecraft and loader versions before recommending Bedrock access.');
-          setRecommendLoading(false);
-          return;
+        if (!wantsLatestCompatible) {
+          const validated = await serverApi.javaValidate(loaderProvider, {
+            minecraftVersion,
+            version: minecraftVersion,
+            loaderVersion: selectedLoader,
+          });
+          if (cancelled || seq !== recommendSeq.current) return;
+          const resolved = validated.data?.resolved || {};
+          concrete = {
+            kind: 'java',
+            minecraftVersion: resolved.minecraftVersion || minecraftVersion,
+            loaderProviderId: resolved.loader || loaderProvider,
+            loaderVersion: resolved.loaderVersion || selectedLoader,
+          };
+          if (!concrete.minecraftVersion || concrete.minecraftVersion === 'latest'
+            || (concrete.loaderProviderId !== 'vanilla' && (!concrete.loaderVersion || concrete.loaderVersion === 'latest-compatible'))) {
+            setResolvedJava(null);
+            setRecommendations({});
+            setRecommendError('Waiting for concrete Minecraft and loader versions before recommending Bedrock access.');
+            setRecommendLoading(false);
+            return;
+          }
+          if (concrete.loaderProviderId !== loaderProvider) {
+            setRecommendError('Automatic configuration will not change the selected Java loader.');
+            setRecommendLoading(false);
+            return;
+          }
         }
         setResolvedJava({
           selectedMinecraft: minecraftVersion,
@@ -207,21 +245,47 @@ function CreateServer() {
           ...concrete,
         });
         const next = {};
+        let applied = false;
         for (const provider of gatewayProviders) {
           if ((integrationMode[provider.id] || 'skip') !== 'automatic') continue;
           if (!provider.supportsProspectiveTargetRecommendation) continue;
-          const rec = await gatewayApi.recommend(provider.id, concrete);
+          const rec = await gatewayApi.recommend(provider.id, {
+            ...concrete,
+            policy: wantsLatestCompatible ? 'latest-compatible' : undefined,
+          });
           if (cancelled || seq !== recommendSeq.current) return;
           const data = rec.data || {};
-          if (data.target?.minecraftVersion !== concrete.minecraftVersion
+          const recLoader = data.recommendedTarget?.loaderProviderId || data.target?.loaderProviderId;
+          if (recLoader && recLoader !== loaderProvider) continue;
+          const success = data.status === 'supported'
+            || data.status === 'supported-with-warnings'
+            || data.status === 'supported-with-limitations';
+          if (wantsLatestCompatible && success && data.recommendedTarget?.minecraftVersion && data.recommendedTarget?.loaderVersion) {
+            const recMc = data.recommendedTarget.minecraftVersion;
+            const recLv = data.recommendedTarget.loaderVersion;
+            if (recMc === 'latest' || recLv === 'latest-compatible') continue;
+            setAppliedAuto({ loader: loaderProvider, minecraftVersion: recMc, loaderVersion: recLv });
+            setJavaVersions((prev) => (prev.includes(recMc) ? prev : [...prev, recMc]));
+            setLoaderVersions((prev) => (prev.includes(recLv) ? prev : [...prev, recLv]));
+            setFormData((prev) => ({ ...prev, version: recMc }));
+            setLoaderVersion(recLv);
+            setAdjustmentNotice(data.message || '');
+            applied = true;
+            next[provider.id] = data;
+            continue;
+          }
+          if (!wantsLatestCompatible && (
+            data.target?.minecraftVersion !== concrete.minecraftVersion
             || data.target?.loaderProviderId !== concrete.loaderProviderId
-            || data.target?.loaderVersion !== concrete.loaderVersion) {
+            || data.target?.loaderVersion !== concrete.loaderVersion
+          )) {
             continue;
           }
           next[provider.id] = data;
         }
         if (cancelled || seq !== recommendSeq.current) return;
         setRecommendations(next);
+        if (!applied) setAdjustmentNotice((current) => current);
       } catch (err) {
         if (cancelled || seq !== recommendSeq.current) return;
         setResolvedJava(null);
@@ -239,6 +303,7 @@ function CreateServer() {
     java,
     remote,
     wantsAutomatic,
+    wantsLatestCompatible,
     loaderProvider,
     loaderVersion,
     loaderVersions,
@@ -246,6 +311,7 @@ function CreateServer() {
     javaVersions,
     gatewayProviders,
     integrationMode,
+    appliedAuto,
   ]);
 
   const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
@@ -253,6 +319,14 @@ function CreateServer() {
   const ipv4Choices = ipv4Available.filter((item) => !remote || !LAN_DISCOVERY_PORTS.has(item.port));
   const ipv6Choices = ipv6Available.filter((item) => !remote || !LAN_DISCOVERY_PORTS.has(item.port));
   const remoteCount = (servers || []).filter((server) => server.kind === 'remote').length;
+  const automaticSubmitBlocked = java && !remote && wantsAutomatic && (
+    recommendLoading
+    || gatewayProviders.some((provider) => {
+      if ((integrationMode[provider.id] || 'skip') !== 'automatic') return false;
+      const rec = recommendations[provider.id];
+      return !rec || rec.status === 'unsupported' || rec.status === 'unavailable';
+    })
+  );
 
   const loadPorts = async () => {
     try {
@@ -365,6 +439,7 @@ function CreateServer() {
         const concreteMc = resolved.minecraftVersion || minecraftVersion;
         const concreteLoader = resolved.loaderVersion || selectedLoader;
         const integrations = [];
+        if (loaderProvider !== 'vanilla') {
         for (const provider of gatewayProviders) {
           const mode = integrationMode[provider.id] || 'skip';
           if (mode !== 'automatic') continue;
@@ -398,6 +473,7 @@ function CreateServer() {
             authentication: rec.authentication,
             recommendationToken: rec.recommendationToken,
           });
+        }
         }
         const payload = {
           kind: 'java',
@@ -570,7 +646,7 @@ function CreateServer() {
         {java && !remote && (
           <p className="text-xs text-mc-textMuted -mt-4">
             Downloads official server software when you create the server. Players connect with a Java Edition client on TCP.
-            Bedrock access is optional and can be configured through an enabled gateway plugin after server creation.
+            Bedrock access is optional. When a compatible gateway plugin is enabled, it can be configured below or added after server creation.
             Compatible with Fabric and NeoForge through bundled providers.
           </p>
         )}
@@ -647,6 +723,10 @@ function CreateServer() {
                   setLoaderProvider(next);
                   setLoaderVersion(next === 'vanilla' ? 'vanilla' : 'latest-compatible');
                   setFormData((prev) => ({ ...prev, version: 'latest' }));
+                  setAppliedAuto(null);
+                  setAdjustmentNotice('');
+                  setRecommendations({});
+                  setRecommendError('');
                 }}
                 className="input"
               >
@@ -694,7 +774,11 @@ function CreateServer() {
               const wizard = provider.createWizard || {};
               const mode = integrationMode[provider.id] || 'skip';
               const rec = recommendations[provider.id];
+              const vanillaBlocksAutomatic = loaderProvider === 'vanilla' && wizard.supportsVanillaAutomatic !== true;
+              const allowAutomatic = canCreateGateway && provider.supportsProspectiveTargetRecommendation && !vanillaBlocksAutomatic;
+              const automaticSuccess = rec && (rec.status === 'supported' || rec.status === 'supported-with-warnings' || rec.status === 'supported-with-limitations');
               const automaticBlocked = mode === 'automatic' && rec && (rec.status === 'unsupported' || rec.status === 'unavailable');
+              const selectValue = vanillaBlocksAutomatic ? 'skip' : mode;
               return (
                 <div key={provider.id} className="space-y-3">
                   <div>
@@ -706,18 +790,24 @@ function CreateServer() {
                   <div>
                     <label className="block text-sm font-medium text-mc-text mb-2">
                       {provider.name} configuration
+                      {vanillaBlocksAutomatic && wizard.vanillaNote ? (
+                        <span className="text-amber-300"> {wizard.vanillaNote}</span>
+                      ) : null}
                     </label>
                     <select
-                      className="input"
-                      value={mode}
+                      className={`input ${vanillaBlocksAutomatic ? 'opacity-50' : ''}`}
+                      value={selectValue}
+                      disabled={vanillaBlocksAutomatic}
                       onChange={(e) => {
                         const nextMode = e.target.value;
                         setIntegrationMode((prev) => ({ ...prev, [provider.id]: nextMode }));
+                        setAppliedAuto(null);
+                        setAdjustmentNotice('');
                         setError('');
                       }}
                     >
                       <option value="skip">{wizard.skipOptionLabel || 'Do not configure'}</option>
-                      {canCreateGateway && provider.supportsProspectiveTargetRecommendation && (
+                      {allowAutomatic && (
                         <option value="automatic">
                           {wizard.recommendedOptionLabel || 'Configure automatically'} (Recommended)
                         </option>
@@ -728,8 +818,11 @@ function CreateServer() {
                       Bedrock access stays off unless you choose to configure it. Offline authentication is never selected automatically.
                     </p>
                   </div>
-                  {mode === 'automatic' && (
+                  {mode === 'automatic' && !vanillaBlocksAutomatic && (
                     <div className="space-y-2 text-sm">
+                      {adjustmentNotice && (
+                        <p className="text-sm text-sky-300">{adjustmentNotice}</p>
+                      )}
                       {resolvedJava && (
                         <p className="text-xs text-mc-textMuted">
                           {resolvedJava.selectedMinecraft === 'latest' || resolvedJava.selectedLoader === 'latest-compatible'
@@ -741,13 +834,13 @@ function CreateServer() {
                       )}
                       {recommendLoading && (
                         <p className="text-mc-textMuted flex items-center gap-2">
-                          <Loader2 className="w-4 h-4 animate-spin" /> Checking a compatible Bedrock configuration…
+                          <Loader2 className="w-4 h-4 animate-spin" /> Finding the newest compatible Bedrock configuration…
                         </p>
                       )}
                       {recommendError && (
                         <p className="text-red-400">{recommendError}</p>
                       )}
-                      {!recommendLoading && rec && (rec.status === 'supported' || rec.status === 'supported-with-warnings') && (
+                      {!recommendLoading && automaticSuccess && (
                         <div className="p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg space-y-1">
                           {(rec.summary || []).map((line) => (
                             <p key={line} className="text-sm text-white">{line}</p>
@@ -758,7 +851,7 @@ function CreateServer() {
                           {rec.viaProxyReason ? (
                             <p className="text-xs text-mc-textMuted mt-2">{rec.viaProxyReason}</p>
                           ) : null}
-                          {(rec.warnings || []).slice(0, 4).map((line) => (
+                          {(rec.limitations || rec.warnings || []).slice(0, 6).map((line) => (
                             <p key={line} className="text-xs text-mc-textMuted">{line}</p>
                           ))}
                         </div>
@@ -945,8 +1038,14 @@ function CreateServer() {
         <div className="flex items-center gap-3 pt-4 border-t border-mc-surfaceLight">
           <button
             type="submit"
-            disabled={loading || (java && !remote && !acceptEula)}
-            title={java && !remote && !acceptEula ? 'Agree to the Minecraft EULA to create a Java server' : undefined}
+            disabled={loading || (java && !remote && !acceptEula) || automaticSubmitBlocked}
+            title={
+              java && !remote && !acceptEula
+                ? 'Agree to the Minecraft EULA to create a Java server'
+                : automaticSubmitBlocked
+                  ? 'Wait for the Bedrock access recommendation to finish, or choose Do not configure.'
+                  : undefined
+            }
             className="btn btn-primary flex-1"
           >
             {loading ? (

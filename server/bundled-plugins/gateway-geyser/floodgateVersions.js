@@ -177,6 +177,22 @@ function isVersionAlias(value) {
   return !raw || raw === 'latest' || raw === 'latest-compatible';
 }
 
+function isUnstableRelease(value) {
+  const raw = String(value || '').trim();
+  if (!raw || isVersionAlias(raw)) return true;
+  if (/^\d{2}w\d{2}[a-z]?$/i.test(raw)) return true;
+  return /(?:^|[.+_-])(snapshot|alpha|beta|rc|experimental|preview|pre)(?:[.+_-]|$|\d)/i.test(raw);
+}
+
+function sortVersionsNewest(values, kind = 'loader') {
+  return [...new Set((Array.isArray(values) ? values : []).map((item) => String(item || '').trim()).filter(Boolean))]
+    .sort((a, b) => {
+      const cmp = compareForKind(b, a, kind);
+      if (cmp != null) return cmp;
+      return String(b).localeCompare(String(a), undefined, { numeric: true });
+    });
+}
+
 module.exports = {
   FABRIC_API_LEGACY_MOD_ID,
   FABRIC_API_MOD_ID,
@@ -191,6 +207,7 @@ module.exports = {
   fabricApiDependIds,
   isFabricApiModId,
   isGeyserNativeJavaVersion,
+  isUnstableRelease,
   isVersionAlias,
   loaderLabel,
   minecraftVersionsEqual,
@@ -200,5 +217,6 @@ module.exports = {
   parseConstraintList,
   preferredFabricApiDependId,
   satisfiesConstraint,
+  sortVersionsNewest,
   tokenizeVersion,
 };

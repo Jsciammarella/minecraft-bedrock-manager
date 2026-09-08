@@ -4,9 +4,11 @@ const {
   canonicalMinecraftVersion,
   compareVersions,
   isGeyserNativeJavaVersion,
+  isUnstableRelease,
   isVersionAlias,
   loaderLabel,
   paperLikeLoader,
+  sortVersionsNewest,
 } = require('./floodgateVersions');
 const {
   floodgateRequiresFabricApi,
@@ -16,6 +18,9 @@ const {
 
 const DEFAULT_NATIVE = ['1.26.2'];
 const LOOKUP_TIMEOUT_MS = 10000;
+const MAX_MINECRAFT_CANDIDATES = 20;
+const MAX_LOADER_CANDIDATES = 3;
+const SUCCESS_STATUSES = new Set(['supported', 'supported-with-warnings', 'supported-with-limitations']);
 const LIMITATIONS = [
   'Automatic validation cannot guarantee router or firewall forwarding.',
   'Automatic validation cannot guarantee external Internet reachability.',
@@ -40,20 +45,35 @@ function withTimeout(promise, ms, code, message) {
 }
 
 function result(fields) {
+  const status = fields.status;
   return {
     providerId: 'geyser',
-    status: fields.status,
+    supported: SUCCESS_STATUSES.has(status),
+    status,
     code: fields.code || null,
     message: fields.message || '',
     recommendedMode: fields.recommendedMode || null,
     authentication: fields.authentication || null,
     target: fields.target,
+    recommendedTarget: fields.recommendedTarget || null,
+    selectionAdjusted: Boolean(fields.selectionAdjusted),
     requiredArtifacts: fields.requiredArtifacts || [],
     portRequirements: fields.portRequirements || { protocol: 'udp', family: 'ipv4' },
     warnings: fields.warnings || [],
+    limitations: fields.limitations || fields.warnings || [],
     alternatives: fields.alternatives || [],
     summary: fields.summary || [],
     viaProxyReason: fields.viaProxyReason || '',
+  };
+}
+
+function recommendedTargetOf(target) {
+  if (!target) return null;
+  return {
+    edition: 'java',
+    minecraftVersion: String(target.minecraftVersion || ''),
+    loaderProviderId: String(target.loaderProviderId || ''),
+    loaderVersion: String(target.loaderVersion || ''),
   };
 }
 
@@ -63,6 +83,7 @@ function unsupported(code, message, target, extra = {}) {
     code,
     message,
     target,
+    recommendedTarget: null,
     alternatives: extra.alternatives || [
       'Create the server without Geyser',
       'Select a supported Minecraft version and loader',
@@ -75,6 +96,7 @@ function unsupported(code, message, target, extra = {}) {
       'The Java server can still be created without Geyser.',
     ],
     warnings: extra.warnings || [],
+    limitations: extra.limitations || extra.warnings || [],
   });
 }
 
@@ -117,7 +139,15 @@ function paperArtifact() {
   };
 }
 
-async function recommendProspectiveTarget(target = {}, context = {}) {
+function wantsLatestCompatible(target = {}, context = {}) {
+  const policy = String(context.policy || target.policy || '').trim().toLowerCase();
+  if (policy === 'latest-compatible') return true;
+  return isVersionAlias(target.minecraftVersion) || (
+    String(target.loaderProviderId || '') !== 'vanilla' && isVersionAlias(target.loaderVersion)
+  );
+}
+
+async function evaluateConcrete(target = {}, context = {}) {
   const kind = String(target.kind || '').toLowerCase();
   const minecraftVersion = String(target.minecraftVersion || '').trim();
   const loaderProviderId = String(target.loaderProviderId || target.loader || '').toLowerCase();
@@ -141,22 +171,36 @@ async function recommendProspectiveTarget(target = {}, context = {}) {
   }
   if (!minecraftVersion || isVersionAlias(minecraftVersion)) {
     return unsupported(
-      'GATEWAY_CONFIGURATION_UNSUPPORTED',
-      'Geyser recommendations require a concrete Minecraft version. Resolve Latest before continuing.',
+      'NO_STABLE_MINECRAFT',
+      'No compatible stable Minecraft version was selected. Choose a specific release, or use automatic configuration to pick one.',
       normalized
     );
   }
   if (!loaderProviderId) {
     return unsupported(
-      'GATEWAY_CONFIGURATION_UNSUPPORTED',
+      'LOADER_PROVIDER_UNAVAILABLE',
       'Geyser recommendations require a concrete Java loader.',
       normalized
     );
   }
-  if (loaderProviderId !== 'vanilla' && (!loaderVersion || isVersionAlias(loaderVersion))) {
+  if (loaderProviderId === 'vanilla') {
     return unsupported(
-      'GATEWAY_CONFIGURATION_UNSUPPORTED',
-      'Geyser recommendations require a concrete loader version. Resolve latest-compatible before continuing.',
+      'VANILLA_AUTOMATIC_UNSUPPORTED',
+      'Automatic Geyser configuration for Vanilla is not currently supported by Minecraft Server Manager.',
+      normalized,
+      {
+        alternatives: [
+          'Create the Vanilla Java server without Geyser',
+          'Select Fabric or NeoForge to configure Geyser automatically',
+          'Add Geyser later from the server details page if you configure it manually',
+        ],
+      }
+    );
+  }
+  if (!loaderVersion || isVersionAlias(loaderVersion)) {
+    return unsupported(
+      'NO_COMPATIBLE_LOADER_VERSION',
+      `No compatible ${loaderLabel(loaderProviderId) || 'loader'} version was selected. Choose a specific loader version, or use automatic configuration to pick one.`,
       normalized
     );
   }
@@ -164,7 +208,7 @@ async function recommendProspectiveTarget(target = {}, context = {}) {
   const mode = chooseMode(minecraftVersion, nativeVersions);
   if (mode.unsupported) {
     return unsupported(
-      'VIAPROXY_UNSUPPORTED_TARGET',
+      'GEYSER_PROTOCOL_UNSUPPORTED',
       `Minecraft ${minecraftVersion} is newer than Geyser's native Java protocol (${nativeVersions[0]}). Automatic configuration cannot translate forward.`,
       normalized,
       {
@@ -248,12 +292,20 @@ async function recommendProspectiveTarget(target = {}, context = {}) {
   }
 
   const warnings = [...LIMITATIONS];
+  const limitations = [];
   if (loader === 'fabric' || loader === 'neoforge') {
     warnings.unshift(
       'This new server has no extra mods yet. Server-software compatibility looks good, but installing client-required Java mods later can make the server unsuitable for Bedrock clients.'
     );
   }
-  const status = warnings.length ? 'supported-with-warnings' : 'supported';
+  if (mode.recommendedMode === 'viaproxy') {
+    limitations.push('This combination requires ViaProxy to translate Geyser to the selected Minecraft version.');
+  }
+  if (fabricApi) limitations.push('Fabric API will be installed because Floodgate on Fabric requires it.');
+  if (floodgate) limitations.push('Floodgate will be installed for Bedrock authentication.');
+  const status = mode.recommendedMode === 'viaproxy'
+    ? 'supported-with-limitations'
+    : 'supported';
   const summary = [
     `Minecraft: ${minecraftVersion}`,
     `Server software: ${loaderLabel(loader)}${loaderVersion ? ` ${loaderVersion}` : ''}`,
@@ -266,25 +318,201 @@ async function recommendProspectiveTarget(target = {}, context = {}) {
     summary.push(`Reason: ${mode.viaProxyReason}`);
     summary.push('ViaProxy translates protocols. It does not replace backend Floodgate.');
   }
-  summary.push(status === 'supported-with-warnings' ? 'Supported configuration with limitations' : 'Supported configuration');
+  summary.push(status === 'supported-with-limitations' ? 'Supported configuration with limitations' : 'Supported configuration');
 
   return result({
     status,
     recommendedMode: mode.recommendedMode,
     authentication: 'floodgate',
     target: normalized,
+    recommendedTarget: recommendedTargetOf(normalized),
     requiredArtifacts: requiredArtifacts.filter(Boolean),
     warnings,
+    limitations: [...limitations, ...warnings],
     summary,
     viaProxyReason: mode.viaProxyReason,
-    message: status === 'supported-with-warnings'
-      ? 'Automatic Geyser configuration is available for this Java target.'
+    message: status === 'supported-with-limitations'
+      ? 'Automatic Geyser configuration is available for this Java target, with the limitations listed below.'
       : 'Automatic Geyser configuration is available for this Java target.',
   });
+}
+
+async function findLatestCompatible(target = {}, context = {}) {
+  const loaderProviderId = String(target.loaderProviderId || target.loader || '').toLowerCase();
+  const requested = {
+    kind: 'java',
+    minecraftVersion: String(target.minecraftVersion || ''),
+    loaderProviderId,
+    loaderVersion: String(target.loaderVersion || ''),
+  };
+  if (!loaderProviderId) {
+    return unsupported(
+      'LOADER_PROVIDER_UNAVAILABLE',
+      'Select a Java loader before configuring Geyser automatically.',
+      requested
+    );
+  }
+  if (loaderProviderId === 'vanilla') {
+    return evaluateConcrete({ ...requested, minecraftVersion: requested.minecraftVersion || 'latest', loaderVersion: 'vanilla' }, context);
+  }
+  const catalog = context.loaderCatalog;
+  if (!catalog || typeof catalog.listMinecraftVersions !== 'function' || typeof catalog.listLoaderVersions !== 'function') {
+    return unsupported(
+      'LOADER_PROVIDER_UNAVAILABLE',
+      `The ${loaderLabel(loaderProviderId) || 'selected'} loader is not installed or is disabled.`,
+      requested
+    );
+  }
+  const timeoutMs = Number(context.timeoutMs) > 0 ? Number(context.timeoutMs) : LOOKUP_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+  let minecraftVersions;
+  try {
+    minecraftVersions = await withTimeout(
+      catalog.listMinecraftVersions(),
+      Math.max(250, deadline - Date.now()),
+      'VERSION_CATALOG_UNAVAILABLE',
+      'Timed out while loading Minecraft versions for this loader. Try again, or create the Java server without Geyser.'
+    );
+  } catch (err) {
+    return unsupported(
+      err.code || 'VERSION_CATALOG_UNAVAILABLE',
+      err.message || 'The Java version catalog could not be loaded.',
+      requested
+    );
+  }
+  const stableMc = sortVersionsNewest(
+    (Array.isArray(minecraftVersions) ? minecraftVersions : []).filter((id) => !isUnstableRelease(id)),
+    'minecraft'
+  ).slice(0, MAX_MINECRAFT_CANDIDATES);
+  if (!stableMc.length) {
+    return unsupported(
+      'NO_STABLE_MINECRAFT',
+      `No compatible stable Minecraft version is available for ${loaderLabel(loaderProviderId)}.`,
+      requested
+    );
+  }
+
+  let lastFailure = null;
+  for (const minecraftVersion of stableMc) {
+    if (Date.now() > deadline) {
+      return unsupported(
+        'VERSION_CATALOG_UNAVAILABLE',
+        'Timed out while searching for a compatible Geyser configuration. Try again, or create the Java server without Geyser.',
+        requested
+      );
+    }
+    let loaderVersions;
+    try {
+      loaderVersions = await withTimeout(
+        catalog.listLoaderVersions(minecraftVersion),
+        Math.max(250, deadline - Date.now()),
+        'VERSION_CATALOG_UNAVAILABLE',
+        `Timed out while loading ${loaderLabel(loaderProviderId)} versions.`
+      );
+    } catch (err) {
+      lastFailure = unsupported(
+        err.code || 'VERSION_CATALOG_UNAVAILABLE',
+        err.message || `Could not load ${loaderLabel(loaderProviderId)} versions.`,
+        { ...requested, minecraftVersion }
+      );
+      continue;
+    }
+    const stableLoaders = sortVersionsNewest(
+      (Array.isArray(loaderVersions) ? loaderVersions : []).filter((id) => !isUnstableRelease(id))
+    ).slice(0, MAX_LOADER_CANDIDATES);
+    if (!stableLoaders.length) {
+      lastFailure = unsupported(
+        'NO_COMPATIBLE_LOADER_VERSION',
+        `No stable ${loaderLabel(loaderProviderId)} version is available for Minecraft ${minecraftVersion}.`,
+        { ...requested, minecraftVersion }
+      );
+      continue;
+    }
+    for (const loaderVersion of stableLoaders) {
+      if (Date.now() > deadline) break;
+      const candidate = {
+        kind: 'java',
+        minecraftVersion,
+        loaderProviderId,
+        loaderVersion,
+      };
+      const rec = await evaluateConcrete(candidate, context);
+      if (SUCCESS_STATUSES.has(rec.status)) {
+        const adjusted = isVersionAlias(requested.minecraftVersion)
+          || isVersionAlias(requested.loaderVersion)
+          || requested.minecraftVersion !== minecraftVersion
+          || requested.loaderVersion !== loaderVersion;
+        const newestMc = stableMc[0];
+        const limitations = [...(rec.limitations || [])];
+        if (minecraftVersion !== newestMc) {
+          limitations.unshift(
+            `Minecraft ${minecraftVersion} is not the newest ${loaderLabel(loaderProviderId)} release; newer versions are not compatible with the current Geyser/Floodgate set.`
+          );
+        }
+        const message = adjusted
+          ? `Geyser automatic configuration selected Minecraft ${minecraftVersion} and ${loaderLabel(loaderProviderId)} ${loaderVersion} because they are the newest compatible versions.`
+          : rec.message;
+        return result({
+          status: rec.status,
+          recommendedMode: rec.recommendedMode,
+          authentication: rec.authentication,
+          message,
+          selectionAdjusted: adjusted,
+          target: candidate,
+          recommendedTarget: recommendedTargetOf(candidate),
+          requiredArtifacts: rec.requiredArtifacts,
+          warnings: rec.warnings,
+          limitations,
+          summary: rec.summary,
+          viaProxyReason: rec.viaProxyReason,
+        });
+      }
+      lastFailure = rec;
+    }
+  }
+  if (lastFailure) {
+    return unsupported(
+      lastFailure.code || 'NO_COMPATIBLE_COMBINATION',
+      lastFailure.message || `No compatible Geyser configuration exists for ${loaderLabel(loaderProviderId)}.`,
+      requested,
+      {
+        alternatives: lastFailure.alternatives,
+        summary: lastFailure.summary,
+      }
+    );
+  }
+  return unsupported(
+    'NO_COMPATIBLE_COMBINATION',
+    `No compatible Geyser protocol route, Floodgate build, or ${loaderLabel(loaderProviderId)} version was found.`,
+    requested
+  );
+}
+
+async function recommendProspectiveTarget(target = {}, context = {}) {
+  const loaderProviderId = String(target.loaderProviderId || target.loader || '').toLowerCase();
+  if (loaderProviderId && context.loaderCatalog?.id && String(context.loaderCatalog.id).toLowerCase() !== loaderProviderId) {
+    return unsupported(
+      'LOADER_PROVIDER_UNAVAILABLE',
+      'Automatic configuration will not change the selected Java loader.',
+      {
+        kind: 'java',
+        minecraftVersion: String(target.minecraftVersion || ''),
+        loaderProviderId,
+        loaderVersion: String(target.loaderVersion || ''),
+      }
+    );
+  }
+  if (wantsLatestCompatible(target, context)) {
+    return findLatestCompatible(target, context);
+  }
+  return evaluateConcrete(target, context);
 }
 
 module.exports = {
   LIMITATIONS,
   LOOKUP_TIMEOUT_MS,
+  SUCCESS_STATUSES,
+  evaluateConcrete,
+  findLatestCompatible,
   recommendProspectiveTarget,
 };

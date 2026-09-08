@@ -77,7 +77,8 @@ async function applyAutomatic({ server, integration }) {
     rateKey: `apply:${providerId}:${server.id}`,
     peekPort: false,
   });
-  if (recommendation.status !== 'supported' && recommendation.status !== 'supported-with-warnings') {
+  if (recommendation.status !== 'supported' && recommendation.status !== 'supported-with-warnings'
+    && recommendation.status !== 'supported-with-limitations') {
     throw Object.assign(new Error(recommendation.message || 'Automatic gateway configuration is not supported for this Java server.'), {
       status: 400,
       code: recommendation.code || 'GATEWAY_CONFIGURATION_UNSUPPORTED',
