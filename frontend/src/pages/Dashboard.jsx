@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   Server, Plus, Play, Square, RotateCcw, Terminal, Users, 
-  Clock, Trash2, Settings, Activity, RefreshCw, AlertTriangle, Radio, Loader2, Search
+  Clock, Trash2, Settings, Activity, RefreshCw, AlertTriangle, Loader2, Search
 } from 'lucide-react';
 import { serverApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
@@ -14,8 +14,10 @@ import { serverCapability } from '../utils/serverCapabilities';
 import {
   CONTROL_DISABLED_REASONS,
   PluginIndicators,
+  PluginLanActions,
   PluginPrimaryActions,
   PluginTags,
+  pluginCompatibilityWarnings,
   pluginContributionsOf,
   primarySplitActions,
   runPluginAction,
@@ -647,10 +649,12 @@ function Dashboard() {
             const canStart = serverCapability(server, 'start', can(startPermissionForKind(server.kind)));
             const canStop = serverCapability(server, 'stop', can(stopPermissionForKind(server.kind)));
             const hasMissingMods = isJava(server) && (missingModDependenciesOf(server)?.required || []).length > 0;
+            const compatibilityWarnings = pluginCompatibilityWarnings(server);
             const hasLanError = Boolean(lan.error && !/Stop or remove Bedrock Connect/i.test(lan.error));
             const hasNotification = Boolean(
               isBuilding
               || hasMissingMods
+              || compatibilityWarnings.length
               || (canRuntime && server.pending_restart === 1)
               || (canConnection && server.pending_port)
               || (canConnection && server.pending_ipv6_port)
@@ -760,6 +764,12 @@ function Dashboard() {
                   There are missing dependencies.
                 </div>
               )}
+              {compatibilityWarnings.map((item) => (
+                <div key={`${item.attachmentId}-compat`} className="mb-4 p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-200 text-xs flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{item.value}</span>
+                </div>
+              ))}
               {canRuntime && server.pending_restart === 1 && (
                 <div className="mb-4 p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
@@ -839,7 +849,7 @@ function Dashboard() {
                         className="btn btn-danger flex-1 text-sm"
                       >
                         <Square className="w-3.5 h-3.5" />
-                        {actions[`${server.id}-stop`] ? 'Stopping...' : 'Stop Java Server'}
+                        {actions[`${server.id}-stop`] ? 'Stopping...' : 'Stop Java'}
                       </button>
                     )}
                     <PluginPrimaryActions
@@ -939,7 +949,7 @@ function Dashboard() {
                   <Settings className="w-3.5 h-3.5" />
                 </button>
                 )}
-                {serverCapability(server, 'lan', can('servers.manage_lan_broadcast')) && (
+                {serverCapability(server, 'lan', can('servers.manage_lan_broadcast')) && !isJava(server) && (
                 <button
                   onClick={(e) => { if (javaControlsLocked) { e.stopPropagation(); return; } beginLanToggle(server, e); }}
                   disabled={lanLocked || lanBusy[server.id] || javaControlsLocked}
@@ -951,10 +961,18 @@ function Dashboard() {
                         : 'btn-secondary'
                   }`}
                   title={javaControlsLocked ? javaLockReason : lanTitle}
+                  aria-label="LAN"
+                  aria-pressed={lanOn}
                 >
-                  <Radio className="w-3.5 h-3.5" />
                   {lanBusy[server.id] ? '...' : 'LAN'}
                 </button>
+                )}
+                {serverCapability(server, 'lan', can('servers.manage_lan_broadcast')) && (
+                  <PluginLanActions
+                    server={server}
+                    pending={actions}
+                    onAction={(action) => handlePluginAction(server, action)}
+                  />
                 )}
                 {serverCapability(server, 'delete', can('servers.delete')) && (
                 <button

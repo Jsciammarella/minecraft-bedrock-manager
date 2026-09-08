@@ -175,6 +175,8 @@ async function runPluginDownloadServiceTests({ pluginHost }) {
   assert.ok(vanillaServices.allowedHosts.includes('piston-meta.mojang.com'));
   const geyserServices = pluginHost.createProviderServices(geyserPlugin);
   assert.ok(geyserServices.allowedHosts.includes('download.geysermc.org'));
+  assert.ok(geyserServices.allowedHosts.includes('api.modrinth.com'));
+  assert.ok(geyserServices.allowedHosts.includes('cdn.modrinth.com'));
 
   await pluginHost.setPluginEnabled('java-loader-fabric', false);
   await pluginHost.setPluginEnabled('java-loader-fabric', true);

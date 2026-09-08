@@ -46,7 +46,7 @@ function list() {
     const entry = gatewayRegistry.get(row.provider_id);
     if (!entry?.pluginId || !enabled.has(entry.pluginId)) continue;
     let raw = {
-      name: `${strip(row.name, 60)} — Geyser`,
+      name: `${strip(row.name, 60)} - Geyser`,
       address: connectHost.resolve(),
       port: Number(row.bedrock_udp_port),
       internal: false,

@@ -531,6 +531,9 @@ class ServerManager {
         logger.warn(`Could not restore LAN broadcast for server ${row.id}: ${err.message}`);
       }
     }
+    try { await require('./gatewayLan').restoreAll(); } catch (err) {
+      logger.warn(`Could not restore gateway LAN broadcasts: ${err.message}`);
+    }
   }
 
   async completePendingLanBroadcastIfNeeded(serverId) {
@@ -1152,7 +1155,33 @@ class ServerManager {
     this.provisionJobs.set(Number(serverId), job);
 
     logger.info(`Queued Java server create: ${name} on TCP ${port}`);
-    return { id: serverId, name, port, kind: 'java', status: 'creating', dataPath: serverPath };
+    const automatic = require('./gatewayIntegration').hasAutomatic(config.integrations);
+    if (!automatic) {
+      return { id: serverId, name, port, kind: 'java', status: 'creating', dataPath: serverPath };
+    }
+    const finished = await job;
+    if (!finished?.ok) {
+      const err = finished?.error || new Error('Java server creation failed');
+      throw err;
+    }
+    const server = this.getServer(serverId);
+    const integration = await require('./gatewayIntegration').applyAll({
+      server,
+      integrations: config.integrations,
+    });
+    return {
+      id: serverId,
+      serverId,
+      name,
+      port,
+      kind: 'java',
+      status: server?.status || 'stopped',
+      dataPath: serverPath,
+      serverCreated: true,
+      gatewayCreated: Boolean(integration.gatewayCreated),
+      gateway: integration.gateway || null,
+      integrationError: integration.integrationError || null,
+    };
   }
 
   async finishCreateJavaServer(serverId, config) {
@@ -1171,7 +1200,7 @@ class ServerManager {
     };
     if (provisioningCancelled()) {
       markCancelled();
-      return;
+      return { ok: false, cancelled: true };
     }
     try {
       let minecraftVersion = version;
@@ -1237,7 +1266,7 @@ class ServerManager {
       );
       if (!this.getServer(serverId) || provisioningCancelled()) {
         if (provisioningCancelled()) markCancelled();
-        return;
+        return { ok: false, cancelled: true };
       }
 
       const server = this.getServer(serverId);
@@ -1262,7 +1291,7 @@ class ServerManager {
 
       if (provisioningCancelled()) {
         markCancelled();
-        return;
+        return { ok: false, cancelled: true };
       }
 
       db.prepare('UPDATE servers SET status = ?, pending_restart_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
@@ -1270,13 +1299,15 @@ class ServerManager {
       this.invalidateServerCache(serverId);
       this.broadcastServerStatus(serverId);
       logger.info(`Created Java server: ${name} on TCP ${port}`);
+      return { ok: true, serverId };
     } catch (err) {
       logger.error(`Failed to finish creating Java server ${name}: ${err.message}`);
-      if (!this.getServer(serverId)) return;
+      if (!this.getServer(serverId)) return { ok: false, error: err };
       db.prepare('UPDATE servers SET status = ?, pending_restart = 0, pending_restart_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run('stopped', `Create failed: ${err.message}`, serverId);
       this.invalidateServerCache(serverId);
       this.broadcastServerStatus(serverId);
+      return { ok: false, error: err };
     }
   }
 
@@ -1638,6 +1669,9 @@ done
           this.invalidateServerCache(server.id);
           logger.info(`Java server ${server.name} started`);
           this.broadcastServerStatus(server.id);
+          require('./gatewayLan').restoreForServer(server.id).catch((err) => {
+            logger.warn(`Gateway LAN restore after Java start failed: ${err.message}`);
+          });
         }
       }, 4000);
 
@@ -1827,6 +1861,11 @@ done
 
     logger.info(`Server ${server.name} stopped`);
     this.broadcastServerStatus(serverId);
+    if (this.isJava(this.getServer(serverId) || server)) {
+      try {
+        require('./gatewayLan').pauseForServer(serverId, 'LAN advertising will resume when Geyser starts.');
+      } catch { /* ignore */ }
+    }
     return { success: true, message: 'Server stopped' };
   }
 
@@ -3428,6 +3467,14 @@ done
       WHERE lan_proxy_port IS NOT NULL
     `).all();
     for (const row of proxyRows) {
+      addUsed(row.port, 'ipv4', `${row.server_name} (LAN proxy)`);
+    }
+    const gatewayProxyRows = db.prepare(`
+      SELECT lan_proxy_port AS port, name AS server_name
+      FROM gateways
+      WHERE lan_proxy_port IS NOT NULL
+    `).all();
+    for (const row of gatewayProxyRows) {
       addUsed(row.port, 'ipv4', `${row.server_name} (LAN proxy)`);
     }
     if (lanBroadcast.hasAnyActive() && !this.getBedrockConnectServer()) {

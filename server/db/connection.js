@@ -465,6 +465,9 @@ ensureGatewayColumn('last_compatibility_check', 'TEXT');
 ensureGatewayColumn('last_compatibility_result', 'TEXT');
 ensureGatewayColumn('last_error', 'TEXT');
 ensureGatewayColumn('health_status', "TEXT NOT NULL DEFAULT 'stopped'");
+ensureGatewayColumn('lan_broadcast', 'INTEGER NOT NULL DEFAULT 0');
+ensureGatewayColumn('lan_proxy_port', 'INTEGER');
+ensureGatewayColumn('lan_last_error', 'TEXT');
 db.exec(`
   UPDATE gateways
   SET compatibility_mode = 'direct'

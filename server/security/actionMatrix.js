@@ -30,6 +30,8 @@ const ACTION_MATRIX = [
   { method: 'POST', route: '/api/servers/:id/auto-update', action: 'enable auto-update', mode: 'static', permission: 'servers.configure_auto_update', risk: 'elevated' },
   { method: 'DELETE', route: '/api/servers/:id/auto-update', action: 'disable auto-update', mode: 'static', permission: 'servers.configure_auto_update', risk: 'elevated' },
   { method: 'PUT', route: '/api/servers/:id/lan-broadcast', action: 'manage LAN broadcast', mode: 'static', permission: 'servers.manage_lan_broadcast', risk: 'normal' },
+  { method: 'GET', route: '/api/gateways/:id/lan-broadcast', action: 'view gateway LAN broadcast', mode: 'static', permission: 'servers.view_details', risk: 'read' },
+  { method: 'PUT', route: '/api/gateways/:id/lan-broadcast', action: 'manage gateway LAN broadcast', mode: 'static', permission: 'servers.manage_lan_broadcast', risk: 'normal' },
   { method: 'POST', route: '/api/servers/:id/java/dependencies/resolve', action: 'resolve java dependencies', mode: 'composite', permissions: ['servers.mods.install', 'servers.mods.resolve_dependencies'], risk: 'normal' },
   { method: 'POST', route: '/api/servers/:id/java/mods/validate', action: 'validate java mods', mode: 'static', permission: 'servers.mods.install', risk: 'normal' },
   { method: 'POST', route: '/api/servers/:id/java/mods', action: 'install java mods', mode: 'static', permission: 'servers.mods.install', risk: 'normal' },
@@ -67,7 +69,8 @@ const ACTION_MATRIX = [
 
   { method: 'POST', route: '/api/java/providers/:providerId/validate', action: 'validate java loader', mode: 'static', permission: 'servers.create_java', risk: 'elevated' },
 
-  { method: 'POST', route: '/api/gateways', action: 'create geyser gateway', mode: 'static', permission: 'servers.create_java', risk: 'elevated' },
+  { method: 'POST', route: '/api/gateways/providers/:providerId/recommend', action: 'recommend gateway configuration', mode: 'static', permission: 'servers.create_java', risk: 'elevated' },
+  { method: 'POST', route: '/api/gateways', action: 'create geyser gateway', mode: 'static', permission: 'gateways.create', risk: 'elevated' },
   { method: 'PATCH', route: '/api/gateways/:id', action: 'update geyser gateway', mode: 'static', permission: 'plugins.configure', risk: 'elevated' },
   { method: 'POST', route: '/api/gateways/:id/apply-settings', action: 'apply geyser settings', mode: 'static', permission: 'plugins.configure', risk: 'elevated' },
   { method: 'DELETE', route: '/api/gateways/:id', action: 'delete geyser gateway', mode: 'static', permission: 'servers.delete', risk: 'destructive' },

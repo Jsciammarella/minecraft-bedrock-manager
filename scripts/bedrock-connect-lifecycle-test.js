@@ -311,6 +311,16 @@ async function runBedrockConnectLifecycleTests({ testRoot, db, serverManager }) 
   let parsed = JSON.parse(fs.readFileSync(written.path, 'utf8'));
   assert.ok(parsed.some((item) => item.name === 'AlphaList'), 'custom_servers.json includes a newly created server');
 
+  fs.writeFileSync(
+    written.path,
+    `${JSON.stringify([{ name: 'Test-10 Geyser — Geyser', address: '192.0.2.10', port: 19146 }], null, 2)}\n`
+  );
+  written = list.writeList();
+  parsed = JSON.parse(fs.readFileSync(written.path, 'utf8'));
+  assert.equal(parsed.some((item) => String(item.name).includes('—')), false);
+  assert.equal(parsed.some((item) => String(item.name).includes('–')), false);
+  assert.ok(parsed.some((item) => item.name === 'AlphaList'));
+
   const zeldaId = addGame('Zelda');
   written = list.writeList();
   parsed = JSON.parse(fs.readFileSync(written.path, 'utf8'));
