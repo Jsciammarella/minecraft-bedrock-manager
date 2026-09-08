@@ -157,6 +157,13 @@ function publicRecord(row) {
     notices: entry ? (gatewayRegistry.publicMetadata(entry).notices || []) : [],
     floodgateCanStart,
     floodgateStartReason,
+    ...(() => {
+      try {
+        return require('./gatewayLan').publicState(row) || {};
+      } catch {
+        return {};
+      }
+    })(),
   };
 }
 
@@ -1304,6 +1311,11 @@ async function startNow(id) {
         { status: 500 }
       );
     }
+    try {
+      await require('./gatewayLan').restoreIfWanted(id, { nested: true });
+    } catch (err) {
+      logger.warn(`Gateway LAN advertising did not start with gateway ${id}: ${err.message}`);
+    }
     return { success: true, message: 'Gateway starting...' };
   } catch (err) {
     db.prepare(`UPDATE gateways SET status = 'stopped', health_status = 'failed', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
@@ -1315,6 +1327,7 @@ async function startNow(id) {
 }
 
 function stopNow(id) {
+  try { require('./gatewayLan').stopProcess(id); } catch { /* ignore */ }
   const row = get(id);
   const session = ptySessions.get(String(id));
   if (session) {
@@ -1382,6 +1395,7 @@ function forServer(serverId) {
 }
 
 function detachServer(serverId) {
+  try { require('./gatewayLan').pauseForServer(serverId); } catch { /* ignore */ }
   try {
     return require('./serverPluginAttachments').detachServer(serverId);
   } catch {
@@ -1525,6 +1539,7 @@ module.exports = {
   stopAll,
   syncLocalTargetPort,
   takenPorts,
+  withLifecycle,
   writeFloodgateKey,
   applySettings,
   exportFloodgateKey,

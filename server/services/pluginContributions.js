@@ -2,10 +2,11 @@ const connectHost = require('./connectHost');
 
 const TAG_STYLES = new Set(['info', 'success', 'warning', 'danger', 'muted']);
 const INDICATOR_STATES = new Set(['online', 'offline', 'starting', 'degraded', 'failed', 'plugin_disabled']);
-const ACTION_PLACEMENTS = new Set(['primary-split', 'secondary']);
+const ACTION_PLACEMENTS = new Set(['primary-split', 'secondary', 'lan-toggle']);
 const ACTION_VARIANTS = new Set(['primary', 'secondary', 'danger', 'warning']);
 const ACTION_STATES = new Set(['enabled', 'disabled']);
 const ACTION_ICONS = new Set(['none', 'play', 'stop']);
+const ACTION_PERMISSIONS = new Set(['servers.manage_lan_broadcast']);
 const CONTROL_POLICIES = new Set(['normal', 'remote-plugin-lifecycle', 'plugin-disabled']);
 const SUMMARY_KEYS = new Set([
   'mode', 'status', 'bedrockAddress', 'bedrockPort', 'viaProxyStatus', 'floodgateStatus', 'lastError',
@@ -97,6 +98,7 @@ function sanitizeActions(raw) {
     if (!id || !label || !placement || seen.has(id)) continue;
     if (item?.url || item?.href || item?.command || item?.endpoint || item?.onClick) continue;
     seen.add(id);
+    const permission = ACTION_PERMISSIONS.has(item?.permission) ? item.permission : undefined;
     out.push({
       id,
       label,
@@ -106,6 +108,10 @@ function sanitizeActions(raw) {
       icon,
       confirmation: Boolean(item?.confirmation),
       disabledReason: stripText(item?.disabledReason, 160),
+      kind: item?.kind === 'toggle' ? 'toggle' : undefined,
+      active: Boolean(item?.active),
+      waiting: Boolean(item?.waiting),
+      permission,
     });
   }
   return out;

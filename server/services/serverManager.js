@@ -531,6 +531,9 @@ class ServerManager {
         logger.warn(`Could not restore LAN broadcast for server ${row.id}: ${err.message}`);
       }
     }
+    try { await require('./gatewayLan').restoreAll(); } catch (err) {
+      logger.warn(`Could not restore gateway LAN broadcasts: ${err.message}`);
+    }
   }
 
   async completePendingLanBroadcastIfNeeded(serverId) {
@@ -1666,6 +1669,9 @@ done
           this.invalidateServerCache(server.id);
           logger.info(`Java server ${server.name} started`);
           this.broadcastServerStatus(server.id);
+          require('./gatewayLan').restoreForServer(server.id).catch((err) => {
+            logger.warn(`Gateway LAN restore after Java start failed: ${err.message}`);
+          });
         }
       }, 4000);
 
@@ -1855,6 +1861,11 @@ done
 
     logger.info(`Server ${server.name} stopped`);
     this.broadcastServerStatus(serverId);
+    if (this.isJava(this.getServer(serverId) || server)) {
+      try {
+        require('./gatewayLan').pauseForServer(serverId, 'LAN advertising will resume when Geyser starts.');
+      } catch { /* ignore */ }
+    }
     return { success: true, message: 'Server stopped' };
   }
 
@@ -3456,6 +3467,14 @@ done
       WHERE lan_proxy_port IS NOT NULL
     `).all();
     for (const row of proxyRows) {
+      addUsed(row.port, 'ipv4', `${row.server_name} (LAN proxy)`);
+    }
+    const gatewayProxyRows = db.prepare(`
+      SELECT lan_proxy_port AS port, name AS server_name
+      FROM gateways
+      WHERE lan_proxy_port IS NOT NULL
+    `).all();
+    for (const row of gatewayProxyRows) {
       addUsed(row.port, 'ipv4', `${row.server_name} (LAN proxy)`);
     }
     if (lanBroadcast.hasAnyActive() && !this.getBedrockConnectServer()) {

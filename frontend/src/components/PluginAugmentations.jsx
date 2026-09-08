@@ -64,6 +64,10 @@ export function secondaryPluginActions(server) {
   return contributionActions(server, 'secondary');
 }
 
+export function lanToggleActions(server) {
+  return contributionActions(server, 'lan-toggle');
+}
+
 export function pluginCompatibilityWarnings(server) {
   return pluginContributionsOf(server).flatMap((item) => (
     (item.summary || [])
@@ -175,6 +179,47 @@ export function PluginSecondaryActions({ server, pending = {}, onAction }) {
       pending={pending}
       onAction={onAction}
     />
+  );
+}
+
+export function PluginLanActions({ server, pending = {}, onAction }) {
+  const actions = lanToggleActions(server);
+  if (!actions.length) return null;
+  return (
+    <>
+      {actions.map((action) => {
+        const key = `${server.id}-${action.pluginId}-${action.id}`;
+        const busy = Boolean(pending[key]);
+        const on = Boolean(action.active || action.waiting);
+        const disabled = action.state !== 'enabled' || busy;
+        const title = action.disabledReason
+          || (action.waiting ? 'LAN advertising will resume when Geyser starts.' : action.label);
+        return (
+          <button
+            key={`${action.pluginId}-${action.id}`}
+            type="button"
+            className={`btn text-sm ${
+              disabled && !on
+                ? 'bg-mc-surfaceLight text-mc-textMuted'
+                : on
+                  ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 hover:bg-sky-500/30'
+                  : 'btn-secondary'
+            }`}
+            disabled={disabled}
+            title={title}
+            aria-label="LAN"
+            aria-pressed={on}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (disabled) return;
+              onAction(action);
+            }}
+          >
+            {busy ? '...' : action.label}
+          </button>
+        );
+      })}
+    </>
   );
 }
 

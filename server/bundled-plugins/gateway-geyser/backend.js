@@ -158,6 +158,8 @@ function createProvider(services = {}) {
         targetKinds: ['java'],
         supportsCreateForTarget: true,
         supportsProspectiveTargetRecommendation: true,
+        supportsLanBroadcast: true,
+        lanBroadcastLabel: 'LAN',
         createWizard: {
           label: 'Bedrock access',
           description: 'Allow Bedrock clients to connect to this Java server',
@@ -497,6 +499,19 @@ function createProvider(services = {}) {
         authentication: record.authentication,
       };
     },
+    getLanBroadcastTarget(gateway, linkedServer) {
+      const port = Number(gateway?.bedrock_udp_port);
+      return {
+        resourceType: 'gateway',
+        resourceId: String(gateway?.id || ''),
+        ownerKey: `gateway:${gateway?.id}`,
+        name: String(gateway?.name || 'Geyser'),
+        protocol: 'udp',
+        port,
+        localOnly: true,
+        targetServerId: linkedServer?.id || gateway?.target_server_id || null,
+      };
+    },
     getServerContribution({ attachment, javaServer, pluginDisabled } = {}) {
       const db = require('../../db/connection');
       const id = Number(attachment?.resource_id);
@@ -571,6 +586,13 @@ function createProvider(services = {}) {
           confirmation: false,
           disabledReason: '',
         });
+      }
+      if (!pluginDisabled && javaServer) {
+        try {
+          const gatewayLan = require('../../services/gatewayLan');
+          const lanAction = gatewayLan.lanActionFor(record, javaServer, attachment, 'geyser-lan');
+          if (lanAction) actions.push(lanAction);
+        } catch { /* optional */ }
       }
       return {
         pluginId: 'gateway-geyser',
@@ -843,6 +865,23 @@ module.exports = {
           const running = Boolean(status.running) || status.status === 'running' || status.status === 'starting';
           if (running) return services.gateways.stopOwn(resourceId);
           return services.gateways.startOwn(resourceId);
+        },
+      });
+      registerPluginAction({
+        id: 'geyser-lan',
+        resourceType: 'gateway',
+        permission: 'servers.manage_lan_broadcast',
+        confirmation: false,
+        async handler({ resourceId, javaServer }) {
+          const gatewayLan = require('../../services/gatewayLan');
+          const current = gatewayLan.status(resourceId);
+          if (current.enabled && !javaServer) {
+            throw Object.assign(new Error('This gateway is not linked to a Java server.'), {
+              status: 400,
+              code: 'GATEWAY_NOT_LINKED',
+            });
+          }
+          return gatewayLan.setEnabled(resourceId, !current.enabled);
         },
       });
       registerPluginAction({

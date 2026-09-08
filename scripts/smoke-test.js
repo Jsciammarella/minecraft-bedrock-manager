@@ -35,6 +35,7 @@ const { runJavaProviderTests } = require('./java-provider-test');
 const { runPluginDownloadServiceTests } = require('./plugin-download-service-test');
 const { runGeyserFloodgateTests } = require('./geyser-floodgate-test');
 const { runGatewayRecommendTests } = require('./gateway-recommend-test');
+const { runGatewayLanTests } = require('./gateway-lan-test');
 const { runCatalogProviderTests } = require('./catalog-provider-test');
 const { runPluginSettingsTests } = require('./plugin-settings-test');
 const { runModrinthProviderTests } = require('./modrinth-provider-test');
@@ -469,6 +470,7 @@ async function run() {
   await runJavaProviderTests({ pluginHost, testRoot });
   await runGeyserFloodgateTests();
   await runGatewayRecommendTests();
+  await runGatewayLanTests();
   await runPluginDownloadServiceTests({ pluginHost, testRoot });
   await runCatalogProviderTests({ pluginHost, testRoot });
   await runPluginSettingsTests({ pluginHost, testRoot });
@@ -1289,6 +1291,10 @@ async function run() {
   assert(serverColumns.includes('pending_ipv6_port'), 'servers.pending_ipv6_port column was not created');
   assert(serverColumns.includes('lan_broadcast'), 'servers.lan_broadcast column was not created');
   assert(serverColumns.includes('lan_proxy_port'), 'servers.lan_proxy_port column was not created');
+  const gatewayColumns = db.prepare('PRAGMA table_info(gateways)').all().map(column => column.name);
+  assert(gatewayColumns.includes('lan_broadcast'), 'gateways.lan_broadcast column was not created');
+  assert(gatewayColumns.includes('lan_proxy_port'), 'gateways.lan_proxy_port column was not created');
+  assert(gatewayColumns.includes('lan_last_error'), 'gateways.lan_last_error column was not created');
   assert(serverColumns.includes('remote_host'), 'servers.remote_host column was not created');
   assert(serverColumns.includes('remote_ipv4_port'), 'servers.remote_ipv4_port column was not created');
   assert(serverColumns.includes('remote_ipv6_port'), 'servers.remote_ipv6_port column was not created');

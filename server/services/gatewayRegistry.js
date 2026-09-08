@@ -78,6 +78,16 @@ function publicMetadata(entry) {
     targetKinds: sanitizeTargetKinds(meta.targetKinds),
     supportsCreateForTarget: Boolean(meta.supportsCreateForTarget),
     supportsProspectiveTargetRecommendation: supportsRecommend,
+    supportsLanBroadcast: Boolean(meta.supportsLanBroadcast)
+      && typeof entry.provider.getLanBroadcastTarget === 'function',
+    lanBroadcastLabel: (() => {
+      const label = String(meta.lanBroadcastLabel || '')
+        .replace(/<[^>]*>/g, '')
+        .replace(/[\u0000-\u001f]/g, '')
+        .trim()
+        .slice(0, 40);
+      return label || undefined;
+    })(),
     createWizard: sanitizeCreateWizard(meta.createWizard),
     notices: sanitizeNotices(meta.notices),
     downloadHosts: Array.isArray(meta.downloadHosts) ? meta.downloadHosts.map(String) : [],

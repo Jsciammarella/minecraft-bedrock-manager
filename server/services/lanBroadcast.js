@@ -169,21 +169,64 @@ async function checkForUpdates({ download = true } = {}) {
   }
 }
 
-function isActive(serverId) {
-  const session = processes.get(Number(serverId));
+function ownerKey(kind, id) {
+  const type = String(kind || '').toLowerCase();
+  const num = Number(id);
+  if ((type !== 'server' && type !== 'gateway') || !Number.isInteger(num) || num < 1) {
+    throw Object.assign(new Error('Invalid LAN broadcast owner key'), {
+      status: 400,
+      code: 'GATEWAY_TARGET_UNAVAILABLE',
+    });
+  }
+  return `${type}:${num}`;
+}
+
+function parseOwnerKey(key) {
+  const match = String(key || '').match(/^(server|gateway):(\d+)$/);
+  if (!match) return null;
+  return { kind: match[1], id: Number(match[2]) };
+}
+
+function serverOwnerKey(serverId) {
+  return ownerKey('server', serverId);
+}
+
+function maybeServerOwnerKey(serverId) {
+  const num = Number(serverId);
+  if (!Number.isInteger(num) || num < 1) return '';
+  return `server:${num}`;
+}
+
+function isActiveForOwner(key) {
+  const session = processes.get(String(key || ''));
   return Boolean(session && session.child && session.child.exitCode == null);
+}
+
+function isActive(serverId) {
+  const key = maybeServerOwnerKey(serverId);
+  return key ? isActiveForOwner(key) : false;
 }
 
 function hasAnyActive() {
   return [...processes.values()].some(item => item.child && item.child.exitCode == null);
 }
 
+function getErrorForOwner(key) {
+  return lastErrors.get(String(key || '')) || null;
+}
+
 function getError(serverId) {
-  return lastErrors.get(Number(serverId)) || null;
+  const key = maybeServerOwnerKey(serverId);
+  return key ? getErrorForOwner(key) : null;
+}
+
+function getProxyPortForOwner(key) {
+  return processes.get(String(key || ''))?.proxyPort || null;
 }
 
 function getProxyPort(serverId) {
-  return processes.get(Number(serverId))?.proxyPort || null;
+  const key = maybeServerOwnerKey(serverId);
+  return key ? getProxyPortForOwner(key) : null;
 }
 
 function usedProxyPorts() {
@@ -282,10 +325,10 @@ function listPhantomPids() {
   return pids;
 }
 
-function stop(serverId) {
-  const key = Number(serverId);
-  const session = processes.get(key);
-  lastErrors.delete(key);
+function stopByOwner(key) {
+  const owner = String(key || '');
+  const session = processes.get(owner);
+  lastErrors.delete(owner);
   if (!session) return;
   session.stopping = true;
   const pid = session.child?.pid;
@@ -295,11 +338,16 @@ function stop(serverId) {
     try { session.child.kill('SIGKILL'); } catch { /* ignore */ }
     waitForPid(pid, 1000);
   }
-  processes.delete(key);
+  processes.delete(owner);
+}
+
+function stop(serverId) {
+  const key = maybeServerOwnerKey(serverId);
+  if (key) stopByOwner(key);
 }
 
 function stopAll() {
-  for (const id of [...processes.keys()]) stop(id);
+  for (const key of [...processes.keys()]) stopByOwner(key);
 }
 
 function killOrphanPhantoms() {
@@ -346,51 +394,126 @@ function bindPortFor(server, preferred) {
 }
 
 function start(server, { proxyPort, targetOverride } = {}) {
-  const key = Number(server.id);
-  if (isActive(key)) return processes.get(key);
+  const key = serverOwnerKey(server.id);
+  if (isActiveForOwner(key)) return processes.get(key);
+  return startForTarget(targetFromServer(server, { proxyPort, targetOverride }));
+}
+
+function targetFromServer(server, { proxyPort, targetOverride } = {}) {
+  return {
+    ownerKey: serverOwnerKey(server.id),
+    name: String(server.name || 'Server').slice(0, 80),
+    targetOverride: targetOverride || dedicatedServerTarget(server),
+    protocol: 'udp',
+    preferredProxyPort: proxyPort || server.lan_proxy_port,
+    bindPort: bindPortFor(server, proxyPort || server.lan_proxy_port),
+    removePorts: server.kind === 'remote',
+    ipv6: server.kind !== 'remote',
+    allowLoopbackTarget: true,
+  };
+}
+
+function assertSafeTarget(target) {
+  const owner = parseOwnerKey(target?.ownerKey);
+  if (!owner) {
+    throw Object.assign(new Error('Invalid LAN broadcast owner key'), {
+      status: 400,
+      code: 'GATEWAY_TARGET_UNAVAILABLE',
+    });
+  }
+  if (String(target.protocol || 'udp').toLowerCase() !== 'udp') {
+    throw Object.assign(new Error('LAN advertising only supports UDP Bedrock endpoints.'), {
+      status: 400,
+      code: 'GATEWAY_LAN_UNSUPPORTED',
+    });
+  }
+  const port = Number(target.targetPort || target.bindPort);
+  if (target.targetPort != null && (!Number.isInteger(Number(target.targetPort)) || Number(target.targetPort) < 1 || Number(target.targetPort) > 65535)) {
+    throw Object.assign(new Error('LAN target port must be between 1 and 65535.'), {
+      status: 400,
+      code: 'GATEWAY_TARGET_UNAVAILABLE',
+    });
+  }
+  const address = String(target.targetAddress || '').trim();
+  if (address) {
+    if (connectHost.isLoopbackHost(address) && !target.allowLoopbackTarget) {
+      throw Object.assign(new Error('LAN advertising cannot target a loopback address.'), {
+        status: 400,
+        code: 'GATEWAY_TARGET_UNAVAILABLE',
+      });
+    }
+    if (!target.allowLoopbackTarget) {
+      const lan = connectHost.detectLanIPv4();
+      if (!lan || address !== lan) {
+        throw Object.assign(new Error('LAN advertising can only target this host\'s detected LAN address.'), {
+          status: 400,
+          code: 'GATEWAY_TARGET_UNAVAILABLE',
+        });
+      }
+    }
+  }
+  return { owner, port };
+}
+
+function phantomTargetString(target) {
+  if (target.targetOverride) return String(target.targetOverride);
+  const host = String(target.targetAddress || '').trim();
+  const wrapped = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  return `${wrapped}:${Number(target.targetPort)}`;
+}
+
+function startForTarget(target = {}) {
+  const { owner } = assertSafeTarget(target);
+  const key = target.ownerKey;
+  if (isActiveForOwner(key)) return processes.get(key);
   lastErrors.delete(key);
 
   const bin = binaryPath();
   if (!fs.existsSync(bin)) {
-    throw new Error('Phantom binary is not installed yet');
+    throw Object.assign(new Error('Phantom binary is not installed yet'), {
+      status: 500,
+      code: 'LAN_PROXY_START_FAILED',
+    });
   }
 
-  const port = bindPortFor(server, proxyPort || server.lan_proxy_port);
-  const target = targetOverride || dedicatedServerTarget(server);
+  const port = Number(target.bindPort) || allocateProxyPort(target.preferredProxyPort);
+  const serverTarget = phantomTargetString(target);
+  if (!serverTarget || serverTarget.endsWith(':NaN') || serverTarget.startsWith(':')) {
+    throw Object.assign(new Error('LAN advertising is missing a Bedrock UDP target.'), {
+      status: 400,
+      code: 'GATEWAY_TARGET_UNAVAILABLE',
+    });
+  }
+  const name = String(target.name || owner.kind).replace(/[<>]/g, '').slice(0, 80) || owner.kind;
   const args = [
-    '-server', target,
+    '-server', serverTarget,
     '-bind', '0.0.0.0',
     '-bind_port', String(port),
     '-timeout', '60',
   ];
-  // Remote pongs include the upstream host:port. Xbox then tries that address
-  // (or NetherNet) instead of this proxy. Strip ports so the join stays here.
-  if (server.kind === 'remote') {
-    args.push('-remove_ports');
-  } else {
-    args.push('-6');
-  }
-  logger.info(`Starting Phantom for ${server.name}: ${args.join(' ')}`);
+  if (target.removePorts) args.push('-remove_ports');
+  else if (target.ipv6 !== false) args.push('-6');
+  logger.info(`Starting Phantom for ${name} (${key}): ${args.join(' ')}`);
   const child = spawn(bin, args, {
     cwd: BIN_DIR,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  const session = { child, proxyPort: port, stopping: false };
+  const session = { child, proxyPort: port, stopping: false, ownerKey: key };
   processes.set(key, session);
 
-  const logLine = (stream) => (buf) => {
+  const logLine = () => (buf) => {
     String(buf).split(/\r?\n/).filter(Boolean).forEach((line) => {
-      logger.info(`[phantom ${server.name}] ${line}`);
+      logger.info(`[phantom ${name}] ${line}`);
     });
   };
-  child.stdout.on('data', logLine('stdout'));
-  child.stderr.on('data', logLine('stderr'));
+  child.stdout.on('data', logLine());
+  child.stderr.on('data', logLine());
   child.on('exit', (code) => {
     processes.delete(key);
     if (!session.stopping) {
-      const message = `LAN broadcast for ${server.name} stopped unexpectedly (code ${code}). UDP ${DISCOVERY_PORT} may already be in use.`;
+      const message = `LAN broadcast for ${name} stopped unexpectedly (code ${code}). UDP ${DISCOVERY_PORT} may already be in use.`;
       lastErrors.set(key, message);
       logger.warn(message);
     }
@@ -398,7 +521,7 @@ function start(server, { proxyPort, targetOverride } = {}) {
   child.on('error', (err) => {
     processes.delete(key);
     lastErrors.set(key, err.message);
-    logger.error(`Failed to start Phantom for ${server.name}: ${err.message}`);
+    logger.error(`Failed to start Phantom for ${name}: ${err.message}`);
   });
 
   return session;
@@ -421,15 +544,23 @@ async function startAndWait(server, options = {}) {
       logger.warn(`Could not pre-resolve remote host for ${server.name}: ${err.message}`);
     }
   }
-  const session = start(server, { ...options, targetOverride });
+  return startAndWaitForTarget(targetFromServer(server, { ...options, targetOverride }));
+}
+
+async function startAndWaitForTarget(target) {
+  ensureBinary();
+  const session = startForTarget(target);
   await new Promise((resolve, reject) => {
     const onExit = (code) => {
       cleanup();
-      reject(new Error(`Phantom exited immediately (code ${code}). UDP ${DISCOVERY_PORT} is probably in use by Bedrock Connect or another process.`));
+      reject(Object.assign(
+        new Error(`Phantom exited immediately (code ${code}). UDP ${DISCOVERY_PORT} is probably in use by Bedrock Connect or another process.`),
+        { code: 'LAN_PROXY_START_FAILED', status: 500 }
+      ));
     };
     const onError = (err) => {
       cleanup();
-      reject(err);
+      reject(Object.assign(err, { code: err.code || 'LAN_PROXY_START_FAILED', status: err.status || 500 }));
     };
     const timer = setTimeout(() => {
       cleanup();
@@ -446,20 +577,32 @@ async function startAndWait(server, options = {}) {
   return session;
 }
 
+function statusForOwner(key, extras = {}) {
+  const owner = parseOwnerKey(key);
+  return {
+    enabled: Boolean(extras.enabled),
+    active: Boolean(extras.native) || isActiveForOwner(key),
+    native: Boolean(extras.native),
+    waiting: Boolean(extras.enabled) && !extras.native && !isActiveForOwner(key),
+    proxyPort: extras.proxyPort || getProxyPortForOwner(key),
+    error: extras.error || getErrorForOwner(key),
+    discoveryPort: DISCOVERY_PORT,
+    ownerKey: owner ? `${owner.kind}:${owner.id}` : String(key || ''),
+  };
+}
+
 function statusFor(server) {
   const id = Number(server.id);
   const native = Number(server.port) === DISCOVERY_PORT
     && server.kind !== 'bedrock_connect'
     && server.kind !== 'remote'
     && server.kind !== 'java';
-  return {
+  return statusForOwner(maybeServerOwnerKey(id) || `server:${id}`, {
     enabled: Number(server.lan_broadcast) === 1,
-    active: native || isActive(id),
     native,
     proxyPort: server.lan_proxy_port || getProxyPort(id),
     error: getError(id),
-    discoveryPort: DISCOVERY_PORT,
-  };
+  });
 }
 
 module.exports = {
@@ -474,19 +617,28 @@ module.exports = {
   checkForUpdates,
   ensureBinary,
   getError,
+  getErrorForOwner,
   getProxyPort,
+  getProxyPortForOwner,
   hasAnyActive,
   installedVersion,
   isActive,
+  isActiveForOwner,
   killOrphanPhantoms,
   listPhantomPids,
   occupyDiscoveryPorts,
+  ownerKey,
+  parseOwnerKey,
   reapOrphans,
   releaseDiscoveryPorts,
   start,
   startAndWait,
+  startAndWaitForTarget,
+  startForTarget,
   statusFor,
+  statusForOwner,
   stop,
   stopAll,
+  stopByOwner,
   usedProxyPorts,
 };

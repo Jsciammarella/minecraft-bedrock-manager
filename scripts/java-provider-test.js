@@ -709,6 +709,7 @@ versionRange="[13.0.8,)"
   const geyserMeta = gatewayRegistry.list().find((item) => item.id === 'geyser');
   assert.deepEqual(geyserMeta.targetKinds, ['java']);
   assert.equal(geyserMeta.supportsCreateForTarget, true);
+  assert.equal(geyserMeta.supportsLanBroadcast, true);
   assert.equal(geyserMeta.managementPluginId, 'gateway-geyser');
   assert.ok(pluginHost.getMenuItems().some((item) => item.pluginId === 'gateway-geyser' && item.label === 'Geyser'));
   assert.equal(pluginHost.getMenuItems().some((item) => item.path === '/gateways'), false);

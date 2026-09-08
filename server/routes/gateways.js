@@ -107,4 +107,46 @@ router.get('/:id/logs', requirePermission('servers.console.view'), (req, res) =>
   }
 });
 
+function authorizeGatewayLan(req, row, permission = 'servers.manage_lan_broadcast') {
+  const { assertPermission } = require('../middleware/auth');
+  const gatewayLan = require('../services/gatewayLan');
+  gatewayLan.requireEnabledProvider(row);
+  const java = row.target_type === 'local-server' && row.target_server_id
+    ? require('../services/serverManager').getServer(row.target_server_id)
+    : null;
+  if (!java || java.kind !== 'java') {
+    throw Object.assign(new Error('This gateway is not linked to a Java server.'), {
+      status: 400,
+      code: 'GATEWAY_NOT_LINKED',
+    });
+  }
+  assertPermission(req, permission, java);
+  return java;
+}
+
+router.get('/:id/lan-broadcast', (req, res) => {
+  try {
+    const row = gatewayManager.get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Gateway not found', code: 'GATEWAY_TARGET_UNAVAILABLE' });
+    authorizeGatewayLan(req, row, 'servers.view_details');
+    res.json(require('../services/gatewayLan').status(row.id));
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, message: err.message, code: err.code || 'GATEWAY_LAN_UNSUPPORTED' });
+  }
+});
+
+router.put('/:id/lan-broadcast', async (req, res) => {
+  try {
+    const row = gatewayManager.get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Gateway not found', code: 'GATEWAY_TARGET_UNAVAILABLE' });
+    authorizeGatewayLan(req, row);
+    const enabled = req.body?.enabled === true || req.body?.enabled === 1 || req.body?.enabled === 'true';
+    const result = await require('../services/gatewayLan').setEnabled(row.id, enabled);
+    try { require('../services/serverManager').broadcastServerStatus(row.target_server_id); } catch { /* ignore */ }
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, message: err.message, code: err.code || 'GATEWAY_LAN_UNSUPPORTED' });
+  }
+});
+
 module.exports = router;

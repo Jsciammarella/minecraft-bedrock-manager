@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   Server, Plus, Play, Square, RotateCcw, Terminal, Users, 
-  Clock, Trash2, Settings, Activity, RefreshCw, AlertTriangle, Radio, Loader2, Search
+  Clock, Trash2, Settings, Activity, RefreshCw, AlertTriangle, Loader2, Search
 } from 'lucide-react';
 import { serverApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
@@ -14,6 +14,7 @@ import { serverCapability } from '../utils/serverCapabilities';
 import {
   CONTROL_DISABLED_REASONS,
   PluginIndicators,
+  PluginLanActions,
   PluginPrimaryActions,
   PluginTags,
   pluginCompatibilityWarnings,
@@ -948,7 +949,7 @@ function Dashboard() {
                   <Settings className="w-3.5 h-3.5" />
                 </button>
                 )}
-                {serverCapability(server, 'lan', can('servers.manage_lan_broadcast')) && (
+                {serverCapability(server, 'lan', can('servers.manage_lan_broadcast')) && !isJava(server) && (
                 <button
                   onClick={(e) => { if (javaControlsLocked) { e.stopPropagation(); return; } beginLanToggle(server, e); }}
                   disabled={lanLocked || lanBusy[server.id] || javaControlsLocked}
@@ -960,10 +961,18 @@ function Dashboard() {
                         : 'btn-secondary'
                   }`}
                   title={javaControlsLocked ? javaLockReason : lanTitle}
+                  aria-label="LAN"
+                  aria-pressed={lanOn}
                 >
-                  <Radio className="w-3.5 h-3.5" />
                   {lanBusy[server.id] ? '...' : 'LAN'}
                 </button>
+                )}
+                {serverCapability(server, 'lan', can('servers.manage_lan_broadcast')) && (
+                  <PluginLanActions
+                    server={server}
+                    pending={actions}
+                    onAction={(action) => handlePluginAction(server, action)}
+                  />
                 )}
                 {serverCapability(server, 'delete', can('servers.delete')) && (
                 <button

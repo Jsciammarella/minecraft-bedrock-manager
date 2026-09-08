@@ -943,6 +943,7 @@ async function setPluginEnabled(id, enabled, options = {}) {
     const gatewayManager = require('./gatewayManager');
     try { require('./pluginDashboard').snapshotPlugin(plugin.id); } catch { /* ignore */ }
     try { require('./pluginContributions').persistEnabledContributions(plugin.id); } catch { /* ignore */ }
+    try { require('./gatewayLan').stopAllForPlugin(plugin.id); } catch { /* ignore */ }
     for (const row of gatewayManager.runningForPlugin(plugin.id)) {
       try { gatewayManager.stop(row.id); } catch { /* ignore */ }
     }
