@@ -34,7 +34,7 @@ function listAllForPlugin(pluginId) {
     SELECT * FROM server_plugin_attachments
     WHERE plugin_id = ?
     ORDER BY id
-  `).all(String(pluginId)).map(fromDbRow);
+  `).all(String(pluginId)).map(rowFromDb);
 }
 
 function findByResource(pluginId, resourceType, resourceId) {

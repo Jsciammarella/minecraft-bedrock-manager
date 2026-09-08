@@ -22,7 +22,7 @@ api.interceptors.response.use(
 export const serverApi = {
   getAll: () => api.get('/servers'),
   getById: (id) => api.get(`/servers/${id}`),
-  create: (data) => api.post('/servers', data, { timeout: 60000 }),
+  create: (data, opts = {}) => api.post('/servers', data, { timeout: opts.timeout || 60000 }),
   update: (id, data) => api.put(`/servers/${id}`, data),
   delete: (id, opts = {}) => api.delete(`/servers/${id}`, { params: opts }),
   start: (id) => api.post(`/servers/${id}/start`, undefined, { timeout: 10 * 60 * 1000 }),
@@ -210,6 +210,11 @@ export const bedrockConnectApi = {
 
 export const gatewayApi = {
   providers: () => api.get('/gateway-providers'),
+  recommend: (providerId, target) => api.post(
+    `/gateways/providers/${encodeURIComponent(providerId)}/recommend`,
+    { target },
+    { timeout: 20000 }
+  ),
   list: () => api.get('/gateways'),
   create: (data) => api.post('/gateways', data, { timeout: 10 * 60 * 1000 }),
   get: (id) => api.get(`/gateways/${id}`),

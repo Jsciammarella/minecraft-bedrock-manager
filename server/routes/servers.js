@@ -197,6 +197,9 @@ router.post('/', async (req, res) => {
     assertPermission(req, catalog.createPermissionForKind(kind));
     if (kind === 'bedrock_connect') bedrockConnectPolicy.assertAvailable('create');
     if (kind === 'java') javaHostingPolicy.assertServerEditionAvailable('java', 'create');
+    if (kind === 'java' && require('../services/gatewayIntegration').hasAutomatic(req.body?.integrations)) {
+      assertPermission(req, 'gateways.create');
+    }
     const result = await serverManager.createServer(req.body);
     res.status(201).json(result);
   } catch (err) {

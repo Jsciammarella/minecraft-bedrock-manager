@@ -6,8 +6,6 @@ const VIAPROXY_VERSION = '3.4.12';
 const VIAPROXY_DOWNLOAD = `https://github.com/ViaVersion/ViaProxy/releases/download/v${VIAPROXY_VERSION}/ViaProxy-${VIAPROXY_VERSION}.jar`;
 const GEYSER_NATIVE_JAVA_VERSIONS = ['1.26.2'];
 const FLOODGATE_SPIGOT_DOWNLOAD = 'https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot';
-const FLOODGATE_NEOFORGE_DOWNLOAD = 'https://cdn.modrinth.com/data/bWrNNfkb/versions/YapRHgnZ/Floodgate-Neoforge-2.2.4-b38.jar';
-const FLOODGATE_FABRIC_DOWNLOAD = 'https://cdn.modrinth.com/data/bWrNNfkb/versions/Mf2wV7re/Floodgate-Fabric-2.2.4-b38.jar';
 const DOWNLOAD_HOSTS = [
   'download.geysermc.org',
   'repo.opencollab.dev',
@@ -17,7 +15,12 @@ const DOWNLOAD_HOSTS = [
   'github-releases.githubusercontent.com',
   'release-assets.githubusercontent.com',
   'cdn.modrinth.com',
+  'api.modrinth.com',
 ];
+const floodgateVersions = require('./floodgateVersions');
+const floodgateInstall = require('./floodgateInstall');
+const floodgateStatus = require('./floodgateStatus');
+const floodgateRecommend = require('./floodgateRecommend');
 
 function yamlEscape(value) {
   return String(value ?? '').replace(/"/g, '\\"');
@@ -79,6 +82,7 @@ function findJavac() {
 }
 
 function ensureFloodgateJoinPlugin(record) {
+  // FloodgateJoin is not a replacement for the backend Floodgate Fabric/NeoForge/Paper artifact.
   if (record.authentication !== 'floodgate') return;
   if (String(record.compatibility_mode || 'direct') !== 'viaproxy') return;
   const fs = require('fs');
@@ -123,10 +127,28 @@ function sendError(res, err) {
     error: err.message,
     code: err.code,
     preview: err.preview,
+    loader: err.loader,
+    minecraftVersion: err.minecraftVersion,
+    loaderVersion: err.loaderVersion,
   });
 }
 
-function createProvider() {
+function createProvider(services = {}) {
+  function catalogDeps(extra = {}) {
+    const allowHosts = extra.allowHosts || DOWNLOAD_HOSTS;
+    return {
+      allowHosts,
+      requestJson: extra.requestJson || (async (url, opts = {}) => {
+        const hosts = opts.allowHosts || allowHosts;
+        if (services.http && typeof services.http.getJson === 'function') {
+          return services.http.getJson(url, { allowHosts: hosts });
+        }
+        return require('../../services/controlledDownload').getJson(url, { allowHosts: hosts });
+      }),
+      downloadToFile: extra.downloadToFile,
+    };
+  }
+
   return {
     getMetadata() {
       return {
@@ -135,6 +157,18 @@ function createProvider() {
         recommended: true,
         targetKinds: ['java'],
         supportsCreateForTarget: true,
+        supportsProspectiveTargetRecommendation: true,
+        supportsLanBroadcast: true,
+        lanBroadcastLabel: 'LAN',
+        createWizard: {
+          label: 'Bedrock access',
+          description: 'Allow Bedrock clients to connect to this Java server',
+          recommendedOptionLabel: 'Configure automatically',
+          skipOptionLabel: 'Do not configure',
+          laterOptionLabel: 'Configure after server creation',
+          supportsVanillaAutomatic: false,
+          vanillaNote: '(Automatic Geyser configuration for Vanilla is not currently supported by Minecraft Server Manager.)',
+        },
         managementPage: 'home',
         downloadHosts: DOWNLOAD_HOSTS,
         viaproxyVersion: VIAPROXY_VERSION,
@@ -144,8 +178,10 @@ function createProvider() {
           'ViaProxy compatibility is optional and is never installed unless you choose it.',
           'Offline authentication is insecure and must not be used on a public network.',
           'Floodgate requires the same raw 16-byte key.pem on Geyser and the Java Floodgate plugin.',
-          'For a local Java server, Start installs Floodgate into mods/ or plugins/ if it is missing, copies the key, and restarts that Java server.',
-          'ViaProxy CLI still refuses online-mode Java without a join helper. Start compiles FloodgateJoin.jar against ViaProxy so Floodgate can authenticate Bedrock players.',
+          'Floodgate is resolved for the Java server\'s exact Minecraft version and loader. Unsupported combinations are blocked before any files change.',
+          'On Fabric, a compatible Fabric API build is installed with Floodgate. Fabric Loader is not a substitute for Fabric API.',
+          'ViaProxy translates Geyser\'s Java protocol to older servers. It does not replace backend Floodgate. FloodgateJoin is only a ViaProxy handshake helper.',
+          'Install a compatible Floodgate backend before starting Geyser when Floodgate authentication is selected. Start is blocked if Floodgate or a required dependency is missing or incompatible.',
           'Geyser Standalone and ViaProxy join as a vanilla Java client. NeoForge/Fabric packs that require client mods (Create, and most content mods) will kick Bedrock players. Xbox cannot install NeoForge.',
           'ViaProxy is GPL-3.0; Geyser is MIT. Binaries are downloaded at runtime and are not bundled.',
         ],
@@ -229,7 +265,7 @@ function createProvider() {
             : 'Could not determine the Java protocol. Direct Geyser works only if the server matches Geyser\'s native version.',
         };
       }
-      const protocolOk = GEYSER_NATIVE_JAVA_VERSIONS.some((native) => version === native || version.startsWith(`${native}.`) || native.startsWith(version));
+      const protocolOk = floodgateVersions.isGeyserNativeJavaVersion(version, GEYSER_NATIVE_JAVA_VERSIONS);
       if (modded) {
         return {
           compatible: false,
@@ -265,8 +301,8 @@ function createProvider() {
         action: viaEnabled ? undefined : 'Use ViaProxy Compatibility Mode',
       };
     },
-    planFloodgateInstallation(server) {
-      const loader = String(server?.loader_provider_id || server?.loader || '').toLowerCase();
+    async planFloodgateInstallation(server, extra = {}) {
+      const loader = floodgateVersions.modLoaderId(server?.loader_provider_id || server?.loader);
       const download = (url, destination, project, version) => ({
         downloads: [{
           url,
@@ -278,19 +314,98 @@ function createProvider() {
         }],
         result: { loader, floodgateVersion: version, destinationKind: destination.split('/')[0] },
       });
-      if (loader === 'neoforge') {
-        return download(FLOODGATE_NEOFORGE_DOWNLOAD, 'mods/Floodgate.jar', 'Floodgate NeoForge', '2.2.4-b38');
+      if (loader === 'fabric' || loader === 'neoforge') {
+        return floodgateInstall.planModInstall(server, catalogDeps(extra));
       }
-      if (loader === 'fabric') {
-        return download(FLOODGATE_FABRIC_DOWNLOAD, 'mods/Floodgate.jar', 'Floodgate Fabric', '2.2.4-b38');
-      }
-      if (['paper', 'spigot', 'purpur', 'bukkit'].includes(loader)) {
+      if (floodgateVersions.paperLikeLoader(loader)) {
         return download(FLOODGATE_SPIGOT_DOWNLOAD, 'plugins/floodgate-spigot.jar', 'Floodgate Spigot', 'latest');
       }
       throw Object.assign(
         new Error(`Floodgate is not available for the ${loader || 'unknown'} Java loader. Use Fabric, NeoForge, or Paper, then copy the same key.pem.`),
         { status: 400, code: 'FLOODGATE_UNSUPPORTED_LOADER' }
       );
+    },
+    inspectFloodgateReadiness(server) {
+      return floodgateStatus.inspectReadiness(server || {});
+    },
+    async recommendProspectiveTarget(target, extra = {}) {
+      return floodgateRecommend.recommendProspectiveTarget(target, {
+        ...catalogDeps(extra),
+        nativeVersions: GEYSER_NATIVE_JAVA_VERSIONS,
+        timeoutMs: extra.timeoutMs,
+        policy: extra.policy,
+        loaderCatalog: extra.loaderCatalog,
+      });
+    },
+    async applyCreateForTarget({ server, recommendation, suggestedPort } = {}) {
+      const gateways = services.gateways;
+      if (!gateways || typeof gateways.create !== 'function') {
+        throw Object.assign(new Error('This gateway provider cannot create a gateway during Java server creation.'), {
+          status: 500,
+          code: 'GATEWAY_PROVIDER_UNAVAILABLE',
+        });
+      }
+      const mode = String(recommendation?.recommendedMode || 'direct').toLowerCase() === 'viaproxy'
+        ? 'viaproxy'
+        : 'direct';
+      const auth = String(recommendation?.authentication || '').toLowerCase();
+      if (auth === 'offline') {
+        throw Object.assign(new Error('Automatic Geyser configuration will not use insecure offline authentication.'), {
+          status: 400,
+          code: 'GATEWAY_CONFIGURATION_UNSUPPORTED',
+        });
+      }
+      if (auth && auth !== 'floodgate') {
+        throw Object.assign(new Error('Automatic Geyser configuration only uses Floodgate authentication.'), {
+          status: 400,
+          code: 'GATEWAY_CONFIGURATION_UNSUPPORTED',
+        });
+      }
+      const name = `${String(server?.name || 'Java').replace(/[<>]/g, '').trim().slice(0, 40)} Geyser`;
+      const created = await gateways.create({
+        name: name || 'Geyser',
+        authentication: 'floodgate',
+        floodgateConfirmed: true,
+        targetType: 'local-server',
+        targetServerId: server?.id,
+        bedrockUdpPort: suggestedPort,
+        advertiseInBedrockConnect: true,
+      });
+      try {
+        if (mode === 'viaproxy') {
+          await gateways.installCompatibilityOwn(created.id, { confirmViaProxy: true, confirmModeSwitch: true });
+        }
+        await gateways.installFloodgateOwn(created.id, { confirm: true, restartJava: false });
+        return gateways.statusOwn(created.id);
+      } catch (err) {
+        try { gateways.removeOwn(created.id); } catch { /* ignore */ }
+        throw err;
+      }
+    },
+    preflightFloodgateStart(opts = {}) {
+      return floodgateStatus.preflightStart({
+        ...opts,
+        nativeVersions: GEYSER_NATIVE_JAVA_VERSIONS,
+      });
+    },
+    floodgateStatus(opts = {}) {
+      return floodgateStatus.statusFor({
+        ...opts,
+        nativeVersions: GEYSER_NATIVE_JAVA_VERSIONS,
+        deps: catalogDeps(opts),
+      });
+    },
+    explainLastError(message) {
+      return floodgateStatus.explainLastError(message);
+    },
+    async executeFloodgatePlan(plan, extra = {}) {
+      if (plan?.installMode !== 'atomic') return { deferred: true, plan };
+      return floodgateInstall.executeAtomicPlan(plan, {
+        serverDir: extra.serverDir,
+        allowHosts: extra.allowHosts || DOWNLOAD_HOSTS,
+        downloadToFile: extra.downloadToFile,
+        copyKey: extra.copyKey,
+      });
     },
     async planCompatibilityInstallation(request) {
       if (!request?.confirmViaProxy) {
@@ -388,6 +503,19 @@ function createProvider() {
         authentication: record.authentication,
       };
     },
+    getLanBroadcastTarget(gateway, linkedServer) {
+      const port = Number(gateway?.bedrock_udp_port);
+      return {
+        resourceType: 'gateway',
+        resourceId: String(gateway?.id || ''),
+        ownerKey: `gateway:${gateway?.id}`,
+        name: String(gateway?.name || 'Geyser'),
+        protocol: 'udp',
+        port,
+        localOnly: true,
+        targetServerId: linkedServer?.id || gateway?.target_server_id || null,
+      };
+    },
     getServerContribution({ attachment, javaServer, pluginDisabled } = {}) {
       const db = require('../../db/connection');
       const id = Number(attachment?.resource_id);
@@ -408,14 +536,68 @@ function createProvider() {
       else if (['failed', 'auth_misconfigured', 'protocol_incompatible', 'target_unreachable', 'port_conflict'].includes(health)) {
         indicator = { id: 'geyser-status', label: 'Geyser Failed', state: 'failed' };
       }
-      const startDisabled = !running && javaOffline;
+      const readiness = javaServer ? floodgateStatus.inspectReadiness(javaServer) : { ready: true };
+      const floodgateBlocked = floodgate && !running && javaServer && !readiness.ready;
+      const viaNeeded = javaServer
+        ? floodgateStatus.viaProxyRequired(javaServer.minecraft_version || javaServer.version, GEYSER_NATIVE_JAVA_VERSIONS)
+        : false;
+      const viaMismatch = viaNeeded && !via;
+      const incompat = Boolean(floodgateBlocked || viaMismatch);
+      const startDisabled = (!running && javaOffline) || Boolean(floodgateBlocked) || viaMismatch;
+      const startReason = javaOffline
+        ? 'Start the Java server before starting Geyser.'
+        : (floodgateBlocked
+          ? 'Install a compatible Floodgate backend before starting Geyser. ViaProxy cannot replace backend Floodgate.'
+          : (viaMismatch
+            ? 'This Java version needs ViaProxy before Geyser can start safely.'
+            : ''));
       const tags = [
         via
           ? { id: 'geyser-mode', label: 'Geyser · ViaProxy', style: 'info' }
           : { id: 'geyser-mode', label: 'Geyser', style: 'info' },
       ];
-      if (floodgate) tags.push({ id: 'floodgate', label: 'Floodgate', style: 'success' });
+      if (floodgate) tags.push({ id: 'floodgate', label: 'Floodgate', style: incompat ? 'warning' : 'success' });
+      if (incompat) {
+        tags.push({ id: 'geyser-compat', label: 'Compatibility changed', style: 'warning' });
+      }
       const connectHost = require('../../services/connectHost');
+      const warning = incompat
+        ? (readiness.floodgateError?.message
+          || (readiness.code === 'FABRIC_API_MISSING'
+            ? 'Fabric API is missing or incompatible. Floodgate on Fabric requires Fabric API.'
+            : (viaMismatch
+              ? 'The Java protocol is older than Geyser. Enable ViaProxy. ViaProxy does not replace backend Floodgate.'
+              : 'This Geyser configuration is no longer compatible with the Java server. The gateway was not deleted. Start is blocked until it is repaired.')))
+        : '';
+      const actions = pluginDisabled ? [] : [{
+        id: 'toggle-gateway',
+        label: running && health !== 'starting' ? 'Stop Geyser' : health === 'starting' ? 'Starting Geyser' : 'Start Geyser',
+        placement: 'primary-split',
+        variant: running ? 'danger' : 'primary',
+        state: startDisabled || health === 'starting' ? 'disabled' : 'enabled',
+        icon: running ? 'stop' : 'play',
+        confirmation: false,
+        disabledReason: startDisabled ? startReason : '',
+      }];
+      if (!pluginDisabled && incompat && !running) {
+        actions.push({
+          id: 'repair-gateway',
+          label: 'Repair Geyser',
+          placement: 'secondary',
+          variant: 'warning',
+          state: 'enabled',
+          icon: 'none',
+          confirmation: false,
+          disabledReason: '',
+        });
+      }
+      if (!pluginDisabled && javaServer) {
+        try {
+          const gatewayLan = require('../../services/gatewayLan');
+          const lanAction = gatewayLan.lanActionFor(record, javaServer, attachment, 'geyser-lan');
+          if (lanAction) actions.push(lanAction);
+        } catch { /* optional */ }
+      }
       return {
         pluginId: 'gateway-geyser',
         serverId: attachment?.server_id || javaServer?.id || null,
@@ -423,24 +605,16 @@ function createProvider() {
         revision: Date.parse(record.updated_at || '') || Date.now(),
         tags,
         indicators: [indicator],
-        actions: pluginDisabled ? [] : [{
-          id: 'toggle-gateway',
-          label: running && health !== 'starting' ? 'Stop Geyser' : health === 'starting' ? 'Starting Geyser' : 'Start Geyser',
-          placement: 'primary-split',
-          variant: running ? 'danger' : 'primary',
-          state: startDisabled || health === 'starting' ? 'disabled' : 'enabled',
-          icon: running ? 'stop' : 'play',
-          confirmation: false,
-          disabledReason: startDisabled ? 'Start the Java server before starting Geyser.' : '',
-        }],
+        actions,
         summary: {
           mode: via ? 'ViaProxy' : 'Direct Geyser',
           status: indicator.label,
           bedrockAddress: connectHost.resolve(),
           bedrockPort: String(record.bedrock_udp_port || ''),
           viaProxyStatus: via ? (record.viaproxy_version ? `Installed (${record.viaproxy_version})` : 'Enabled') : 'Not used',
-          floodgateStatus: floodgate ? 'Enabled' : 'Not enabled',
+          floodgateStatus: floodgate ? (readiness.ready ? 'Enabled' : 'Incompatible — start blocked') : 'Not enabled',
           lastError: record.last_error || '',
+          compatibilityWarning: warning,
         },
         management: {
           label: 'Manage Geyser Plugin',
@@ -452,7 +626,7 @@ function createProvider() {
     },
     getAdvertisedEndpoint(record) {
       return {
-        name: `${record.name} — Geyser`,
+        name: `${record.name} - Geyser`,
         port: Number(record.bedrock_udp_port),
         internal: false,
       };
@@ -481,6 +655,7 @@ function createProvider() {
       const { floodgate_key_path, floodgate_key_file, ...rest } = record || {};
       return {
         ...rest,
+        last_error: floodgateStatus.explainLastError(record?.last_error),
         floodgateConfigured: Boolean(floodgate_key_path),
         floodgate_key_path: undefined,
         floodgate_key_file: undefined,
@@ -609,6 +784,14 @@ function registerRoutes(router, gateways) {
     }
   });
 
+  router.get('/gateways/:id/floodgate/status', async (req, res) => {
+    try {
+      res.json(await gateways.floodgateStatusOwn(req.params.id));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
   router.post('/gateways/:id/floodgate/install', async (req, res) => {
     try {
       res.json(await gateways.installFloodgateOwn(req.params.id, req.body || {}));
@@ -668,14 +851,12 @@ module.exports = {
   GEYSER_NATIVE_JAVA_VERSIONS,
   VIAPROXY_DOWNLOAD,
   VIAPROXY_VERSION,
-  FLOODGATE_NEOFORGE_DOWNLOAD,
-  FLOODGATE_FABRIC_DOWNLOAD,
   FLOODGATE_SPIGOT_DOWNLOAD,
   DOWNLOAD_HOSTS,
   createProvider,
   registerRoutes,
   register({ registerGateway, registerPluginAction, router, services }) {
-    registerGateway(createProvider());
+    registerGateway(createProvider(services || {}));
     registerRoutes(router, services && services.gateways);
     if (typeof registerPluginAction === 'function' && services?.gateways) {
       registerPluginAction({
@@ -688,6 +869,40 @@ module.exports = {
           const running = Boolean(status.running) || status.status === 'running' || status.status === 'starting';
           if (running) return services.gateways.stopOwn(resourceId);
           return services.gateways.startOwn(resourceId);
+        },
+      });
+      registerPluginAction({
+        id: 'geyser-lan',
+        resourceType: 'gateway',
+        permission: 'servers.manage_lan_broadcast',
+        confirmation: false,
+        async handler({ resourceId, javaServer }) {
+          const gatewayLan = require('../../services/gatewayLan');
+          const current = gatewayLan.status(resourceId);
+          if (current.enabled && !javaServer) {
+            throw Object.assign(new Error('This gateway is not linked to a Java server.'), {
+              status: 400,
+              code: 'GATEWAY_NOT_LINKED',
+            });
+          }
+          return gatewayLan.setEnabled(resourceId, !current.enabled);
+        },
+      });
+      registerPluginAction({
+        id: 'repair-gateway',
+        resourceType: 'gateway',
+        permission: 'gateway:lifecycle',
+        confirmation: false,
+        async handler({ resourceId }) {
+          const row = services.gateways.getOwn(resourceId);
+          const floodgate = await services.gateways.floodgateStatusOwn(resourceId);
+          if (floodgate.viaProxyRequired && !floodgate.viaProxyEnabled) {
+            await services.gateways.installCompatibilityOwn(resourceId, { confirmViaProxy: true, confirmModeSwitch: true });
+          }
+          if (row.authentication === 'floodgate' && !floodgate.ready) {
+            await services.gateways.installFloodgateOwn(resourceId, { confirm: true, restartJava: false });
+          }
+          return services.gateways.statusOwn(resourceId);
         },
       });
     }

@@ -72,6 +72,7 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
   const catalogFilterAvailability = require('../server/services/catalogFilterAvailability');
   const catalogService = require('../server/services/catalogService');
   const db = require('../server/db/connection');
+  const connectHost = require('../server/services/connectHost');
 
   assert.equal(pluginCapabilities.parseCapabilities(['not-a-cap'], 'bundled').ok, false);
   const uploadedCaps = pluginCapabilities.parseCapabilities(['provider:java-loader', 'ui:pages'], 'user');
@@ -574,6 +575,8 @@ versionRange="[13.0.8,)"
   assert.match(geyserUi, /confirmOverlay/);
   assert.match(geyserUi, /syncSaveButton/);
   assert.match(geyserUi, /The selected actions have been performed/);
+  assert.match(geyserUi, /floodgate\/status/);
+  assert.match(geyserUi, /compat-summary/);
   assert.doesNotMatch(geyserUi, /window\.confirm/);
   assert.doesNotMatch(geyserUi, /Hide from Bedrock Connect/);
   assert.doesNotThrow(() => new Function(geyserUi), 'Geyser plugin UI script must parse');
@@ -707,6 +710,7 @@ versionRange="[13.0.8,)"
   const geyserMeta = gatewayRegistry.list().find((item) => item.id === 'geyser');
   assert.deepEqual(geyserMeta.targetKinds, ['java']);
   assert.equal(geyserMeta.supportsCreateForTarget, true);
+  assert.equal(geyserMeta.supportsLanBroadcast, true);
   assert.equal(geyserMeta.managementPluginId, 'gateway-geyser');
   assert.ok(pluginHost.getMenuItems().some((item) => item.pluginId === 'gateway-geyser' && item.label === 'Geyser'));
   assert.equal(pluginHost.getMenuItems().some((item) => item.path === '/gateways'), false);
@@ -861,12 +865,37 @@ versionRange="[13.0.8,)"
   assert.equal(db.prepare('SELECT compatibility_mode FROM gateways WHERE id = ?').get(created.id).compatibility_mode, 'direct');
   assert.equal(fs.existsSync(path.join(storedDirect.data_path, 'ViaProxy.jar')), false);
 
-  const floodgatePlan = geyserProvider.planFloodgateInstallation({ loader_provider_id: 'neoforge', minecraft_version: '1.21.1' });
+  const neoFloodgateDir = path.join(testRoot, 'neo-floodgate-plan');
+  fs.mkdirSync(neoFloodgateDir, { recursive: true });
+  const floodgatePlan = await geyserProvider.planFloodgateInstallation({
+    loader_provider_id: 'neoforge',
+    minecraft_version: '1.21.1',
+    loader_version: '21.1.1',
+    data_path: neoFloodgateDir,
+  }, {
+    requestJson: async () => ([{
+      id: 'fg-1211',
+      version_number: '2.2.5',
+      version_type: 'release',
+      date_published: '2026-01-02T00:00:00Z',
+      game_versions: ['1.21.1'],
+      loaders: ['neoforge'],
+      files: [{
+        filename: 'Floodgate-Neoforge-2.2.5.jar',
+        primary: true,
+        url: 'https://cdn.modrinth.com/data/bWrNNfkb/versions/fg-1211/Floodgate-Neoforge-2.2.5.jar',
+        size: 1000,
+        hashes: { sha1: 'a'.repeat(40) },
+      }],
+      dependencies: [],
+    }]),
+  });
   javaLoaderHost.validatePlan(floodgatePlan);
-  assert.equal(floodgatePlan.downloads[0].destination, 'mods/Floodgate.jar');
+  assert.match(floodgatePlan.downloads[0].destination, /^mods\/Floodgate-Neoforge-2\.2\.5\.jar$/);
   assert.ok(geyser.DOWNLOAD_HOSTS.includes(new URL(floodgatePlan.downloads[0].url).hostname));
   assert.doesNotMatch(floodgatePlan.downloads[0].url, /^http:/);
-  assert.throws(
+  assert.doesNotMatch(floodgatePlan.downloads[0].url, /2\.2\.4-b38/);
+  await assert.rejects(
     () => geyserProvider.planFloodgateInstallation({ loader_provider_id: 'vanilla' }),
     /Fabric|NeoForge|Paper/
   );
@@ -958,12 +987,78 @@ versionRange="[13.0.8,)"
   assert.match(tile.managementUrl, /gateway-geyser/);
   assert.match(tile.managementUrl, new RegExp(`gatewayId=${created.id}`));
 
+  const adsSource = fs.readFileSync(path.join(__dirname, '../server/services/pluginAdvertisements.js'), 'utf8');
+  const geyserBackendSource = fs.readFileSync(
+    path.join(__dirname, '../server/bundled-plugins/gateway-geyser/backend.js'),
+    'utf8'
+  );
+  assert.match(adsSource, /\$\{strip\(row\.name, 60\)\} - Geyser/);
+  assert.doesNotMatch(adsSource, /— Geyser|– Geyser/);
+  assert.match(geyserBackendSource, /\$\{record\.name\} - Geyser/);
+  assert.doesNotMatch(geyserBackendSource, /name: `\$\{record\.name\} — Geyser`/);
+  assert.doesNotMatch(geyserBackendSource, /name: `\$\{record\.name\} – Geyser`/);
+
+  const namedEndpoint = geyserProvider.getAdvertisedEndpoint({
+    name: 'Test-10 Geyser',
+    bedrock_udp_port: storedVia.bedrock_udp_port,
+  });
+  assert.equal(namedEndpoint.name, 'Test-10 Geyser - Geyser');
+  assert.equal(namedEndpoint.name.includes('—'), false);
+  assert.equal(namedEndpoint.name.includes('–'), false);
+  assert.equal(namedEndpoint.port, Number(storedVia.bedrock_udp_port));
+
+  const previousName = storedVia.name;
+  db.prepare('UPDATE gateways SET name = ? WHERE id = ?').run('Test-10 Geyser', created.id);
   const ads = pluginAdvertisements.list();
   const ad = ads.find((item) => item.port === storedVia.bedrock_udp_port);
   assert.ok(ad);
-  assert.match(ad.name, /Geyser/);
+  assert.equal(ad.name, 'Test-10 Geyser - Geyser');
+  assert.equal(ad.name.includes('—'), false);
+  assert.equal(ad.name.includes('–'), false);
+  assert.equal(ad.address, connectHost.resolve());
+  assert.equal(ad.port, storedVia.bedrock_udp_port);
   assert.notEqual(ad.port, storedVia.viaproxy_bind_port);
   assert.notEqual(ad.port, storedVia.target_tcp_port);
+  const duplicateKey = `${ad.address.toLowerCase()}:${ad.port}`;
+  assert.equal(ads.filter((item) => `${item.address.toLowerCase()}:${item.port}` === duplicateKey).length, 1);
+
+  const geyserEntry = gatewayRegistry.get('geyser');
+  const originalAdvertisedEndpoint = geyserEntry.provider.getAdvertisedEndpoint;
+  delete geyserEntry.provider.getAdvertisedEndpoint;
+  try {
+    const fallback = pluginAdvertisements.list().find((item) => item.port === storedVia.bedrock_udp_port);
+    assert.ok(fallback);
+    assert.equal(fallback.name, 'Test-10 Geyser - Geyser');
+    assert.equal(fallback.name.includes('—'), false);
+    assert.equal(fallback.name.includes('–'), false);
+    assert.equal(fallback.address, ad.address);
+    assert.equal(fallback.port, ad.port);
+  } finally {
+    geyserEntry.provider.getAdvertisedEndpoint = originalAdvertisedEndpoint;
+  }
+
+  const longName = `Test-10 Geyser ${'N'.repeat(80)}`;
+  db.prepare('UPDATE gateways SET name = ? WHERE id = ?').run(longName, created.id);
+  delete geyserEntry.provider.getAdvertisedEndpoint;
+  try {
+    const limited = pluginAdvertisements.list().find((item) => item.port === storedVia.bedrock_udp_port);
+    assert.ok(limited);
+    assert.equal(limited.name.length <= 80, true);
+    assert.equal(limited.name.endsWith(' - Geyser'), true);
+    assert.equal(limited.name.includes('<'), false);
+  } finally {
+    geyserEntry.provider.getAdvertisedEndpoint = originalAdvertisedEndpoint;
+    db.prepare('UPDATE gateways SET name = ? WHERE id = ?').run(previousName, created.id);
+  }
+
+  const sanitized = pluginAdvertisements.sanitizeEndpoint({
+    name: '<b>Test-10 Geyser</b> - Geyser',
+    address: connectHost.resolve(),
+    port: storedVia.bedrock_udp_port,
+  });
+  assert.equal(sanitized.name, 'Test-10 Geyser - Geyser');
+  assert.equal(sanitized.address, connectHost.resolve());
+  assert.equal(sanitized.port, storedVia.bedrock_udp_port);
   assert.equal(pluginAdvertisements.isUnadvertisableHost('127.0.0.1'), true);
   assert.equal(pluginAdvertisements.isUnadvertisableHost('localhost'), true);
 

@@ -110,6 +110,10 @@ function scopedGatewayService(plugin) {
       assertOwn(id);
       return gatewayManager.installFloodgate(id, body);
     },
+    floodgateStatusOwn(id) {
+      assertOwn(id);
+      return gatewayManager.floodgateStatus(id);
+    },
     removeCompatibilityOwn(id, body = {}) {
       assertOwn(id);
       return gatewayManager.removeCompatibility(id, body);

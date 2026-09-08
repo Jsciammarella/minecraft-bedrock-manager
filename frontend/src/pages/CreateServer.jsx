@@ -1,12 +1,23 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { serverApi, portApi } from '../services/api';
+import { serverApi, portApi, gatewayApi } from '../services/api';
 import { useApi } from '../context/ApiContext';
 import { useAuth } from '../context/AuthContext';
 import { ArrowLeft, Server, Loader2, Check, AlertCircle } from 'lucide-react';
 
 const MAX_REMOTE_SERVERS = 10;
 const LAN_DISCOVERY_PORTS = new Set([19132, 19133]);
+
+function friendlyApiError(err, fallback) {
+  const data = err?.response?.data;
+  const text = String(data?.message || data?.error || err?.message || fallback || 'Request failed');
+  if (/cannot read propert/i.test(text) || /is not defined/i.test(text) || /ReadTimeoutException/i.test(text)) {
+    return data?.code
+      ? `${fallback || 'The request failed'} (${data.code}). Try again, or create the Java server without this integration.`
+      : (fallback || 'The request failed. Try again, or create the Java server without this integration.');
+  }
+  return text;
+}
 
 function CreateServer() {
   const navigate = useNavigate();
@@ -15,6 +26,7 @@ function CreateServer() {
   const canCreateLocal = can('servers.create_bedrock');
   const canCreateRemote = can('servers.create_remote');
   const canCreateJava = can('servers.create_java');
+  const canCreateGateway = can('gateways.create');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -28,6 +40,15 @@ function CreateServer() {
   const [loaderVersions, setLoaderVersions] = useState(['latest-compatible']);
   const [loaderVersion, setLoaderVersion] = useState('latest-compatible');
   const [loaderNotice, setLoaderNotice] = useState('');
+  const [gatewayProviders, setGatewayProviders] = useState([]);
+  const [integrationMode, setIntegrationMode] = useState({});
+  const [resolvedJava, setResolvedJava] = useState(null);
+  const [recommendations, setRecommendations] = useState({});
+  const [recommendError, setRecommendError] = useState('');
+  const [recommendLoading, setRecommendLoading] = useState(false);
+  const [adjustmentNotice, setAdjustmentNotice] = useState('');
+  const [appliedAuto, setAppliedAuto] = useState(null);
+  const recommendSeq = useRef(0);
   const [editions, setEditions] = useState([
     { id: 'bedrock', label: 'Bedrock', available: true, core: true },
   ]);
@@ -69,6 +90,23 @@ function CreateServer() {
         if (providers.length) setJavaProviders(providers);
       })
       .catch(() => {});
+    gatewayApi.providers()
+      .then((res) => {
+        const providers = (res.data?.providers || []).filter((item) => (
+          item?.supportsCreateForTarget
+          && (item.targetKinds || []).includes('java')
+          && item.createWizard
+        ));
+        setGatewayProviders(providers);
+        setIntegrationMode((prev) => {
+          const next = { ...prev };
+          for (const item of providers) {
+            if (!next[item.id]) next[item.id] = 'skip';
+          }
+          return next;
+        });
+      })
+      .catch(() => setGatewayProviders([]));
   }, []);
 
   useEffect(() => {
@@ -127,11 +165,168 @@ function CreateServer() {
     return () => { cancelled = true; };
   }, [java, remote, loaderProvider, formData.version, javaVersions]);
 
+  const wantsAutomatic = java && !remote && loaderProvider !== 'vanilla'
+    && gatewayProviders.some((item) => (integrationMode[item.id] || 'skip') === 'automatic');
+  const wantsLatestCompatible = wantsAutomatic && (!appliedAuto || appliedAuto.loader !== loaderProvider);
+
+  useEffect(() => {
+    if (!java || remote || loaderProvider !== 'vanilla') return;
+    setIntegrationMode((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const provider of gatewayProviders) {
+        if (next[provider.id] === 'automatic') {
+          next[provider.id] = 'skip';
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setRecommendations({});
+    setResolvedJava(null);
+    setRecommendError('');
+    setAdjustmentNotice('');
+    setAppliedAuto(null);
+    recommendSeq.current += 1;
+  }, [java, remote, loaderProvider, gatewayProviders]);
+
+  useEffect(() => {
+    if (!java || remote || !wantsAutomatic) {
+      setRecommendLoading(false);
+      return undefined;
+    }
+    const minecraftVersion = javaVersions.includes(formData.version) ? formData.version : 'latest';
+    const selectedLoader = loaderProvider === 'vanilla'
+      ? 'vanilla'
+      : (loaderVersions.includes(loaderVersion) ? loaderVersion : 'latest-compatible');
+    let cancelled = false;
+    const seq = ++recommendSeq.current;
+    const timer = setTimeout(async () => {
+      setRecommendLoading(true);
+      setRecommendError('');
+      try {
+        let concrete = {
+          kind: 'java',
+          minecraftVersion,
+          loaderProviderId: loaderProvider,
+          loaderVersion: selectedLoader,
+        };
+        if (!wantsLatestCompatible) {
+          const validated = await serverApi.javaValidate(loaderProvider, {
+            minecraftVersion,
+            version: minecraftVersion,
+            loaderVersion: selectedLoader,
+          });
+          if (cancelled || seq !== recommendSeq.current) return;
+          const resolved = validated.data?.resolved || {};
+          concrete = {
+            kind: 'java',
+            minecraftVersion: resolved.minecraftVersion || minecraftVersion,
+            loaderProviderId: resolved.loader || loaderProvider,
+            loaderVersion: resolved.loaderVersion || selectedLoader,
+          };
+          if (!concrete.minecraftVersion || concrete.minecraftVersion === 'latest'
+            || (concrete.loaderProviderId !== 'vanilla' && (!concrete.loaderVersion || concrete.loaderVersion === 'latest-compatible'))) {
+            setResolvedJava(null);
+            setRecommendations({});
+            setRecommendError('Waiting for concrete Minecraft and loader versions before recommending Bedrock access.');
+            setRecommendLoading(false);
+            return;
+          }
+          if (concrete.loaderProviderId !== loaderProvider) {
+            setRecommendError('Automatic configuration will not change the selected Java loader.');
+            setRecommendLoading(false);
+            return;
+          }
+        }
+        setResolvedJava({
+          selectedMinecraft: minecraftVersion,
+          selectedLoader,
+          ...concrete,
+        });
+        const next = {};
+        let applied = false;
+        for (const provider of gatewayProviders) {
+          if ((integrationMode[provider.id] || 'skip') !== 'automatic') continue;
+          if (!provider.supportsProspectiveTargetRecommendation) continue;
+          const rec = await gatewayApi.recommend(provider.id, {
+            ...concrete,
+            policy: wantsLatestCompatible ? 'latest-compatible' : undefined,
+          });
+          if (cancelled || seq !== recommendSeq.current) return;
+          const data = rec.data || {};
+          const recLoader = data.recommendedTarget?.loaderProviderId || data.target?.loaderProviderId;
+          if (recLoader && recLoader !== loaderProvider) continue;
+          const success = data.status === 'supported'
+            || data.status === 'supported-with-warnings'
+            || data.status === 'supported-with-limitations';
+          if (wantsLatestCompatible && success && data.recommendedTarget?.minecraftVersion && data.recommendedTarget?.loaderVersion) {
+            const recMc = data.recommendedTarget.minecraftVersion;
+            const recLv = data.recommendedTarget.loaderVersion;
+            if (recMc === 'latest' || recLv === 'latest-compatible') continue;
+            setAppliedAuto({ loader: loaderProvider, minecraftVersion: recMc, loaderVersion: recLv });
+            setJavaVersions((prev) => (prev.includes(recMc) ? prev : [...prev, recMc]));
+            setLoaderVersions((prev) => (prev.includes(recLv) ? prev : [...prev, recLv]));
+            setFormData((prev) => ({ ...prev, version: recMc }));
+            setLoaderVersion(recLv);
+            setAdjustmentNotice(data.message || '');
+            applied = true;
+            next[provider.id] = data;
+            continue;
+          }
+          if (!wantsLatestCompatible && (
+            data.target?.minecraftVersion !== concrete.minecraftVersion
+            || data.target?.loaderProviderId !== concrete.loaderProviderId
+            || data.target?.loaderVersion !== concrete.loaderVersion
+          )) {
+            continue;
+          }
+          next[provider.id] = data;
+        }
+        if (cancelled || seq !== recommendSeq.current) return;
+        setRecommendations(next);
+        if (!applied) setAdjustmentNotice((current) => current);
+      } catch (err) {
+        if (cancelled || seq !== recommendSeq.current) return;
+        setResolvedJava(null);
+        setRecommendations({});
+        setRecommendError(friendlyApiError(err, 'Could not check Bedrock access for this Java configuration.'));
+      } finally {
+        if (!cancelled && seq === recommendSeq.current) setRecommendLoading(false);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    java,
+    remote,
+    wantsAutomatic,
+    wantsLatestCompatible,
+    loaderProvider,
+    loaderVersion,
+    loaderVersions,
+    formData.version,
+    javaVersions,
+    gatewayProviders,
+    integrationMode,
+    appliedAuto,
+  ]);
+
   const ipv4Available = (ports.available || []).filter((item) => item.family !== 'ipv6');
   const ipv6Available = (ports.available || []).filter((item) => item.family === 'ipv6');
   const ipv4Choices = ipv4Available.filter((item) => !remote || !LAN_DISCOVERY_PORTS.has(item.port));
   const ipv6Choices = ipv6Available.filter((item) => !remote || !LAN_DISCOVERY_PORTS.has(item.port));
   const remoteCount = (servers || []).filter((server) => server.kind === 'remote').length;
+  const automaticSubmitBlocked = java && !remote && wantsAutomatic && (
+    recommendLoading
+    || gatewayProviders.some((provider) => {
+      if ((integrationMode[provider.id] || 'skip') !== 'automatic') return false;
+      const rec = recommendations[provider.id];
+      return !rec || rec.status === 'unsupported' || rec.status === 'unavailable';
+    })
+  );
 
   const loadPorts = async () => {
     try {
@@ -235,11 +430,94 @@ function CreateServer() {
         ? loaderVersion
         : (loaderProvider === 'vanilla' ? 'vanilla' : 'latest-compatible');
       if (java && !remote) {
-        await serverApi.javaValidate(loaderProvider, {
+        const validated = await serverApi.javaValidate(loaderProvider, {
           minecraftVersion,
           version: minecraftVersion,
           loaderVersion: selectedLoader,
         });
+        const resolved = validated.data?.resolved || {};
+        const concreteMc = resolved.minecraftVersion || minecraftVersion;
+        const concreteLoader = resolved.loaderVersion || selectedLoader;
+        const integrations = [];
+        if (loaderProvider !== 'vanilla') {
+        for (const provider of gatewayProviders) {
+          const mode = integrationMode[provider.id] || 'skip';
+          if (mode !== 'automatic') continue;
+          const providerLabel = provider.createWizard?.label || provider.name || 'gateway';
+          if (!canCreateGateway) {
+            setError(`Creating a ${providerLabel} integration requires additional permission. Choose Do not configure or ask an administrator.`);
+            setLoading(false);
+            return;
+          }
+          if (recommendLoading) {
+            setError('Wait for the Bedrock access check to finish, or choose Do not configure.');
+            setLoading(false);
+            return;
+          }
+          const rec = recommendations[provider.id];
+          if (!rec || rec.status === 'unsupported' || rec.status === 'unavailable') {
+            setError(`Automatic ${providerLabel} configuration is not available for this Java configuration. Choose Do not configure or change the Java versions.`);
+            setLoading(false);
+            return;
+          }
+          if (rec.target?.minecraftVersion !== concreteMc
+            || rec.target?.loaderProviderId !== (resolved.loader || loaderProvider)
+            || rec.target?.loaderVersion !== concreteLoader) {
+            setError('The Bedrock access recommendation is out of date. Wait for it to refresh, then try again.');
+            setLoading(false);
+            return;
+          }
+          integrations.push({
+            providerId: provider.id,
+            mode: 'automatic',
+            authentication: rec.authentication,
+            recommendationToken: rec.recommendationToken,
+          });
+        }
+        }
+        const payload = {
+          kind: 'java',
+          name: formData.name,
+          port: parseInt(formData.port, 10),
+          version: concreteMc,
+          maxPlayers: parseInt(formData.maxPlayers, 10),
+          description: formData.description,
+          gamemode: formData.gamemode,
+          difficulty: formData.difficulty,
+          acceptEula,
+          minecraftVersion: concreteMc,
+          loaderProvider,
+          loaderVersion: concreteLoader,
+          integrations: integrations.length ? integrations : undefined,
+        };
+        const created = await serverApi.create(payload, {
+          timeout: integrations.length ? 10 * 60 * 1000 : 60000,
+        });
+        await refresh();
+        const data = created.data || {};
+        if (data.serverCreated && data.gatewayCreated === false) {
+          const failed = gatewayProviders.find((item) => item.id === data.integrationError?.providerId);
+          const providerLabel = failed?.name || 'The gateway';
+          const reason = data.integrationError?.detail || data.integrationError?.message || `${providerLabel} configuration failed.`;
+          navigate(`/servers/${data.serverId || data.id}`, {
+            state: {
+              message: `Java server created successfully. ${providerLabel} could not be configured and its changes were rolled back: ${reason} You can configure it later from the server details page.`,
+            },
+          });
+          return;
+        }
+        if (integrations.length && data.gatewayCreated) {
+          navigate(`/servers/${data.serverId || data.id}`, {
+            state: {
+              message: data.gateway?.bedrock_udp_port || data.gateway?.bedrockUdpPort
+                ? `Java server created. Bedrock access is configured on UDP ${data.gateway.bedrock_udp_port || data.gateway.bedrockUdpPort}. The gateway was not started.`
+                : 'Java server created. Bedrock access is configured. The gateway was not started.',
+            },
+          });
+          return;
+        }
+        navigate('/');
+        return;
       }
       const payload = remote
         ? {
@@ -276,7 +554,7 @@ function CreateServer() {
       await refresh();
       navigate('/');
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Failed to create server');
+      setError(friendlyApiError(err, 'Failed to create server'));
     } finally {
       setLoading(false);
     }
@@ -368,7 +646,7 @@ function CreateServer() {
         {java && !remote && (
           <p className="text-xs text-mc-textMuted -mt-4">
             Downloads official server software when you create the server. Players connect with a Java Edition client on TCP.
-            Bedrock access is optional and can be configured through an enabled gateway plugin after server creation.
+            Bedrock access is optional. When a compatible gateway plugin is enabled, it can be configured below or added after server creation.
             Compatible with Fabric and NeoForge through bundled providers.
           </p>
         )}
@@ -434,6 +712,170 @@ function CreateServer() {
           </p>
         </div>
 
+        {java && !remote && (
+          <>
+            <div>
+              <label className="block text-sm font-medium text-mc-text mb-2">Server software</label>
+              <select
+                value={loaderProvider}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setLoaderProvider(next);
+                  setLoaderVersion(next === 'vanilla' ? 'vanilla' : 'latest-compatible');
+                  setFormData((prev) => ({ ...prev, version: 'latest' }));
+                  setAppliedAuto(null);
+                  setAdjustmentNotice('');
+                  setRecommendations({});
+                  setRecommendError('');
+                }}
+                className="input"
+              >
+                {javaProviders.map((provider) => (
+                  <option key={provider.id} value={provider.id}>{provider.name || provider.id}</option>
+                ))}
+              </select>
+              {loaderNotice && <p className="text-xs text-mc-textMuted mt-2">{loaderNotice}</p>}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-mc-text mb-2">Minecraft version</label>
+              <select
+                name="version"
+                value={javaVersions.includes(formData.version) ? formData.version : 'latest'}
+                onChange={handleChange}
+                className="input"
+              >
+                <option value="latest">Latest</option>
+                {javaVersions.filter((id) => id !== 'latest').map((id) => (
+                  <option key={id} value={id}>{id}</option>
+                ))}
+              </select>
+            </div>
+            {loaderProvider !== 'vanilla' && (
+              <div>
+                <label className="block text-sm font-medium text-mc-text mb-2">Loader version</label>
+                <select
+                  value={loaderVersions.includes(loaderVersion) ? loaderVersion : 'latest-compatible'}
+                  onChange={(e) => setLoaderVersion(e.target.value)}
+                  className="input"
+                >
+                  {loaderVersions.filter((id) => id !== 'vanilla').map((id) => (
+                    <option key={id} value={id}>{id === 'latest-compatible' ? 'Latest compatible' : id}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </>
+        )}
+
+        {java && !remote && gatewayProviders.length > 0 && (
+          <div className="p-4 bg-mc-darker border border-mc-surfaceLight rounded-lg space-y-4">
+            <h2 className="text-sm font-semibold text-white">Optional integrations</h2>
+            {gatewayProviders.map((provider) => {
+              const wizard = provider.createWizard || {};
+              const mode = integrationMode[provider.id] || 'skip';
+              const rec = recommendations[provider.id];
+              const vanillaBlocksAutomatic = loaderProvider === 'vanilla' && wizard.supportsVanillaAutomatic !== true;
+              const allowAutomatic = canCreateGateway && provider.supportsProspectiveTargetRecommendation && !vanillaBlocksAutomatic;
+              const automaticSuccess = rec && (rec.status === 'supported' || rec.status === 'supported-with-warnings' || rec.status === 'supported-with-limitations');
+              const automaticBlocked = mode === 'automatic' && rec && (rec.status === 'unsupported' || rec.status === 'unavailable');
+              const selectValue = vanillaBlocksAutomatic ? 'skip' : mode;
+              return (
+                <div key={provider.id} className="space-y-3">
+                  <div>
+                    <p className="text-sm font-medium text-white">{wizard.label || provider.name}</p>
+                    {wizard.description && (
+                      <p className="mt-1 text-xs text-mc-textMuted">{wizard.description}</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-mc-text mb-2">
+                      {provider.name} configuration
+                      {vanillaBlocksAutomatic && wizard.vanillaNote ? (
+                        <span className="text-amber-300"> {wizard.vanillaNote}</span>
+                      ) : null}
+                    </label>
+                    <select
+                      className={`input ${vanillaBlocksAutomatic ? 'opacity-50' : ''}`}
+                      value={selectValue}
+                      disabled={vanillaBlocksAutomatic}
+                      onChange={(e) => {
+                        const nextMode = e.target.value;
+                        setIntegrationMode((prev) => ({ ...prev, [provider.id]: nextMode }));
+                        setAppliedAuto(null);
+                        setAdjustmentNotice('');
+                        setError('');
+                      }}
+                    >
+                      <option value="skip">{wizard.skipOptionLabel || 'Do not configure'}</option>
+                      {allowAutomatic && (
+                        <option value="automatic">
+                          {wizard.recommendedOptionLabel || 'Configure automatically'} (Recommended)
+                        </option>
+                      )}
+                      <option value="later">{wizard.laterOptionLabel || 'Configure after server creation'}</option>
+                    </select>
+                    <p className="mt-2 text-xs text-mc-textMuted">
+                      Bedrock access stays off unless you choose to configure it. Offline authentication is never selected automatically.
+                    </p>
+                  </div>
+                  {mode === 'automatic' && !vanillaBlocksAutomatic && (
+                    <div className="space-y-2 text-sm">
+                      {adjustmentNotice && (
+                        <p className="text-sm text-sky-300">{adjustmentNotice}</p>
+                      )}
+                      {resolvedJava && (
+                        <p className="text-xs text-mc-textMuted">
+                          {resolvedJava.selectedMinecraft === 'latest' || resolvedJava.selectedLoader === 'latest-compatible'
+                            ? `Selected: ${resolvedJava.selectedMinecraft === 'latest' ? 'Latest' : resolvedJava.selectedMinecraft}${resolvedJava.selectedLoader === 'latest-compatible' ? ' / Latest compatible' : ''}. `
+                            : null}
+                          Resolved Minecraft version: {resolvedJava.minecraftVersion}
+                          {resolvedJava.loaderProviderId ? ` · Resolved ${resolvedJava.loaderProviderId}: ${resolvedJava.loaderVersion}` : ''}
+                        </p>
+                      )}
+                      {recommendLoading && (
+                        <p className="text-mc-textMuted flex items-center gap-2">
+                          <Loader2 className="w-4 h-4 animate-spin" /> Finding the newest compatible Bedrock configuration…
+                        </p>
+                      )}
+                      {recommendError && (
+                        <p className="text-red-400">{recommendError}</p>
+                      )}
+                      {!recommendLoading && automaticSuccess && (
+                        <div className="p-3 bg-mc-darker border border-mc-surfaceLight rounded-lg space-y-1">
+                          {(rec.summary || []).map((line) => (
+                            <p key={line} className="text-sm text-white">{line}</p>
+                          ))}
+                          {rec.suggestedPort ? (
+                            <p className="text-sm text-white">Bedrock UDP port: {rec.suggestedPort}</p>
+                          ) : null}
+                          {rec.viaProxyReason ? (
+                            <p className="text-xs text-mc-textMuted mt-2">{rec.viaProxyReason}</p>
+                          ) : null}
+                          {(rec.limitations || rec.warnings || []).slice(0, 6).map((line) => (
+                            <p key={line} className="text-xs text-mc-textMuted">{line}</p>
+                          ))}
+                        </div>
+                      )}
+                      {automaticBlocked && (
+                        <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg space-y-1">
+                          <p className="text-sm font-medium text-amber-300">
+                            No supported automatic {provider.name} configuration
+                          </p>
+                          <p className="text-sm text-amber-200">{rec.message}</p>
+                          {(rec.alternatives || []).map((line) => (
+                            <p key={line} className="text-xs text-mc-textMuted">{line}</p>
+                          ))}
+                          <p className="text-xs text-mc-textMuted">The Java server can still be created without {provider.name}.</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {remote && (
           <>
             <div>
@@ -489,66 +931,25 @@ function CreateServer() {
 
         {!remote && (
           <>
-        {java && (
-          <div>
-            <label className="block text-sm font-medium text-mc-text mb-2">Server software</label>
-            <select
-              value={loaderProvider}
-              onChange={(e) => {
-                const next = e.target.value;
-                setLoaderProvider(next);
-                setLoaderVersion(next === 'vanilla' ? 'vanilla' : 'latest-compatible');
-                setFormData((prev) => ({ ...prev, version: 'latest' }));
-              }}
-              className="input"
-            >
-              {javaProviders.map((provider) => (
-                <option key={provider.id} value={provider.id}>{provider.name || provider.id}</option>
-              ))}
-            </select>
-            {loaderNotice && <p className="text-xs text-mc-textMuted mt-2">{loaderNotice}</p>}
-          </div>
-        )}
-        {/* Version */}
+        {!java && (
         <div>
           <label className="block text-sm font-medium text-mc-text mb-2">
-            {java ? 'Minecraft version' : 'Version'}
+            Version
           </label>
           <select
             name="version"
-            value={java && !javaVersions.includes(formData.version) ? 'latest' : formData.version}
+            value={formData.version}
             onChange={handleChange}
             className="input"
           >
             <option value="latest">Latest</option>
-            {java
-              ? javaVersions.filter((id) => id !== 'latest').map((id) => (
-                <option key={id} value={id}>{id}</option>
-              ))
-              : (
-                <>
-                  <option value="1.20.80">1.20.80</option>
-                  <option value="1.20.70">1.20.70</option>
-                  <option value="1.20.60">1.20.60</option>
-                  <option value="1.20.50">1.20.50</option>
-                  <option value="1.20.40">1.20.40</option>
-                </>
-              )}
+            <option value="1.20.80">1.20.80</option>
+            <option value="1.20.70">1.20.70</option>
+            <option value="1.20.60">1.20.60</option>
+            <option value="1.20.50">1.20.50</option>
+            <option value="1.20.40">1.20.40</option>
           </select>
         </div>
-        {java && loaderProvider !== 'vanilla' && (
-          <div>
-            <label className="block text-sm font-medium text-mc-text mb-2">Loader version</label>
-            <select
-              value={loaderVersions.includes(loaderVersion) ? loaderVersion : 'latest-compatible'}
-              onChange={(e) => setLoaderVersion(e.target.value)}
-              className="input"
-            >
-              {loaderVersions.filter((id) => id !== 'vanilla').map((id) => (
-                <option key={id} value={id}>{id === 'latest-compatible' ? 'Latest compatible' : id}</option>
-              ))}
-            </select>
-          </div>
         )}
         <div>
           <label className="block text-sm font-medium text-mc-text mb-2">Max Players</label>
@@ -637,8 +1038,14 @@ function CreateServer() {
         <div className="flex items-center gap-3 pt-4 border-t border-mc-surfaceLight">
           <button
             type="submit"
-            disabled={loading || (java && !remote && !acceptEula)}
-            title={java && !remote && !acceptEula ? 'Agree to the Minecraft EULA to create a Java server' : undefined}
+            disabled={loading || (java && !remote && !acceptEula) || automaticSubmitBlocked}
+            title={
+              java && !remote && !acceptEula
+                ? 'Agree to the Minecraft EULA to create a Java server'
+                : automaticSubmitBlocked
+                  ? 'Wait for the Bedrock access recommendation to finish, or choose Do not configure.'
+                  : undefined
+            }
             className="btn btn-primary flex-1"
           >
             {loading ? (

@@ -109,8 +109,13 @@ function createProvider(services) {
       }
       const versions = artifact.minecraftVersions || [];
       const mc = server.minecraft_version || server.version;
+      const javaModMetadata = require('../../services/javaModMetadata');
+      const fabricCheck = javaModMetadata.evaluateMinecraftRequirement(mc, artifact);
+      if (fabricCheck && !fabricCheck.compatible) {
+        return { ok: false, error: fabricCheck.reason || `This mod does not list Minecraft ${mc}` };
+      }
       const minecraftVersions = require('../../services/minecraftVersions');
-      if (versions.length && mc && !minecraftVersions.supportsMinecraftVersion(versions, mc)) {
+      if (!fabricCheck && versions.length && mc && !minecraftVersions.supportsMinecraftVersion(versions, mc)) {
         return { ok: false, error: `This mod does not list Minecraft ${mc}` };
       }
       const warnings = [];

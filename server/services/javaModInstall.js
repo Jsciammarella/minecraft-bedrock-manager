@@ -153,7 +153,21 @@ function classifyReasons(server, mod, file) {
       reasons.push('LOADER_MISMATCH');
     }
     const versions = file.minecraftVersions || minecraftVersions.modMinecraftVersions(mod);
-    if (versions.length && !minecraftVersions.supportsMinecraftVersion(versions, minecraftVersions.serverMinecraftVersion(server))) {
+    const metadata = parseJson(mod.metadata_json, mod.metadata || {});
+    const dependencies = Array.isArray(mod.dependencies)
+      ? mod.dependencies
+      : parseJson(mod.dependencies, []);
+    const evaluated = javaModMetadata.evaluateMinecraftRequirement(
+      minecraftVersions.serverMinecraftVersion(server),
+      {
+        loader: fileLoader !== 'unknown' ? fileLoader : declared,
+        metadata,
+        dependencies,
+      }
+    );
+    if (evaluated) {
+      if (!evaluated.compatible) reasons.push('VERSION_MISMATCH');
+    } else if (versions.length && !minecraftVersions.supportsMinecraftVersion(versions, minecraftVersions.serverMinecraftVersion(server))) {
       reasons.push('VERSION_MISMATCH');
     }
   }
