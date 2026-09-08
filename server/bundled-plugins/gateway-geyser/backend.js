@@ -626,7 +626,7 @@ function createProvider(services = {}) {
     },
     getAdvertisedEndpoint(record) {
       return {
-        name: `${record.name} — Geyser`,
+        name: `${record.name} - Geyser`,
         port: Number(record.bedrock_udp_port),
         internal: false,
       };
