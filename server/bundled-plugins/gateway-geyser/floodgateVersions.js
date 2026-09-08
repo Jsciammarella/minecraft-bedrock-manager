@@ -1,5 +1,17 @@
 'use strict';
 
+const {
+  compareFabricVersions,
+  evaluateFabricDependency,
+  normalizeFabricMinecraftVersion,
+  parseFabricVersion,
+} = require('../../services/fabricVersionPredicate');
+const {
+  isMavenRange,
+  parseMavenRange,
+  satisfiesMavenRange,
+} = require('../../services/mavenVersionRange');
+
 const FABRIC_API_MOD_ID = 'fabric-api';
 const FABRIC_API_LEGACY_MOD_ID = 'fabric';
 const FABRIC_LOADER_MOD_ID = 'fabricloader';
@@ -9,11 +21,7 @@ const FLOODGATE_PROJECT_ID = 'bWrNNfkb';
 const FABRIC_API_MOD_IDS = new Set([FABRIC_API_MOD_ID, FABRIC_API_LEGACY_MOD_ID]);
 
 function canonicalMinecraftVersion(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  const dropped = raw.match(/^1\.(2[6-9]|[3-9]\d|\d{3,})(\..*)?$/);
-  if (dropped) return `${dropped[1]}${dropped[2] || ''}`;
-  return raw;
+  return normalizeFabricMinecraftVersion(value);
 }
 
 function minecraftVersionsEqual(a, b) {
@@ -29,28 +37,23 @@ function catalogListsExactMinecraft(gameVersions, serverVersion) {
 }
 
 function tokenizeVersion(value) {
-  const raw = String(value || '').trim().replace(/^v/i, '');
-  if (!raw) return null;
-  const match = raw.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-.](.+))?$/);
-  if (!match) return null;
+  const parsed = parseFabricVersion(value);
+  if (!parsed || !parsed.semantic) return null;
   return {
-    parts: [Number(match[1]), Number(match[2] || 0), Number(match[3] || 0)],
-    pre: match[4] ? String(match[4]) : '',
-    raw,
+    parts: [
+      parsed.components[0] || 0,
+      parsed.components[1] || 0,
+      parsed.components[2] || 0,
+    ],
+    pre: parsed.hasPrerelease
+      ? (parsed.hasEmptyPrerelease ? '' : parsed.prerelease.join('.'))
+      : '',
+    raw: parsed.raw,
   };
 }
 
 function compareVersions(a, b) {
-  const left = tokenizeVersion(a);
-  const right = tokenizeVersion(b);
-  if (!left || !right) return String(a) === String(b) ? 0 : null;
-  for (let i = 0; i < 3; i += 1) {
-    if (left.parts[i] !== right.parts[i]) return left.parts[i] - right.parts[i];
-  }
-  if (!left.pre && !right.pre) return 0;
-  if (!left.pre) return 1;
-  if (!right.pre) return -1;
-  return left.pre.localeCompare(right.pre, 'en');
+  return compareFabricVersions(a, b, { semanticOnly: true });
 }
 
 function compareForKind(a, b, kind) {
@@ -60,72 +63,73 @@ function compareForKind(a, b, kind) {
   return compareVersions(a, b);
 }
 
-function parseMavenRange(text) {
-  const match = String(text || '').trim().match(/^([\[(])\s*([^,\[\]]*)\s*,\s*([^,\[\]]*)\s*([\])])$/);
-  if (!match) return null;
-  return {
-    type: 'maven',
-    lower: match[2].trim(),
-    lowerInclusive: match[1] === '[',
-    upper: match[3].trim(),
-    upperInclusive: match[4] === ']',
-  };
+function omittedConstraint(raw) {
+  if (raw == null) return true;
+  if (Array.isArray(raw)) return false;
+  const text = String(raw).trim();
+  return !text || text === '*' || text.toLowerCase() === 'any';
+}
+
+function formatConstraint(raw) {
+  if (raw == null) return '';
+  if (Array.isArray(raw)) return raw.map((item) => String(item)).join(' | ');
+  return String(raw);
 }
 
 function parseConstraintList(raw) {
-  const text = String(raw || '').trim();
-  if (!text || text === '*' || text.toLowerCase() === 'any') {
+  if (Array.isArray(raw)) {
+    return [{ type: 'fabric-or', value: raw }];
+  }
+  if (omittedConstraint(raw)) {
     return [{ type: 'any' }];
   }
+  const text = String(raw).trim();
   const maven = parseMavenRange(text);
   if (maven) return [maven];
-  if (/^(\d+)(?:\.(\d+))?\.x$/i.test(text)) {
-    const [major, minor] = text.replace(/\.x$/i, '').split('.');
-    return [{ type: 'wildcard', major, minor: minor || null }];
+  return [{ type: 'fabric', value: text }];
+}
+
+function evaluateConstraint(raw, candidate, kind = 'loader') {
+  const wanted = String(candidate || '').trim();
+  const constraint = formatConstraint(raw);
+  const normalizedCandidate = kind === 'minecraft' ? canonicalMinecraftVersion(wanted) : wanted;
+  const subject = kind === 'minecraft' ? 'Minecraft' : 'Version';
+  if (!wanted) {
+    return {
+      compatible: false,
+      candidate: wanted,
+      constraint,
+      normalizedCandidate,
+      reason: `No ${subject.toLowerCase()} version was provided.`,
+    };
   }
-  const parts = [];
-  const tokenRe = /(>=|<=|>|<|=)?\s*(\d+(?:\.[0-9A-Za-z-]+)*)/g;
-  let match;
-  while ((match = tokenRe.exec(text))) {
-    parts.push({ type: 'cmp', op: match[1] || '=', value: match[2] });
+  if (omittedConstraint(raw)) {
+    return {
+      compatible: true,
+      candidate: wanted,
+      constraint: constraint || '*',
+      normalizedCandidate,
+      reason: '',
+    };
   }
-  return parts.length ? parts : [{ type: 'cmp', op: '=', value: text }];
+  if (!Array.isArray(raw) && isMavenRange(raw)) {
+    const compatible = satisfiesMavenRange(raw, wanted, kind);
+    return {
+      compatible,
+      candidate: wanted,
+      constraint,
+      normalizedCandidate,
+      reason: compatible ? '' : `${subject} ${wanted} is outside the required range ${constraint}.`,
+    };
+  }
+  return evaluateFabricDependency(wanted, raw, {
+    normalizeMinecraft: kind === 'minecraft',
+    subject,
+  });
 }
 
 function satisfiesConstraint(raw, candidate, kind = 'loader') {
-  const wanted = String(candidate || '').trim();
-  if (!wanted) return false;
-  const parts = parseConstraintList(raw);
-  return parts.every((part) => {
-    if (part.type === 'any') return true;
-    if (part.type === 'wildcard') {
-      const token = tokenizeVersion(kind === 'minecraft' ? canonicalMinecraftVersion(wanted) : wanted);
-      if (!token) return false;
-      if (String(token.parts[0]) !== String(part.major)) return false;
-      if (part.minor == null) return true;
-      return String(token.parts[1]) === String(part.minor);
-    }
-    if (part.type === 'maven') {
-      if (part.lower) {
-        const cmp = compareForKind(wanted, part.lower, kind);
-        if (cmp == null) return false;
-        if (part.lowerInclusive ? cmp < 0 : cmp <= 0) return false;
-      }
-      if (part.upper) {
-        const cmp = compareForKind(wanted, part.upper, kind);
-        if (cmp == null) return false;
-        if (part.upperInclusive ? cmp > 0 : cmp >= 0) return false;
-      }
-      return true;
-    }
-    const cmp = compareForKind(wanted, part.value, kind);
-    if (cmp == null) return minecraftVersionsEqual(wanted, part.value);
-    if (part.op === '>') return cmp > 0;
-    if (part.op === '>=') return cmp >= 0;
-    if (part.op === '<') return cmp < 0;
-    if (part.op === '<=') return cmp <= 0;
-    return cmp === 0 || (kind === 'minecraft' && minecraftVersionsEqual(wanted, part.value));
-  });
+  return evaluateConstraint(raw, candidate, kind).compatible;
 }
 
 function isGeyserNativeJavaVersion(version, nativeVersions = []) {
@@ -204,6 +208,7 @@ module.exports = {
   canonicalMinecraftVersion,
   catalogListsExactMinecraft,
   compareVersions,
+  evaluateConstraint,
   fabricApiDependIds,
   isFabricApiModId,
   isGeyserNativeJavaVersion,

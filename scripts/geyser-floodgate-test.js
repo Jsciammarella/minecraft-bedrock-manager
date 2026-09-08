@@ -171,6 +171,12 @@ async function runGeyserFloodgateTests() {
   assert.equal(floodgateVersions.satisfiesConstraint('[21.0,)', '20.2.12-beta', 'loader'), false);
   assert.equal(floodgateVersions.satisfiesConstraint('[21.0,)', '21.1.1', 'loader'), true);
   assert.equal(floodgateVersions.satisfiesConstraint('>=0.16.0', '0.19.5', 'loader'), true);
+  assert.equal(floodgateVersions.satisfiesConstraint('~26.2-', '26.2', 'minecraft'), true);
+  assert.equal(floodgateVersions.satisfiesConstraint('~26.2-', '26.3', 'minecraft'), false);
+  assert.equal(
+    floodgateVersions.evaluateConstraint('~26.2-', '26.2', 'minecraft').compatible,
+    floodgateVersions.satisfiesConstraint('~26.2-', '26.2', 'minecraft')
+  );
   assert.equal(floodgateVersions.isGeyserNativeJavaVersion('26.2', ['1.26.2']), true);
   assert.equal(floodgateVersions.isGeyserNativeJavaVersion('1.20.2', ['1.26.2']), false);
   assert.equal(floodgateVersions.isVersionAlias('latest'), true);
@@ -249,6 +255,20 @@ async function runGeyserFloodgateTests() {
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mbm-fg-test-'));
   try {
+    const fgTilde = writeJar(tmp, 'fg-tilde.jar', fabricJar({ minecraft: '~26.2-' }));
+    assert.equal(floodgateJar.validateFloodgateJar(fgTilde, {
+      loader: 'fabric',
+      minecraftVersion: '26.2',
+      loaderVersion: '0.19.5',
+    }, { gameVersions: ['26.2'] }).modId, 'floodgate');
+    assert.throws(
+      () => floodgateJar.validateFloodgateJar(fgTilde, {
+        loader: 'fabric',
+        minecraftVersion: '26.3',
+        loaderVersion: '0.19.5',
+      }),
+      (err) => err.code === 'FLOODGATE_MINECRAFT_MISMATCH'
+    );
     const fg26 = writeJar(tmp, 'fg-26.jar', fabricJar({ minecraft: '26.2' }));
     const inspected = floodgateJar.validateFloodgateJar(fg26, {
       loader: 'fabric',

@@ -7,12 +7,18 @@ const zipGuard = require('../../services/zipGuard');
 const {
   FABRIC_LOADER_MOD_ID,
   FLOODGATE_MOD_ID,
+  evaluateConstraint,
   fabricApiDependIds,
   isFabricApiModId,
   neoForgeMajor,
   preferredFabricApiDependId,
-  satisfiesConstraint,
 } = require('./floodgateVersions');
+
+function formatConstraint(value) {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(' | ');
+  return String(value);
+}
 
 function listJarNames(filePath) {
   return zipGuard.assertSafeZipNames(
@@ -141,23 +147,32 @@ function validateAgainstTarget(inspected, target, artifact) {
       `This Floodgate JAR uses ${inspected.metadataKind}, which NeoForge ${target.loaderVersion || 'unknown'} cannot load.`
     );
   }
-  if (inspected.minecraftConstraint && !satisfiesConstraint(inspected.minecraftConstraint, target.minecraftVersion, 'minecraft')) {
-    reject(
-      'FLOODGATE_MINECRAFT_MISMATCH',
-      `Floodgate requires Minecraft ${inspected.minecraftConstraint}, which does not include ${target.minecraftVersion}.`
-    );
+  if (inspected.minecraftConstraint) {
+    const minecraft = evaluateConstraint(inspected.minecraftConstraint, target.minecraftVersion, 'minecraft');
+    if (!minecraft.compatible) {
+      reject(
+        'FLOODGATE_MINECRAFT_MISMATCH',
+        minecraft.parseError
+          ? minecraft.reason
+          : (minecraft.reason || `Floodgate requires Minecraft ${formatConstraint(inspected.minecraftConstraint)}, which does not include ${target.minecraftVersion}.`)
+      );
+    }
   }
-  if (inspected.loaderConstraint && target.loaderVersion
-    && !satisfiesConstraint(inspected.loaderConstraint, target.loaderVersion, 'loader')) {
-    const label = target.loader === 'fabric' ? 'Fabric Loader' : 'NeoForge';
-    reject(
-      'FLOODGATE_LOADER_VERSION_MISMATCH',
-      `Floodgate requires ${label} ${inspected.loaderConstraint}, which does not include ${target.loaderVersion}.`
-    );
+  if (inspected.loaderConstraint && target.loaderVersion) {
+    const loader = evaluateConstraint(inspected.loaderConstraint, target.loaderVersion, 'loader');
+    if (!loader.compatible) {
+      const label = target.loader === 'fabric' ? 'Fabric Loader' : 'NeoForge';
+      reject(
+        'FLOODGATE_LOADER_VERSION_MISMATCH',
+        loader.parseError
+          ? loader.reason
+          : (loader.reason || `Floodgate requires ${label} ${formatConstraint(inspected.loaderConstraint)}, which does not include ${target.loaderVersion}.`)
+      );
+    }
   }
   if (artifact?.gameVersions?.length && inspected.minecraftConstraint) {
     const disagree = artifact.gameVersions.filter((version) => (
-      !satisfiesConstraint(inspected.minecraftConstraint, version, 'minecraft')
+      !evaluateConstraint(inspected.minecraftConstraint, version, 'minecraft').compatible
     ));
     if (disagree.length) {
       reject(

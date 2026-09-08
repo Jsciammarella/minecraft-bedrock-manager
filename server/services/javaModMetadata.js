@@ -2,20 +2,69 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const zipGuard = require('./zipGuard');
+const { evaluateFabricDependency } = require('./fabricVersionPredicate');
+const { isMavenRange, satisfiesMavenRange } = require('./mavenVersionRange');
 
 const ALLOWED_ENVIRONMENTS = new Set(['client', 'server', 'both', 'unknown']);
+
+function parseDependValue(version) {
+  if (Array.isArray(version)) return version;
+  if (typeof version === 'string') return version;
+  if (version && typeof version === 'object' && version.value != null) {
+    return Array.isArray(version.value) ? version.value : String(version.value);
+  }
+  return String(version || '*');
+}
 
 function parseDepends(raw, optional = false) {
   if (!raw || typeof raw !== 'object') return [];
   return Object.entries(raw).map(([id, version]) => ({
     id,
-    version: typeof version === 'string' ? version : String(version?.value || version || '*'),
+    version: parseDependValue(version),
     optional: Boolean(optional),
   }));
 }
 
 function minecraftFromConstraint(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.flatMap((item) => minecraftFromConstraint(item)))];
+  }
   return String(value || '').match(/\d+\.\d+(?:\.\d+)?/g) || [];
+}
+
+function fabricMinecraftRequirement(artifact) {
+  const depends = artifact?.metadata?.depends;
+  if (depends && typeof depends === 'object' && !Array.isArray(depends)
+    && Object.prototype.hasOwnProperty.call(depends, 'minecraft')) {
+    return depends.minecraft;
+  }
+  const listed = artifact?.dependencies;
+  if (Array.isArray(listed)) {
+    const dep = listed.find((item) => String(item?.id || '').toLowerCase() === 'minecraft');
+    if (dep && dep.version != null && dep.version !== '') return dep.version;
+  }
+  return null;
+}
+
+function evaluateMinecraftRequirement(candidate, artifact) {
+  const requirement = fabricMinecraftRequirement(artifact);
+  if (requirement == null || requirement === '') return null;
+  if (!Array.isArray(requirement) && isMavenRange(requirement)) {
+    const compatible = satisfiesMavenRange(requirement, candidate, 'minecraft');
+    return {
+      compatible,
+      candidate,
+      constraint: String(requirement),
+      normalizedCandidate: candidate,
+      reason: compatible ? '' : `Minecraft ${candidate} is outside the required range ${requirement}.`,
+    };
+  }
+  const loader = String(artifact?.loader || '').toLowerCase();
+  if (loader === 'neoforge' || loader === 'forge') return null;
+  return evaluateFabricDependency(candidate, requirement, {
+    normalizeMinecraft: true,
+    subject: 'Minecraft',
+  });
 }
 
 function normalizeEnvironment(value) {
@@ -208,6 +257,7 @@ module.exports = {
   detectFabric,
   detectNeoForge,
   detectQuilt,
+  evaluateMinecraftRequirement,
   inspectJar,
   normalizeEnvironment,
   preferJarEnvironment,
