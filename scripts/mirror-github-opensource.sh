@@ -26,8 +26,10 @@ if [[ ! "$branch" =~ ^release/[0-9]+\.[0-9]+\.3$ ]]; then
   exit 1
 fi
 # Fetch from GitLab before replacing the runner's GitLab credentials with the
-# GitHub-only askpass helper.
-git lfs fetch origin "$commit"
+# GitHub-only askpass helper. --all is required because a merge from
+# release/0.6.0 can make baseline installer LFS objects reachable even when
+# they are not in this branch's tip tree.
+git lfs fetch origin --all "$commit"
 
 
 askpass_file="$(mktemp)"
