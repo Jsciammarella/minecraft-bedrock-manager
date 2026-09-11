@@ -311,6 +311,149 @@ async function runJavaProviderTests({ pluginHost, testRoot }) {
   assert.ok(neoSpec.arguments[0].startsWith('@'));
   javaLoaderHost.validateLaunchSpec(neoSpec, scopedRoot);
 
+  const neoXml = [
+    '<metadata><versioning><versions>',
+    '<version>21.1.66</version>',
+    '<version>21.4.123</version>',
+    '<version>26.1.0.1-beta</version>',
+    '<version>26.2.0.48-beta</version>',
+    '<version>26.2.0.81</version>',
+    '</versions></versioning></metadata>',
+  ].join('');
+  const neoFull = neoforge.createProvider({
+    http: {
+      getText: async (url) => {
+        if (String(url).includes('maven-metadata')) return neoXml;
+        if (String(url).includes('21.1.66')) {
+          return '<project><artifactId>neoform</artifactId><version>1.21.1-20240808.144430</version></project>';
+        }
+        if (String(url).includes('21.4.123')) {
+          return '<project><artifactId>neoform</artifactId><version>1.21.4-20241201.000000</version></project>';
+        }
+        if (String(url).includes('26.1.0.1-beta')) {
+          return '<project><artifactId>neoform</artifactId><version>26.1-1</version></project>';
+        }
+        return '<project><artifactId>neoform</artifactId><version>26.2-2</version></project>';
+      },
+    },
+    knownMinecraftVersions: async () => ['1.21.1', '1.21.4', '26.1', '26.2'],
+    dataDir: path.join(testRoot, 'neo-full-cache'),
+  });
+  const neoMcList = await neoFull.listMinecraftVersions();
+  assert.ok(neoMcList.includes('1.21.1'));
+  assert.ok(neoMcList.includes('1.21.4'));
+  assert.ok(neoMcList.includes('26.1'));
+  assert.ok(neoMcList.includes('26.2'));
+  assert.equal(neoMcList.includes('1.26.2'), false);
+  const neo262Loaders = await neoFull.listLoaderVersions('26.2');
+  assert.ok(neo262Loaders.includes('26.2.0.48-beta'));
+  const neoLegacyPlan = await neoFull.planInstallation({ minecraftVersion: '1.21.1', loaderVersion: '21.1.66' });
+  assert.equal(neoLegacyPlan.result.minecraftVersion, '1.21.1');
+  assert.equal(neoLegacyPlan.result.loaderVersion, '21.1.66');
+  assert.match(neoLegacyPlan.downloads[0].url, /21\.1\.66/);
+  const neoModernPlan = await neoFull.planInstallation({ minecraftVersion: '26.2', loaderVersion: '26.2.0.48-beta' });
+  assert.equal(neoModernPlan.result.minecraftVersion, '26.2');
+  assert.equal(neoModernPlan.result.loaderVersion, '26.2.0.48-beta');
+  assert.match(neoModernPlan.downloads[0].url, /neoforge-26\.2\.0\.48-beta-installer\.jar/);
+  const reinstall = await neoFull.planUpdate(
+    { minecraft_version: '26.2', loader_version: '26.2.0.48-beta' },
+    { minecraftVersion: '26.2', loaderVersion: '26.2.0.48-beta' }
+  );
+  assert.equal(reinstall.result.minecraftVersion, '26.2');
+  assert.equal(reinstall.result.loaderVersion, '26.2.0.48-beta');
+
+  const legacyDir = path.join(testRoot, 'neo-legacy-server');
+  const modernDir = path.join(testRoot, 'neo-modern-server');
+  fs.mkdirSync(path.join(legacyDir, 'mods'), { recursive: true });
+  fs.mkdirSync(path.join(modernDir, 'mods'), { recursive: true });
+  const insertNeo = db.prepare(`
+    INSERT INTO servers (name, version, port, data_path, kind, status, loader_provider_id, loader_version, minecraft_version, loader_metadata)
+    VALUES (?, ?, ?, ?, 'java', 'stopped', 'neoforge', ?, ?, ?)
+  `);
+  const legacyId = insertNeo.run(
+    'Legacy NeoForge',
+    '1.21.1',
+    25711,
+    legacyDir,
+    '21.1.66',
+    '1.21.1',
+    JSON.stringify(neoLegacyPlan.result)
+  ).lastInsertRowid;
+  const modernId = insertNeo.run(
+    'Calendar NeoForge',
+    '26.2',
+    25712,
+    modernDir,
+    '26.2.0.48-beta',
+    '26.2',
+    JSON.stringify(neoModernPlan.result)
+  ).lastInsertRowid;
+  const legacyRow = db.prepare('SELECT * FROM servers WHERE id = ?').get(legacyId);
+  const modernRow = db.prepare('SELECT * FROM servers WHERE id = ?').get(modernId);
+  assert.equal(legacyRow.minecraft_version, '1.21.1');
+  assert.equal(legacyRow.loader_version, '21.1.66');
+  assert.equal(modernRow.minecraft_version, '26.2');
+  assert.equal(modernRow.loader_version, '26.2.0.48-beta');
+  javaLoaderHost.validateLaunchSpec(neoFull.getLaunchSpecification(legacyRow), legacyDir);
+  javaLoaderHost.validateLaunchSpec(neoFull.getLaunchSpecification(modernRow), modernDir);
+
+  const compatibleMod = {
+    edition: 'java',
+    loader: 'neoforge',
+    environment: 'both',
+    minecraft_versions: JSON.stringify(['26.2']),
+    extra_files: null,
+    file_path: path.join(testRoot, 'neo-26.jar'),
+  };
+  fs.writeFileSync(compatibleMod.file_path, 'mod');
+  const incompatibleMod = {
+    edition: 'java',
+    loader: 'neoforge',
+    environment: 'both',
+    minecraft_versions: JSON.stringify(['1.20.1']),
+    extra_files: null,
+    file_path: path.join(testRoot, 'neo-120.jar'),
+  };
+  assert.equal(neoFull.validateMod(modernRow, {
+    loader: 'neoforge',
+    minecraftVersions: ['26.2'],
+    environment: 'both',
+  }).ok, true);
+  assert.equal(neoFull.validateMod(legacyRow, {
+    loader: 'neoforge',
+    minecraftVersions: ['26.2'],
+  }).ok, false);
+  assert.equal(neoFull.validateMod(modernRow, {
+    loader: 'neoforge',
+    minecraftVersions: ['1.20.1'],
+  }).ok, false);
+  const catalogCompatibility = require('../server/services/catalogCompatibility');
+  const targets = catalogCompatibility.uniqueConfigs([
+    { serverId: modernId, serverName: 'Calendar NeoForge', minecraftVersion: '26.2', loader: 'neoforge' },
+    { serverId: legacyId, serverName: 'Legacy NeoForge', minecraftVersion: '1.21.1', loader: 'neoforge' },
+  ]);
+  assert.ok(targets.some((item) => item.minecraftVersion === '26.2' && item.serverNames.includes('Calendar NeoForge')));
+  const modernProject = {
+    edition: 'java',
+    files: [{ loader: 'neoforge', minecraftVersions: ['26.2'], environment: 'server' }],
+  };
+  assert.equal(catalogCompatibility.projectMatchesTarget(modernProject, { minecraftVersion: '26.2', loader: 'neoforge' }), true);
+  assert.equal(catalogCompatibility.projectMatchesTarget(modernProject, { minecraftVersion: '1.21.1', loader: 'neoforge' }), false);
+  void compatibleMod;
+  void incompatibleMod;
+
+  const geyserCheck = geyser.createProvider().checkCompatibility(
+    { compatibility_mode: 'direct' },
+    { minecraftVersion: '26.2' }
+  );
+  assert.equal(geyserCheck.recommendedMode, 'direct');
+  assert.deepEqual(geyserCheck.nativeVersions, ['26.2']);
+  const geyserAlias = geyser.createProvider().checkCompatibility(
+    { compatibility_mode: 'direct' },
+    { minecraftVersion: '1.26.2' }
+  );
+  assert.equal(geyserAlias.recommendedMode, 'direct');
+
   const jarPath = path.join(testRoot, 'fabric-mod.jar');
   fs.writeFileSync(jarPath, zipStore({
     'fabric.mod.json': JSON.stringify({
@@ -659,6 +802,7 @@ versionRange="[13.0.8,)"
   assert.match(libraryUi, /'Server'/);
   assert.match(libraryUi, /'Both'/);
   assert.match(libraryUi, /'Unknown'/);
+  assert.match(libraryUi, /Show incompatible servers/);
   assert.doesNotMatch(libraryUi, /modVersionTags\(mod\)\.slice\(0, 4\)/);
   const tileUi = fs.readFileSync(path.join(__dirname, '../frontend/src/components/ModTileTags.jsx'), 'utf8');
   assert.doesNotMatch(tileUi, /slice\(0,\s*8\)/);
@@ -839,8 +983,10 @@ versionRange="[13.0.8,)"
   const oldProtocol = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '1.20.1' });
   assert.equal(oldProtocol.recommendedMode, 'viaproxy');
   assert.match(oldProtocol.message, /does not support the protocol required by the current Geyser release/);
-  const nativeProtocol = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '1.26.2' });
+  const nativeProtocol = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '26.2' });
   assert.equal(nativeProtocol.recommendedMode, 'direct');
+  const nativeAlias = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '1.26.2' });
+  assert.equal(nativeAlias.recommendedMode, 'direct');
   const viaForCurrentJava = geyserProvider.checkCompatibility(storedDirect, { minecraftVersion: '1.21.8' });
   assert.equal(viaForCurrentJava.recommendedMode, 'viaproxy');
   assert.equal(viaForCurrentJava.viaProxyEnabled, false);
@@ -1726,6 +1872,38 @@ versionRange="[13.0.8,)"
     (err) => err.code === 'CLIENT_ONLY'
   );
 
+  const neo26Jar = path.join(testRoot, 'neo26-install.jar');
+  fs.writeFileSync(neo26Jar, zipStore({
+    'META-INF/neoforge.mods.toml': [
+      'modLoader="javafml"',
+      'loaderVersion="[26,)"',
+      'license="MIT"',
+      '[[mods]]',
+      'modId="calendarmod"',
+      'version="1.0.0"',
+      'displayName="Calendar Mod"',
+    ].join('\n'),
+  }));
+  const neo26Mod = db.prepare(`
+    INSERT INTO mods (name, slug, type, description, file_path, source, edition, environment, loader, minecraft_versions, sha256)
+    VALUES (?, ?, 'mod', '', ?, 'upload', 'java', 'both', 'neoforge', ?, ?)
+  `).run('Calendar Mod', `calendar-mod-${Date.now()}`, neo26Jar, JSON.stringify(['26.2']), 'sha-neo26');
+  const modernServer = db.prepare("SELECT * FROM servers WHERE name = 'Calendar NeoForge'").get();
+  assert.ok(modernServer);
+  assert.equal(modernServer.minecraft_version, '26.2');
+  const installed26 = javaModInstall.install(modernServer, neo26Mod.lastInsertRowid);
+  assert.ok(installed26);
+  const placed26 = fs.readdirSync(path.join(modernServer.data_path, 'mods'));
+  assert.ok(placed26.some((name) => name.toLowerCase().endsWith('.jar')));
+  const stillIncompatible = require('../server/services/modCompatibility').compatibleWithServer({
+    edition: 'java',
+    loader: 'neoforge',
+    environment: 'both',
+    minecraft_versions: JSON.stringify(['1.20.1']),
+    file_path: mismatchJar,
+  }, modernServer);
+  assert.equal(stillIncompatible, false);
+
   await pluginHost.setPluginEnabled('catalog-java-server-compatibility', false);
   assert.equal(javaHostingPolicy.isJavaHostingAvailable(), true);
   assert.equal(
@@ -1739,6 +1917,9 @@ versionRange="[13.0.8,)"
   const createUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/CreateServer.jsx'), 'utf8');
   assert.match(createUi, /serverApi\.editions/);
   assert.match(createUi, /Bedrock/);
+  assert.match(createUi, /canonicalJavaMinecraftVersion/);
+  assert.match(createUi, /javaProviderVersions\(loaderProvider\)/);
+  assert.match(createUi, /javaLoaderVersions\(loaderProvider/);
   const pluginsUi = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/Plugins.jsx'), 'utf8');
   assert.match(pluginsUi, /Continue/);
   assert.match(pluginsUi, /Cancel/);

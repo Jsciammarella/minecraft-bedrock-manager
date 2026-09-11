@@ -1,12 +1,10 @@
-const MAVEN = 'https://maven.neoforged.net/releases/net/neoforged/neoforge';
+'use strict';
 
-function minecraftFromNeoForge(version) {
-  const parts = String(version || '').split('.');
-  if (parts.length < 2) return '';
-  return `1.${parts[0]}.${parts[1]}`;
-}
+const mapping = require('./versionMapping');
+const catalog = require('./versionCatalog');
+const recordRepair = require('./recordRepair');
 
-function createProvider(services) {
+function createProvider(services = {}) {
   const http = services.http;
   return {
     getMetadata() {
@@ -19,60 +17,25 @@ function createProvider(services) {
       };
     },
     async listAllInstallerVersions() {
-      const xml = await http.getText(`${MAVEN}/maven-metadata.xml`);
-      return [...String(xml).matchAll(/<version>([^<]+)<\/version>/g)].map((item) => item[1]);
+      const loaded = await catalog.loadCatalog(http, services, { refresh: true });
+      return loaded.versions.map((item) => item.loaderVersion);
     },
     async listMinecraftVersions() {
-      const versions = await this.listAllInstallerVersions();
-      const seen = new Set();
-      const out = [];
-      for (const version of versions) {
-        const mc = minecraftFromNeoForge(version);
-        if (mc && !seen.has(mc)) {
-          seen.add(mc);
-          out.push(mc);
-        }
-      }
-      return out;
+      return catalog.listMinecraftVersions(http, services);
     },
     async listLoaderVersions(minecraftVersion) {
-      const versions = await this.listAllInstallerVersions();
-      if (!minecraftVersion || minecraftVersion === 'latest') return versions.slice().reverse();
-      return versions.filter((version) => minecraftFromNeoForge(version) === minecraftVersion);
+      return catalog.listLoaderVersions(http, services, minecraftVersion);
     },
     async resolveInstallation(request) {
-      const minecraftVersion = request.minecraftVersion || request.version || 'latest';
-      const loaders = await this.listLoaderVersions(minecraftVersion === 'latest' ? '' : minecraftVersion);
-      if (!loaders.length) {
-        const err = new Error(`NeoForge is not available for Minecraft ${minecraftVersion}`);
-        err.status = 400;
-        throw err;
-      }
-      let loaderVersion = request.loaderVersion || 'latest-compatible';
-      if (!loaderVersion || loaderVersion === 'latest-compatible' || loaderVersion === 'latest') {
-        loaderVersion = loaders[loaders.length - 1];
-      }
-      if (!loaders.includes(loaderVersion)) {
-        const err = new Error(`NeoForge ${loaderVersion} is not compatible with Minecraft ${minecraftVersion}`);
-        err.status = 400;
-        throw err;
-      }
-      const mc = minecraftFromNeoForge(loaderVersion);
-      const major = Number(String(loaderVersion).split('.')[0]);
-      return {
-        loader: 'neoforge',
-        minecraftVersion: mc,
-        loaderVersion,
-        javaMajor: major >= 21 ? 21 : 17,
-      };
+      return catalog.resolveMappedInstallation(http, services, request || {});
     },
     async planInstallation(request) {
       const resolved = await this.resolveInstallation(request);
-      const file = `neoforge-${resolved.loaderVersion}-installer.jar`;
+      const file = catalog.installerFileName(resolved.loaderVersion);
       return {
         downloads: [
           {
-            url: `${MAVEN}/${encodeURIComponent(resolved.loaderVersion)}/${file}`,
+            url: catalog.installerUrl(resolved.loaderVersion),
             destination: `installer/${file}`,
             maximumBytes: 12000000,
             project: 'NeoForge',
@@ -90,8 +53,9 @@ function createProvider(services) {
           loader: 'neoforge',
           minecraftVersion: resolved.minecraftVersion,
           loaderVersion: resolved.loaderVersion,
+          loaderChannel: resolved.loaderChannel,
           javaMajor: resolved.javaMajor,
-          argFile: `libraries/net/neoforged/neoforge/${resolved.loaderVersion}/${process.platform === 'win32' ? 'win_args.txt' : 'unix_args.txt'}`,
+          argFile: catalog.argFileRelative(resolved.loaderVersion),
           license: 'LGPL',
         },
       };
@@ -106,10 +70,10 @@ function createProvider(services) {
       let meta = {};
       try { meta = server.loader_metadata ? JSON.parse(server.loader_metadata) : {}; } catch { meta = {}; }
       const loaderVersion = server.loader_version || meta.loaderVersion;
-      const argFile = meta.argFile || `libraries/net/neoforged/neoforge/${loaderVersion}/${process.platform === 'win32' ? 'win_args.txt' : 'unix_args.txt'}`;
+      const argFile = meta.argFile || catalog.argFileRelative(loaderVersion);
       return {
         runtime: 'java',
-        javaMajor: Number(server.java_major || 21),
+        javaMajor: Number(server.java_major || mapping.recommendedJavaMajor(server.minecraft_version, loaderVersion)),
         workingDirectory: '.',
         arguments: [`@${argFile}`, 'nogui'],
         memory: {
@@ -128,7 +92,7 @@ function createProvider(services) {
         return { ok: false, error: 'This mod is not built for NeoForge' };
       }
       const versions = artifact.minecraftVersions || [];
-      const mc = server.minecraft_version || server.version;
+      const mc = server.minecraft_version || server.minecraftVersion || server.version;
       const javaModMetadata = require('../../services/javaModMetadata');
       const rangeCheck = javaModMetadata.evaluateMinecraftRequirement(mc, { ...artifact, loader: 'neoforge' });
       if (rangeCheck && !rangeCheck.compatible) {
@@ -147,14 +111,25 @@ function createProvider(services) {
       return ['world', 'world_nether', 'world_the_end', 'logs', 'mods', 'config', 'eula.txt', 'server.properties'];
     },
     getHealthInformation(server) {
-      return { loader: 'neoforge', minecraftVersion: server.minecraft_version, loaderVersion: server.loader_version };
+      return {
+        loader: 'neoforge',
+        minecraftVersion: server.minecraft_version || server.minecraftVersion,
+        loaderVersion: server.loader_version,
+      };
+    },
+    inspectInstalledMinecraft(serverDir, server) {
+      return mapping.inspectInstalledMinecraft(serverDir, server);
+    },
+    repairPersistedRecords(options) {
+      return recordRepair.repairPersistedRecords(options);
     },
   };
 }
 
 module.exports = {
   createProvider,
-  minecraftFromNeoForge,
+  minecraftFromNeoForge: mapping.minecraftFromNeoForge,
+  parseNeoForgeArtifact: mapping.parseNeoForgeArtifact,
   register({ registerJavaLoader, services }) {
     registerJavaLoader(createProvider(services));
   },

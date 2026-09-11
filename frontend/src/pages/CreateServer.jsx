@@ -8,6 +8,13 @@ import { ArrowLeft, Server, Loader2, Check, AlertCircle } from 'lucide-react';
 const MAX_REMOTE_SERVERS = 10;
 const LAN_DISCOVERY_PORTS = new Set([19132, 19133]);
 
+function canonicalJavaMinecraftVersion(value) {
+  const raw = String(value || '').trim();
+  const dropped = raw.match(/^1\.(2[6-9]|[3-9]\d|\d{3,})(\..*)?$/);
+  if (dropped) return `${dropped[1]}${dropped[2] || ''}`;
+  return raw;
+}
+
 function friendlyApiError(err, fallback) {
   const data = err?.response?.data;
   const text = String(data?.message || data?.error || err?.message || fallback || 'Request failed');
@@ -123,7 +130,7 @@ function CreateServer() {
     serverApi.javaProviderVersions(loaderProvider)
       .then((res) => {
         if (cancelled) return;
-        const ids = (res.data?.versions || []).filter((id) => id && id !== 'latest');
+        const ids = (res.data?.versions || []).filter((id) => id && id !== 'latest').map(canonicalJavaMinecraftVersion);
         const options = ['latest', ...ids];
         setJavaVersions(options);
         setFormData((prev) => (
@@ -221,7 +228,7 @@ function CreateServer() {
           const resolved = validated.data?.resolved || {};
           concrete = {
             kind: 'java',
-            minecraftVersion: resolved.minecraftVersion || minecraftVersion,
+            minecraftVersion: canonicalJavaMinecraftVersion(resolved.minecraftVersion || minecraftVersion),
             loaderProviderId: resolved.loader || loaderProvider,
             loaderVersion: resolved.loaderVersion || selectedLoader,
           };
@@ -261,7 +268,7 @@ function CreateServer() {
             || data.status === 'supported-with-warnings'
             || data.status === 'supported-with-limitations';
           if (wantsLatestCompatible && success && data.recommendedTarget?.minecraftVersion && data.recommendedTarget?.loaderVersion) {
-            const recMc = data.recommendedTarget.minecraftVersion;
+            const recMc = canonicalJavaMinecraftVersion(data.recommendedTarget.minecraftVersion);
             const recLv = data.recommendedTarget.loaderVersion;
             if (recMc === 'latest' || recLv === 'latest-compatible') continue;
             setAppliedAuto({ loader: loaderProvider, minecraftVersion: recMc, loaderVersion: recLv });
@@ -436,7 +443,7 @@ function CreateServer() {
           loaderVersion: selectedLoader,
         });
         const resolved = validated.data?.resolved || {};
-        const concreteMc = resolved.minecraftVersion || minecraftVersion;
+        const concreteMc = canonicalJavaMinecraftVersion(resolved.minecraftVersion || minecraftVersion);
         const concreteLoader = resolved.loaderVersion || selectedLoader;
         const integrations = [];
         if (loaderProvider !== 'vanilla') {

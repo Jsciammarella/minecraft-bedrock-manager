@@ -108,6 +108,11 @@ app.use('/api/ports', portRoutes);
 app.use('/api/bedrock-connect', bedrockConnectRoutes);
 app.use('/api/v1', apiRoutes);
 pluginHost.loadPlugins();
+try {
+  require('./services/javaLoaderRegistry').repairPersistedRecords();
+} catch (err) {
+  logger.warn(`Java loader record repair skipped: ${err.message}`);
+}
 security.syncDynamicPermissions();
 app.use('/api/plugins', pluginRoutes);
 app.use('/api/java', require('./routes/java'));

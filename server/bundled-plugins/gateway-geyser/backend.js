@@ -4,7 +4,7 @@ const NEOFORGE_DOWNLOAD = 'https://download.geysermc.org/v2/projects/geyser/vers
 const GEYSER_VIAPROXY_DOWNLOAD = 'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/viaproxy';
 const VIAPROXY_VERSION = '3.4.12';
 const VIAPROXY_DOWNLOAD = `https://github.com/ViaVersion/ViaProxy/releases/download/v${VIAPROXY_VERSION}/ViaProxy-${VIAPROXY_VERSION}.jar`;
-const GEYSER_NATIVE_JAVA_VERSIONS = ['1.26.2'];
+const GEYSER_NATIVE_JAVA_VERSIONS = ['26.2'];
 const FLOODGATE_SPIGOT_DOWNLOAD = 'https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot';
 const DOWNLOAD_HOSTS = [
   'download.geysermc.org',

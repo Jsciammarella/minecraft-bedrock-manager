@@ -35,6 +35,7 @@ const { runJavaProviderTests } = require('./java-provider-test');
 const { runPluginDownloadServiceTests } = require('./plugin-download-service-test');
 const { runGeyserFloodgateTests } = require('./geyser-floodgate-test');
 const { runFabricVersionPredicateTests } = require('./fabric-version-predicate-test');
+const { runNeoForgeVersionMappingTests } = require('./neoforge-version-mapping-test');
 const { runGatewayRecommendTests } = require('./gateway-recommend-test');
 const { runGatewayLanTests } = require('./gateway-lan-test');
 const { runCatalogProviderTests } = require('./catalog-provider-test');
@@ -470,6 +471,7 @@ async function run() {
   pluginHost.loadPlugins();
   await runJavaProviderTests({ pluginHost, testRoot });
   runFabricVersionPredicateTests();
+  await runNeoForgeVersionMappingTests({ testRoot, db });
   await runGeyserFloodgateTests();
   await runGatewayRecommendTests();
   await runGatewayLanTests();

@@ -11,7 +11,7 @@ function normalizeLoader(value) {
 function uniqueConfigs(targets = []) {
   const seen = new Map();
   for (const target of targets || []) {
-    const minecraftVersion = String(target.minecraftVersion || '').trim();
+    const minecraftVersion = minecraftVersions.canonicalMinecraftVersion(target.minecraftVersion || '');
     const loader = normalizeLoader(target.loader);
     if (!minecraftVersion || !loader || loader === 'unknown' || loader === 'vanilla' || loader === 'any') continue;
     const key = `${minecraftVersion}|${loader}`;
@@ -31,7 +31,7 @@ function uniqueConfigs(targets = []) {
     if (name && !entry.serverNames.includes(name)) entry.serverNames.push(name);
   }
   return [...seen.values()].sort((a, b) => {
-    const version = String(a.minecraftVersion).localeCompare(String(b.minecraftVersion), undefined, { numeric: true });
+    const version = minecraftVersions.compareMinecraftVersions(a.minecraftVersion, b.minecraftVersion);
     if (version) return version;
     return String(a.loader).localeCompare(String(b.loader));
   });
