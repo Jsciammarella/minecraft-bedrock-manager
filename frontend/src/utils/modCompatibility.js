@@ -40,11 +40,21 @@ export function serverMinecraftVersion(server) {
   return String(server?.minecraftVersion || server?.minecraft_version || server?.version || '').trim();
 }
 
+export function canonicalMinecraftVersion(value) {
+  const raw = String(value || '').trim();
+  const dropped = raw.match(/^1\.(2[6-9]|[3-9]\d|\d{3,})(\..*)?$/);
+  if (dropped) return `${dropped[1]}${dropped[2] || ''}`;
+  return raw;
+}
+
 function listedSupportsServer(listed, serverVersion) {
-  const a = String(listed || '').trim();
-  const b = String(serverVersion || '').trim();
-  if (!a || a.toLowerCase() === 'any' || a === '*') return true;
-  if (a === b) return true;
+  const aRaw = String(listed || '').trim();
+  const bRaw = String(serverVersion || '').trim();
+  if (!aRaw || aRaw.toLowerCase() === 'any' || aRaw === '*') return true;
+  if (aRaw === bRaw) return true;
+  const a = canonicalMinecraftVersion(aRaw);
+  const b = canonicalMinecraftVersion(bRaw);
+  if (a && b && a === b) return true;
   const ta = a.split('.').filter(Boolean);
   const tb = b.split('.').filter(Boolean);
   if (ta.length === 2 && tb.length >= 2 && ta[0] === tb[0] && ta[1] === tb[1]) return true;

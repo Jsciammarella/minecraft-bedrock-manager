@@ -105,6 +105,18 @@ function requireLoader(id) {
   return entry;
 }
 
+function repairPersistedRecords(options) {
+  const summaries = [];
+  for (const entry of loaders.values()) {
+    if (typeof entry.provider.repairPersistedRecords !== 'function') continue;
+    summaries.push({
+      loader: entry.id,
+      result: entry.provider.repairPersistedRecords(options),
+    });
+  }
+  return summaries;
+}
+
 module.exports = {
   REQUIRED,
   clear,
@@ -112,6 +124,7 @@ module.exports = {
   list,
   publicMetadata,
   register,
+  repairPersistedRecords,
   requireLoader,
   unregisterPlugins,
 };

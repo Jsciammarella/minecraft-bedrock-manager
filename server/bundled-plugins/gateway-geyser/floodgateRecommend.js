@@ -16,7 +16,7 @@ const {
   resolveFloodgateArtifact,
 } = require('./floodgateCatalog');
 
-const DEFAULT_NATIVE = ['1.26.2'];
+const DEFAULT_NATIVE = ['26.2'];
 const LOOKUP_TIMEOUT_MS = 10000;
 const MAX_MINECRAFT_CANDIDATES = 20;
 const MAX_LOADER_CANDIDATES = 3;

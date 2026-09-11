@@ -228,14 +228,14 @@ async function fetchManifest() {
   return data;
 }
 
-function listedReleases(manifest) {
+function listedReleases(manifest, { limit = MAX_LISTED_VERSIONS } = {}) {
   const latest = manifest?.latest?.release;
   const releases = (manifest?.versions || []).filter((item) => item.type === 'release');
   const ids = [];
   if (latest) ids.push(latest);
   for (const item of releases) {
     if (!ids.includes(item.id)) ids.push(item.id);
-    if (ids.length >= MAX_LISTED_VERSIONS) break;
+    if (limit && ids.length >= limit) break;
   }
   return { latest, versions: ids };
 }
@@ -243,6 +243,11 @@ function listedReleases(manifest) {
 async function listReleaseVersions() {
   const manifest = await fetchManifest();
   return listedReleases(manifest);
+}
+
+async function listAllReleaseIds() {
+  const manifest = await fetchManifest();
+  return listedReleases(manifest, { limit: 0 }).versions;
 }
 
 async function resolveRelease(version) {
@@ -566,6 +571,7 @@ module.exports = {
   isStubJar,
   isTruthy,
   jarPath,
+  listAllReleaseIds,
   listReleaseVersions,
   readSettings,
   resolveRelease,
